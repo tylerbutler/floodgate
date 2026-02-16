@@ -1,0 +1,57 @@
+{
+	"$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+	"root": true,
+	"formatter": {
+		"indentStyle": "tab"
+	},
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"defaultBranch": "main",
+		"useIgnoreFile": true
+	},
+	"files": {
+		"ignoreUnknown": true,
+		"includes": [
+			"**",
+
+			// build output
+			"!**/_temp",
+			"!**/.coverage",
+			"!**/build",
+			"!**/dist",
+			"!**/esm"
+		]
+	},
+	"linter": {
+		"includes": ["**/src/**", "**/test/**"]
+	},
+	"overrides": [
+		{
+			// Auto-generated TypeScript files from JSON schemas
+			"includes": ["**/generated/**/*.ts"],
+			"linter": {
+				"rules": {
+					"nursery": {
+						"noShadow": "off"
+					}
+				}
+			}
+		},
+		{
+			// Package entry points
+			"includes": ["**/src/index.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noExportedImports": "off"
+					},
+					"performance": {
+						"noBarrelFile": "off",
+						"noReExportAll": "off"
+					}
+				}
+			}
+		}
+	]
+}

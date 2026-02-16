@@ -1,0 +1,22 @@
+{
+	"$schema": "https://json.schemastore.org/tsconfig",
+	"extends": "./tsconfig.base.json",
+	"compilerOptions": {
+		"composite": false
+	},
+	"files": [],
+	"references": [
+		{
+			"path": "./packages/levee-driver"
+		},
+		{
+			"path": "./packages/levee-client"
+		},
+		{
+			"path": "./packages/levee-example"
+		},
+		{
+			"path": "./packages/levee-presence-tracker"
+		}
+	]
+}
