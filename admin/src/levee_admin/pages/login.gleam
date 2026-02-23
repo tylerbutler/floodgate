@@ -57,6 +57,7 @@ pub type Msg {
   UpdateEmail(String)
   UpdatePassword(String)
   Submit
+  GitHubLogin
 }
 
 /// Data emitted when form is submitted
@@ -81,6 +82,11 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       // Set pending_submit so parent can make API call
       let data = SubmitData(email: model.email, password: model.password)
       #(Model(..model, pending_submit: Some(data)), effect.none())
+    }
+
+    GitHubLogin -> {
+      // Handled by parent
+      #(model, effect.none())
     }
   }
 }
@@ -131,6 +137,16 @@ pub fn view(model: Model) -> Element(Msg) {
           ],
         ),
       ]),
+      div([class("auth-divider")], [span([], [text("or")])]),
+      button(
+        [
+          type_("button"),
+          class("btn btn-github"),
+          event.on_click(GitHubLogin),
+          disabled(model.loading),
+        ],
+        [text("Sign in with GitHub")],
+      ),
       p([class("auth-footer")], [
         text("Don't have an account? "),
         a([attribute.href("/admin/register")], [text("Register")]),

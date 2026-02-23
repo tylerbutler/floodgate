@@ -13,6 +13,12 @@ import lustre/element/html.{div, h1, nav, p, text}
 import lustre/event
 import modem
 
+@external(javascript, "./levee_admin_ffi.mjs", "get_query_param")
+fn get_query_param(name: String) -> Option(String)
+
+@external(javascript, "./levee_admin_ffi.mjs", "navigate_to")
+fn do_navigate_to(url: String) -> Nil
+
 import levee_admin/api
 import levee_admin/pages/dashboard
 import levee_admin/pages/login
@@ -39,17 +45,23 @@ pub type User {
 }
 
 fn init(_flags) -> #(Model, Effect(Msg)) {
+  // Check if we're returning from OAuth with a token in the URL
+  let #(session_token, oauth_effect) = case get_query_param("token") {
+    Some(token) -> #(Some(token), api.get_me(token, MeResponse))
+    None -> #(None, effect.none())
+  }
+
   let model =
     Model(
       route: router.Login,
       user: None,
-      session_token: None,
+      session_token: session_token,
       login: login.init(),
       register: register.init(),
       dashboard: dashboard.init(),
     )
 
-  #(model, modem.init(on_url_change))
+  #(model, effect.batch([modem.init(on_url_change), oauth_effect]))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -64,6 +76,7 @@ pub type Msg {
   // Auth API responses
   LoginResponse(Result(api.AuthResponse, api.ApiError))
   RegisterResponse(Result(api.AuthResponse, api.ApiError))
+  MeResponse(Result(api.User, api.ApiError))
   Logout
 }
 
@@ -86,6 +99,11 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         _, r -> r
       }
       #(Model(..model, route: route), effect.none())
+    }
+
+    LoginMsg(login.GitHubLogin) -> {
+      // Redirect to GitHub OAuth — full page navigation
+      #(model, effect.from(fn(_dispatch) { do_navigate_to("/auth/github") }))
     }
 
     LoginMsg(login_msg) -> {
@@ -180,6 +198,22 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       let register_model =
         register.set_error(model.register, "Registration failed")
       #(Model(..model, register: register_model), effect.none())
+    }
+
+    MeResponse(Ok(api_user)) -> {
+      let user =
+        User(
+          id: api_user.id,
+          email: api_user.email,
+          display_name: api_user.display_name,
+        )
+      let model = Model(..model, user: Some(user), route: router.Dashboard)
+      #(model, modem.push("/admin/dashboard", None, None))
+    }
+
+    MeResponse(Error(_error)) -> {
+      // Token was invalid — clear it and stay on login
+      #(Model(..model, session_token: None), effect.none())
     }
 
     Logout -> {
