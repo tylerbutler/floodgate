@@ -8,6 +8,7 @@ pub type Route {
   Register
   Dashboard
   Tenants
+  TenantNew
   TenantDetail(id: String)
   NotFound
 }
@@ -21,6 +22,7 @@ pub fn parse(uri: Uri) -> Route {
     ["admin", "register"] -> Register
     ["admin", "dashboard"] -> Dashboard
     ["admin", "tenants"] -> Tenants
+    ["admin", "tenants", "new"] -> TenantNew
     ["admin", "tenants", id] -> TenantDetail(id)
     _ -> NotFound
   }
@@ -33,6 +35,7 @@ pub fn to_path(route: Route) -> String {
     Register -> "/admin/register"
     Dashboard -> "/admin/dashboard"
     Tenants -> "/admin/tenants"
+    TenantNew -> "/admin/tenants/new"
     TenantDetail(id) -> "/admin/tenants/" <> id
     NotFound -> "/admin/404"
   }

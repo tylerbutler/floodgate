@@ -167,6 +167,105 @@
     .not-found h1 { font-size: 2rem; margin-bottom: 0.5rem; }
     .not-found a { display: inline-block; margin-top: 1rem; color: var(--color-primary); text-decoration: none; }
     .not-found a:hover { text-decoration: underline; }
+
+    /* Page header with title and action button */
+    .page-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.5rem;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .page-title { margin-bottom: 0; }
+
+    /* Back link */
+    .back-link {
+      color: var(--color-gray-500);
+      text-decoration: none;
+      font-size: 0.875rem;
+      margin-bottom: 0.25rem;
+    }
+    .back-link:hover { color: var(--color-primary); }
+
+    /* Cards */
+    .card {
+      background: white;
+      border-radius: 0.5rem;
+      padding: 1.5rem;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      margin-bottom: 1rem;
+    }
+    .card h2 { font-size: 1rem; font-weight: 600; color: var(--color-gray-700); margin-bottom: 0.75rem; }
+    .form-card { max-width: 500px; }
+
+    /* Tenant table/list */
+    .tenant-table-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 0.75rem;
+      color: var(--color-gray-500);
+      font-size: 0.875rem;
+    }
+    .tenant-list { list-style: none; }
+    .tenant-row {
+      border-top: 1px solid var(--color-gray-200);
+      padding: 0.75rem 0;
+    }
+    .tenant-row a {
+      color: var(--color-primary);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .tenant-row a:hover { text-decoration: underline; }
+    .tenant-id { font-family: monospace; }
+
+    /* Tenant form */
+    .tenant-form { display: flex; flex-direction: column; gap: 1rem; }
+    .form-help { color: var(--color-gray-500); font-size: 0.75rem; margin-top: 0.25rem; }
+
+    /* Detail page */
+    .tenant-detail-content { display: flex; flex-direction: column; gap: 1rem; max-width: 600px; }
+    .detail-row { display: flex; gap: 1rem; padding: 0.5rem 0; }
+    .detail-label { font-weight: 500; color: var(--color-gray-500); min-width: 80px; }
+    .detail-value { font-family: monospace; }
+
+    /* States */
+    .loading-state, .empty-state, .error-state { padding: 2rem; text-align: center; }
+    .error-state .btn { margin-top: 1rem; }
+
+    /* Tenant count and preview on dashboard */
+    .tenant-count { font-weight: 500; margin-bottom: 0.5rem; }
+    .tenant-item { padding: 0.25rem 0; }
+    .tenant-item a { color: var(--color-primary); text-decoration: none; font-family: monospace; }
+    .tenant-item a:hover { text-decoration: underline; }
+    .view-all-link { display: inline-block; margin-top: 0.75rem; color: var(--color-primary); text-decoration: none; font-size: 0.875rem; }
+    .view-all-link:hover { text-decoration: underline; }
+
+    /* Danger zone */
+    .danger-card { border: 1px solid var(--color-error); }
+    .danger-card h2 { color: var(--color-error); }
+    .btn-danger { background-color: var(--color-error); color: white; }
+    .btn-danger:hover:not(:disabled) { background-color: #b91c1c; }
+    .btn-danger:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn-secondary { background-color: var(--color-gray-100); color: var(--color-gray-700); border: 1px solid var(--color-gray-300); }
+    .btn-secondary:hover { background-color: var(--color-gray-200); }
+    .delete-confirm { margin-top: 1rem; }
+    .delete-warning { color: var(--color-error); font-weight: 500; margin-bottom: 0.5rem; }
+    .delete-tenant-id { font-family: monospace; font-weight: 600; background: var(--color-gray-100); padding: 0.25rem 0.5rem; border-radius: 0.25rem; display: inline-block; margin-bottom: 0.75rem; }
+    .delete-confirm-input { border-color: var(--color-error) !important; }
+    .delete-actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+
+    /* Success alert */
+    .alert-success { background-color: #f0fdf4; color: var(--color-success); display: flex; align-items: center; gap: 0.5rem; padding: 0.75rem 1rem; border-radius: 0.375rem; margin-bottom: 1rem; font-size: 0.875rem; }
+
+    /* Secret display */
+    .secret-display { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
+    .secret-value { font-size: 0.8125rem; background: var(--color-gray-100); padding: 0.5rem 0.75rem; border-radius: 0.375rem; word-break: break-all; flex: 1; }
+    .btn-sm { padding: 0.375rem 0.75rem; font-size: 0.8125rem; }
+    .regenerate-confirm { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--color-gray-200); }
+    .tenant-name { font-weight: 500; }
+    .tenant-id-small { color: var(--color-gray-500); font-family: monospace; font-size: 0.8125rem; }
   </style>
 </head>
 <body>

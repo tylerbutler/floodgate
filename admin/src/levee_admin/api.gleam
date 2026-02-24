@@ -7,6 +7,7 @@ import gleam/fetch
 import gleam/http
 import gleam/http/request
 import gleam/http/response.{type Response}
+import gleam/int
 import gleam/javascript/promise
 import gleam/json
 import gleam/option.{type Option, None, Some}
@@ -81,42 +82,6 @@ fn post_json_with_token(
     let req =
       req
       |> request.set_method(http.Post)
-      |> request.set_body(body_string)
-      |> request.set_header("content-type", "application/json")
-
-    let req = case token {
-      Some(t) -> request.set_header(req, "authorization", "Bearer " <> t)
-      None -> req
-    }
-
-    fetch.send(req)
-    |> promise.try_await(fetch.read_text_body)
-    |> promise.map(fn(result) {
-      let api_result = case result {
-        Ok(resp) -> handle_response(resp, decoder)
-        Error(_) -> Error(NetworkError("Request failed"))
-      }
-      dispatch(on_response(api_result))
-    })
-
-    Nil
-  })
-}
-
-fn put_json(
-  url: String,
-  body: json.Json,
-  token: Option(String),
-  decoder: Decoder(a),
-  on_response: fn(Result(a, ApiError)) -> msg,
-) -> Effect(msg) {
-  effect.from(fn(dispatch) {
-    let body_string = json.to_string(body)
-
-    let assert Ok(req) = request.to(get_origin() <> url)
-    let req =
-      req
-      |> request.set_method(http.Put)
       |> request.set_body(body_string)
       |> request.set_header("content-type", "application/json")
 
@@ -280,15 +245,19 @@ pub fn get_me(
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub type Tenant {
-  Tenant(id: String)
+  Tenant(id: String, name: String)
+}
+
+pub type TenantWithSecrets {
+  TenantWithSecrets(id: String, name: String, secret1: String, secret2: String)
 }
 
 pub type TenantList {
   TenantList(tenants: List(Tenant))
 }
 
-pub type TenantResponse {
-  TenantResponse(tenant: Tenant, message: String)
+pub type RegenerateResponse {
+  RegenerateResponse(secret: String)
 }
 
 pub type DeleteResponse {
@@ -297,7 +266,16 @@ pub type DeleteResponse {
 
 fn tenant_decoder() -> Decoder(Tenant) {
   use id <- decode.field("id", decode.string)
-  decode.success(Tenant(id:))
+  use name <- decode.field("name", decode.string)
+  decode.success(Tenant(id:, name:))
+}
+
+fn tenant_with_secrets_decoder() -> Decoder(TenantWithSecrets) {
+  use id <- decode.field("id", decode.string)
+  use name <- decode.field("name", decode.string)
+  use secret1 <- decode.field("secret1", decode.string)
+  use secret2 <- decode.field("secret2", decode.string)
+  decode.success(TenantWithSecrets(id:, name:, secret1:, secret2:))
 }
 
 fn tenant_list_decoder() -> Decoder(TenantList) {
@@ -305,10 +283,14 @@ fn tenant_list_decoder() -> Decoder(TenantList) {
   decode.success(TenantList(tenants:))
 }
 
-fn tenant_response_decoder() -> Decoder(TenantResponse) {
-  use tenant <- decode.field("tenant", tenant_decoder())
-  use message <- decode.field("message", decode.string)
-  decode.success(TenantResponse(tenant:, message:))
+fn create_tenant_response_decoder() -> Decoder(TenantWithSecrets) {
+  use tenant <- decode.field("tenant", tenant_with_secrets_decoder())
+  decode.success(tenant)
+}
+
+fn regenerate_response_decoder() -> Decoder(RegenerateResponse) {
+  use secret <- decode.field("secret", decode.string)
+  decode.success(RegenerateResponse(secret:))
 }
 
 fn delete_response_decoder() -> Decoder(DeleteResponse) {
@@ -329,61 +311,52 @@ pub fn list_tenants(
   )
 }
 
-/// Get a single tenant
+/// Get a single tenant (no secrets)
 pub fn get_tenant(
   token: String,
   tenant_id: String,
-  on_response: fn(Result(Tenant, ApiError)) -> msg,
+  on_response: fn(Result(TenantWithSecrets, ApiError)) -> msg,
 ) -> Effect(msg) {
-  let tenant_wrapper_decoder = {
-    use tenant <- decode.field("tenant", tenant_decoder())
-    decode.success(tenant)
-  }
-
   get_json(
     api_base <> "/tenants/" <> tenant_id,
     Some(token),
-    tenant_wrapper_decoder,
+    create_tenant_response_decoder(),
     on_response,
   )
 }
 
-/// Create a new tenant
+/// Create a new tenant (returns secrets)
 pub fn create_tenant(
   token: String,
-  id: String,
-  secret: String,
-  on_response: fn(Result(TenantResponse, ApiError)) -> msg,
+  name: String,
+  on_response: fn(Result(TenantWithSecrets, ApiError)) -> msg,
 ) -> Effect(msg) {
-  let body =
-    json.object([
-      #("id", json.string(id)),
-      #("secret", json.string(secret)),
-    ])
+  let body = json.object([#("name", json.string(name))])
 
   post_json_with_token(
     api_base <> "/tenants",
     body,
     Some(token),
-    tenant_response_decoder(),
+    create_tenant_response_decoder(),
     on_response,
   )
 }
 
-/// Update a tenant's secret
-pub fn update_tenant(
+/// Regenerate a specific secret slot (1 or 2)
+pub fn regenerate_secret(
   token: String,
   tenant_id: String,
-  secret: String,
-  on_response: fn(Result(TenantResponse, ApiError)) -> msg,
+  slot: Int,
+  on_response: fn(Result(RegenerateResponse, ApiError)) -> msg,
 ) -> Effect(msg) {
-  let body = json.object([#("secret", json.string(secret))])
+  let url =
+    api_base <> "/tenants/" <> tenant_id <> "/secrets/" <> int.to_string(slot)
 
-  put_json(
-    api_base <> "/tenants/" <> tenant_id,
-    body,
+  post_json_with_token(
+    url,
+    json.object([]),
     Some(token),
-    tenant_response_decoder(),
+    regenerate_response_decoder(),
     on_response,
   )
 }

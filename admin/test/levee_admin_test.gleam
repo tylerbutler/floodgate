@@ -68,6 +68,17 @@ pub fn to_path_tenant_detail_test() {
   |> should.equal("/admin/tenants/tenant-123")
 }
 
+pub fn parse_tenant_new_route_test() {
+  let uri = uri_from_path("/admin/tenants/new")
+  router.parse(uri)
+  |> should.equal(router.TenantNew)
+}
+
+pub fn to_path_tenant_new_test() {
+  router.to_path(router.TenantNew)
+  |> should.equal("/admin/tenants/new")
+}
+
 // Helper to create a URI from a path
 fn uri_from_path(path: String) -> Uri {
   uri.Uri(
