@@ -16,3 +16,7 @@ export function navigate_to(url) {
 export function get_origin() {
   return window.location.origin;
 }
+
+export function get_current_path() {
+  return window.location.pathname;
+}

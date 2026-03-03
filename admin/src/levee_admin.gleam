@@ -20,6 +20,9 @@ fn get_query_param(name: String) -> Option(String)
 @external(javascript, "./levee_admin_ffi.mjs", "navigate_to")
 fn do_navigate_to(url: String) -> Nil
 
+@external(javascript, "./levee_admin_ffi.mjs", "get_current_path")
+fn get_current_path() -> String
+
 import levee_admin/api
 import levee_admin/pages/dashboard
 import levee_admin/pages/login
@@ -58,9 +61,23 @@ fn init(_flags) -> #(Model, Effect(Msg)) {
     None -> #(None, effect.none())
   }
 
+  // Parse the initial route from the current URL path,
+  // applying auth guards for protected routes
+  let initial_route = case uri.parse(get_current_path()) {
+    Ok(parsed_uri) -> router.parse(parsed_uri)
+    Error(_) -> router.Login
+  }
+  let initial_route = case session_token, initial_route {
+    None, router.Dashboard -> router.Login
+    None, router.Tenants -> router.Login
+    None, router.TenantNew -> router.Login
+    None, router.TenantDetail(_) -> router.Login
+    _, route -> route
+  }
+
   let model =
     Model(
-      route: router.Login,
+      route: initial_route,
       user: None,
       session_token: session_token,
       login: login.init(),
