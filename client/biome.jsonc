@@ -24,7 +24,13 @@
 		]
 	},
 	"linter": {
-		"includes": ["**/src/**", "**/test/**"]
+		"includes": ["**/src/**", "**/test/**"],
+		"rules": {
+			"complexity": {
+				// Conflicts with TypeScript's noPropertyAccessFromIndexSignature
+				"useLiteralKeys": "off"
+			}
+		}
 	},
 	"overrides": [
 		{

@@ -12,18 +12,13 @@ import { LeveeDocumentServiceFactory } from "../../src/leveeDocumentServiceFacto
 import { InsecureLeveeTokenProvider } from "../../src/tokenProvider.js";
 import { LeveeUrlResolver } from "../../src/urlResolver.js";
 
-// biome-ignore lint/style/noProcessEnv: test configuration from environment
 export const LEVEE_HTTP_URL =
 	process.env["LEVEE_HTTP_URL"] ?? "http://localhost:4000";
-// biome-ignore lint/style/noProcessEnv: test configuration from environment
 export const LEVEE_SOCKET_URL =
 	process.env["LEVEE_SOCKET_URL"] ?? "ws://localhost:4000/socket";
-// biome-ignore lint/style/noProcessEnv: test configuration from environment
 export const LEVEE_TENANT_KEY =
 	process.env["LEVEE_TENANT_KEY"] ?? "dev-tenant-secret-key";
-// biome-ignore lint/style/noProcessEnv: test configuration from environment
 export const LEVEE_DEBUG =
-	// biome-ignore lint/style/noProcessEnv: test configuration from environment
 	process.env["LEVEE_DEBUG"] === "true" || process.env["LEVEE_DEBUG"] === "1";
 export const LEVEE_TENANT_ID = "fluid";
 
