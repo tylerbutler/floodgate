@@ -14,7 +14,7 @@ import gleam/option.{type Option, None, Some}
 import lustre/effect.{type Effect}
 
 @external(javascript, "../levee_admin_ffi.mjs", "get_origin")
-fn get_origin() -> String
+pub fn get_origin() -> String
 
 /// Base URL for API requests
 const api_base = "/api"

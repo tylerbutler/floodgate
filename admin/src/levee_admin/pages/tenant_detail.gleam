@@ -3,6 +3,7 @@
 import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/string
+import levee_admin/api
 import lustre/attribute.{class, disabled, type_}
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
@@ -283,6 +284,7 @@ fn view_content(model: Model) -> Element(Msg) {
     Loaded ->
       div([class("tenant-detail-content")], [
         view_info(model),
+        view_connection_urls(model),
         view_secret_card(model, 1),
         view_secret_card(model, 2),
         view_delete_section(model),
@@ -315,6 +317,63 @@ fn view_info(model: Model) -> Element(Msg) {
           }),
         ],
       ),
+    ]),
+  ])
+}
+
+fn derive_socket_url(http_url: String) -> String {
+  case string.starts_with(http_url, "https://") {
+    True -> "wss://" <> string.drop_start(http_url, 8) <> "/socket"
+    False ->
+      case string.starts_with(http_url, "http://") {
+        True -> "ws://" <> string.drop_start(http_url, 7) <> "/socket"
+        False -> "ws://" <> http_url <> "/socket"
+      }
+  }
+}
+
+fn view_connection_urls(model: Model) -> Element(Msg) {
+  let origin = api.get_origin()
+  let socket_url = derive_socket_url(origin)
+  let token_mint_url =
+    origin <> "/api/tenants/" <> model.tenant_id <> "/token-mint"
+
+  div([class("card")], [
+    h2([], [text("Connection URLs")]),
+    p([class("form-help")], [
+      text("Use these URLs to connect client applications to this tenant."),
+    ]),
+    div([class("detail-row")], [
+      span([class("detail-label")], [text("HTTP URL")]),
+      code([class("detail-value")], [text(origin)]),
+    ]),
+    div([class("detail-row")], [
+      span([class("detail-label")], [text("WebSocket URL")]),
+      code([class("detail-value")], [text(socket_url)]),
+    ]),
+    div([class("detail-row")], [
+      span([class("detail-label")], [text("Token Mint")]),
+      code([class("detail-value")], [text(token_mint_url)]),
+    ]),
+    div([class("detail-row")], [
+      span([class("detail-label")], [text("Client Config")]),
+      html.pre([class("code-block")], [
+        code([], [
+          text(
+            "const client = await LeveeClient.create({\n"
+            <> "  connection: {\n"
+            <> "    httpUrl: \""
+            <> origin
+            <> "\",\n"
+            <> "    tenantId: \""
+            <> model.tenant_id
+            <> "\",\n"
+            <> "    authToken: sessionToken,\n"
+            <> "  }\n"
+            <> "});",
+          ),
+        ]),
+      ]),
     ]),
   ])
 }
