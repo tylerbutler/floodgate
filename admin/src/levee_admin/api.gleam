@@ -374,3 +374,394 @@ pub fn delete_tenant(
     on_response,
   )
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Document Admin API
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub type DocumentItem {
+  DocumentItem(
+    id: String,
+    tenant_id: String,
+    sequence_number: Int,
+    session_alive: Bool,
+  )
+}
+
+pub type DocumentListResponse {
+  DocumentListResponse(documents: List(DocumentItem))
+}
+
+pub type SessionInfo {
+  SessionInfo(
+    current_sn: Int,
+    current_msn: Int,
+    client_count: Int,
+    client_ids: List(String),
+    history_size: Int,
+  )
+}
+
+pub type DocumentDetailResponse {
+  DocumentDetailResponse(document: DocumentItem, session: Option(SessionInfo))
+}
+
+pub type DeltaItem {
+  DeltaItem(
+    sequence_number: Int,
+    client_id: Option(String),
+    type_: String,
+    reference_sequence_number: Int,
+    minimum_sequence_number: Int,
+    timestamp: Int,
+    contents: String,
+  )
+}
+
+pub type DeltaListResponse {
+  DeltaListResponse(deltas: List(DeltaItem))
+}
+
+pub type SummaryItem {
+  SummaryItem(
+    handle: String,
+    sequence_number: Int,
+    tree_sha: Option(String),
+    commit_sha: Option(String),
+    parent_handle: Option(String),
+  )
+}
+
+pub type SummaryListResponse {
+  SummaryListResponse(summaries: List(SummaryItem))
+}
+
+pub type RefItem {
+  RefItem(ref: String, sha: String)
+}
+
+pub type RefListResponse {
+  RefListResponse(refs: List(RefItem))
+}
+
+pub type GitBlob {
+  GitBlob(sha: String, size: Int, content: String)
+}
+
+pub type GitBlobResponse {
+  GitBlobResponse(blob: GitBlob)
+}
+
+pub type GitTreeEntry {
+  GitTreeEntry(path: String, mode: String, sha: String, entry_type: String)
+}
+
+pub type GitTree {
+  GitTree(sha: String, tree: List(GitTreeEntry))
+}
+
+pub type GitTreeResponse {
+  GitTreeResponse(tree: GitTree)
+}
+
+pub type GitCommit {
+  GitCommit(
+    sha: String,
+    tree: String,
+    parents: List(String),
+    message: Option(String),
+  )
+}
+
+pub type GitCommitResponse {
+  GitCommitResponse(commit: GitCommit)
+}
+
+// Document decoders
+
+fn document_item_decoder() -> Decoder(DocumentItem) {
+  use id <- decode.field("id", decode.string)
+  use tenant_id <- decode.field("tenant_id", decode.string)
+  use sequence_number <- decode.field("sequence_number", decode.int)
+  use session_alive <- decode.field("session_alive", decode.bool)
+  decode.success(DocumentItem(id:, tenant_id:, sequence_number:, session_alive:))
+}
+
+fn document_list_response_decoder() -> Decoder(DocumentListResponse) {
+  use documents <- decode.field(
+    "documents",
+    decode.list(document_item_decoder()),
+  )
+  decode.success(DocumentListResponse(documents:))
+}
+
+fn session_info_decoder() -> Decoder(SessionInfo) {
+  use current_sn <- decode.field("current_sn", decode.int)
+  use current_msn <- decode.field("current_msn", decode.int)
+  use client_count <- decode.field("client_count", decode.int)
+  use client_ids <- decode.field("client_ids", decode.list(decode.string))
+  use history_size <- decode.field("history_size", decode.int)
+  decode.success(SessionInfo(
+    current_sn:,
+    current_msn:,
+    client_count:,
+    client_ids:,
+    history_size:,
+  ))
+}
+
+fn document_detail_response_decoder() -> Decoder(DocumentDetailResponse) {
+  use document <- decode.field("document", document_item_decoder())
+  use session <- decode.field(
+    "session",
+    decode.optional(session_info_decoder()),
+  )
+  decode.success(DocumentDetailResponse(document:, session:))
+}
+
+fn delta_item_decoder() -> Decoder(DeltaItem) {
+  use sequence_number <- decode.field("sequence_number", decode.int)
+  use client_id <- decode.field("client_id", decode.optional(decode.string))
+  use type_ <- decode.field("type", decode.string)
+  use reference_sequence_number <- decode.field(
+    "reference_sequence_number",
+    decode.int,
+  )
+  use minimum_sequence_number <- decode.field(
+    "minimum_sequence_number",
+    decode.int,
+  )
+  use timestamp <- decode.field("timestamp", decode.int)
+  use contents <- decode.field(
+    "contents",
+    decode.one_of(decode.string, [decode.success("")]),
+  )
+  decode.success(DeltaItem(
+    sequence_number:,
+    client_id:,
+    type_:,
+    reference_sequence_number:,
+    minimum_sequence_number:,
+    timestamp:,
+    contents:,
+  ))
+}
+
+fn delta_list_response_decoder() -> Decoder(DeltaListResponse) {
+  use deltas <- decode.field("deltas", decode.list(delta_item_decoder()))
+  decode.success(DeltaListResponse(deltas:))
+}
+
+fn summary_item_decoder() -> Decoder(SummaryItem) {
+  use handle <- decode.field("handle", decode.string)
+  use sequence_number <- decode.field("sequence_number", decode.int)
+  use tree_sha <- decode.field("tree_sha", decode.optional(decode.string))
+  use commit_sha <- decode.field("commit_sha", decode.optional(decode.string))
+  use parent_handle <- decode.field(
+    "parent_handle",
+    decode.optional(decode.string),
+  )
+  decode.success(SummaryItem(
+    handle:,
+    sequence_number:,
+    tree_sha:,
+    commit_sha:,
+    parent_handle:,
+  ))
+}
+
+fn summary_list_response_decoder() -> Decoder(SummaryListResponse) {
+  use summaries <- decode.field(
+    "summaries",
+    decode.list(summary_item_decoder()),
+  )
+  decode.success(SummaryListResponse(summaries:))
+}
+
+fn ref_item_decoder() -> Decoder(RefItem) {
+  use ref <- decode.field("ref", decode.string)
+  use sha <- decode.field("sha", decode.string)
+  decode.success(RefItem(ref:, sha:))
+}
+
+fn ref_list_response_decoder() -> Decoder(RefListResponse) {
+  use refs <- decode.field("refs", decode.list(ref_item_decoder()))
+  decode.success(RefListResponse(refs:))
+}
+
+fn git_blob_decoder() -> Decoder(GitBlob) {
+  use sha <- decode.field("sha", decode.string)
+  use size <- decode.field("size", decode.int)
+  use content <- decode.field("content", decode.string)
+  decode.success(GitBlob(sha:, size:, content:))
+}
+
+fn git_blob_response_decoder() -> Decoder(GitBlobResponse) {
+  use blob <- decode.field("blob", git_blob_decoder())
+  decode.success(GitBlobResponse(blob:))
+}
+
+fn git_tree_entry_decoder() -> Decoder(GitTreeEntry) {
+  use path <- decode.field("path", decode.string)
+  use mode <- decode.field("mode", decode.string)
+  use sha <- decode.field("sha", decode.string)
+  use entry_type <- decode.field("type", decode.string)
+  decode.success(GitTreeEntry(path:, mode:, sha:, entry_type:))
+}
+
+fn git_tree_decoder() -> Decoder(GitTree) {
+  use sha <- decode.field("sha", decode.string)
+  use tree <- decode.field("tree", decode.list(git_tree_entry_decoder()))
+  decode.success(GitTree(sha:, tree:))
+}
+
+fn git_tree_response_decoder() -> Decoder(GitTreeResponse) {
+  use tree <- decode.field("tree", git_tree_decoder())
+  decode.success(GitTreeResponse(tree:))
+}
+
+fn git_commit_decoder() -> Decoder(GitCommit) {
+  use sha <- decode.field("sha", decode.string)
+  use tree <- decode.field("tree", decode.string)
+  use parents <- decode.field("parents", decode.list(decode.string))
+  use message <- decode.field("message", decode.optional(decode.string))
+  decode.success(GitCommit(sha:, tree:, parents:, message:))
+}
+
+fn git_commit_response_decoder() -> Decoder(GitCommitResponse) {
+  use commit <- decode.field("commit", git_commit_decoder())
+  decode.success(GitCommitResponse(commit:))
+}
+
+// Document API functions
+
+pub fn list_documents(
+  token: String,
+  tenant_id: String,
+  on_response: fn(Result(DocumentListResponse, ApiError)) -> msg,
+) -> Effect(msg) {
+  get_json(
+    api_base <> "/tenants/" <> tenant_id <> "/documents",
+    Some(token),
+    document_list_response_decoder(),
+    on_response,
+  )
+}
+
+pub fn get_document(
+  token: String,
+  tenant_id: String,
+  document_id: String,
+  on_response: fn(Result(DocumentDetailResponse, ApiError)) -> msg,
+) -> Effect(msg) {
+  get_json(
+    api_base <> "/tenants/" <> tenant_id <> "/documents/" <> document_id,
+    Some(token),
+    document_detail_response_decoder(),
+    on_response,
+  )
+}
+
+pub fn get_document_deltas(
+  token: String,
+  tenant_id: String,
+  document_id: String,
+  from: Int,
+  limit: Int,
+  on_response: fn(Result(DeltaListResponse, ApiError)) -> msg,
+) -> Effect(msg) {
+  get_json(
+    api_base
+      <> "/tenants/"
+      <> tenant_id
+      <> "/documents/"
+      <> document_id
+      <> "/deltas?from="
+      <> int.to_string(from)
+      <> "&limit="
+      <> int.to_string(limit),
+    Some(token),
+    delta_list_response_decoder(),
+    on_response,
+  )
+}
+
+pub fn get_document_summaries(
+  token: String,
+  tenant_id: String,
+  document_id: String,
+  on_response: fn(Result(SummaryListResponse, ApiError)) -> msg,
+) -> Effect(msg) {
+  get_json(
+    api_base
+      <> "/tenants/"
+      <> tenant_id
+      <> "/documents/"
+      <> document_id
+      <> "/summaries",
+    Some(token),
+    summary_list_response_decoder(),
+    on_response,
+  )
+}
+
+pub fn get_document_refs(
+  token: String,
+  tenant_id: String,
+  on_response: fn(Result(RefListResponse, ApiError)) -> msg,
+) -> Effect(msg) {
+  get_json(
+    api_base <> "/tenants/" <> tenant_id <> "/refs",
+    Some(token),
+    ref_list_response_decoder(),
+    on_response,
+  )
+}
+
+pub fn get_admin_blob(
+  token: String,
+  tenant_id: String,
+  sha: String,
+  on_response: fn(Result(GitBlobResponse, ApiError)) -> msg,
+) -> Effect(msg) {
+  get_json(
+    api_base <> "/tenants/" <> tenant_id <> "/git/blobs/" <> sha,
+    Some(token),
+    git_blob_response_decoder(),
+    on_response,
+  )
+}
+
+pub fn get_admin_tree(
+  token: String,
+  tenant_id: String,
+  sha: String,
+  recursive: Bool,
+  on_response: fn(Result(GitTreeResponse, ApiError)) -> msg,
+) -> Effect(msg) {
+  let url =
+    api_base
+    <> "/tenants/"
+    <> tenant_id
+    <> "/git/trees/"
+    <> sha
+    <> case recursive {
+      True -> "?recursive=1"
+      False -> ""
+    }
+  get_json(url, Some(token), git_tree_response_decoder(), on_response)
+}
+
+pub fn get_admin_commit(
+  token: String,
+  tenant_id: String,
+  sha: String,
+  on_response: fn(Result(GitCommitResponse, ApiError)) -> msg,
+) -> Effect(msg) {
+  get_json(
+    api_base <> "/tenants/" <> tenant_id <> "/git/commits/" <> sha,
+    Some(token),
+    git_commit_response_decoder(),
+    on_response,
+  )
+}

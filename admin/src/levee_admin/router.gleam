@@ -10,6 +10,8 @@ pub type Route {
   Tenants
   TenantNew
   TenantDetail(id: String)
+  DocumentList(tenant_id: String)
+  DocumentDetail(tenant_id: String, document_id: String)
   NotFound
 }
 
@@ -23,6 +25,8 @@ pub fn parse(uri: Uri) -> Route {
     ["admin", "dashboard"] -> Dashboard
     ["admin", "tenants"] -> Tenants
     ["admin", "tenants", "new"] -> TenantNew
+    ["admin", "tenants", tid, "documents"] -> DocumentList(tid)
+    ["admin", "tenants", tid, "documents", did] -> DocumentDetail(tid, did)
     ["admin", "tenants", id] -> TenantDetail(id)
     _ -> NotFound
   }
@@ -37,6 +41,8 @@ pub fn to_path(route: Route) -> String {
     Tenants -> "/admin/tenants"
     TenantNew -> "/admin/tenants/new"
     TenantDetail(id) -> "/admin/tenants/" <> id
+    DocumentList(tid) -> "/admin/tenants/" <> tid <> "/documents"
+    DocumentDetail(tid, did) -> "/admin/tenants/" <> tid <> "/documents/" <> did
     NotFound -> "/admin/404"
   }
 }

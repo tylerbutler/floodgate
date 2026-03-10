@@ -25,6 +25,8 @@ fn get_current_path() -> String
 
 import levee_admin/api
 import levee_admin/pages/dashboard
+import levee_admin/pages/document_detail
+import levee_admin/pages/document_list
 import levee_admin/pages/login
 import levee_admin/pages/register
 import levee_admin/pages/tenant_detail
@@ -47,6 +49,8 @@ pub type Model {
     tenants: tenants.Model,
     tenant_new: tenant_new.Model,
     tenant_detail: tenant_detail.Model,
+    document_list: document_list.Model,
+    document_detail: document_detail.Model,
   )
 }
 
@@ -72,6 +76,8 @@ fn init(_flags) -> #(Model, Effect(Msg)) {
     None, router.Tenants -> router.Login
     None, router.TenantNew -> router.Login
     None, router.TenantDetail(_) -> router.Login
+    None, router.DocumentList(_) -> router.Login
+    None, router.DocumentDetail(_, _) -> router.Login
     _, route -> route
   }
 
@@ -86,6 +92,8 @@ fn init(_flags) -> #(Model, Effect(Msg)) {
       tenants: tenants.init(),
       tenant_new: tenant_new.init(),
       tenant_detail: tenant_detail.init(""),
+      document_list: document_list.init(""),
+      document_detail: document_detail.init("", ""),
     )
 
   #(model, effect.batch([modem.init(on_url_change), oauth_effect]))
@@ -103,6 +111,8 @@ pub type Msg {
   TenantsMsg(tenants.Msg)
   TenantNewMsg(tenant_new.Msg)
   TenantDetailMsg(tenant_detail.Msg)
+  DocumentListMsg(document_list.Msg)
+  DocumentDetailMsg(document_detail.Msg)
   // Auth API responses
   LoginResponse(Result(api.AuthResponse, api.ApiError))
   RegisterResponse(Result(api.AuthResponse, api.ApiError))
@@ -114,6 +124,17 @@ pub type Msg {
   GetTenantResponse(Result(api.TenantWithSecrets, api.ApiError))
   RegenerateSecretResponse(Int, Result(api.RegenerateResponse, api.ApiError))
   DeleteTenantResponse(Result(api.DeleteResponse, api.ApiError))
+  // Tenant document count (for tenant detail page)
+  TenantDocumentCountResponse(Result(api.DocumentListResponse, api.ApiError))
+  // Document admin API responses
+  DocumentListResponse(Result(api.DocumentListResponse, api.ApiError))
+  DocumentDetailResponse(Result(api.DocumentDetailResponse, api.ApiError))
+  DocumentDeltasResponse(Result(api.DeltaListResponse, api.ApiError))
+  DocumentSummariesResponse(Result(api.SummaryListResponse, api.ApiError))
+  DocumentRefsResponse(Result(api.RefListResponse, api.ApiError))
+  GitBlobResponse(Result(api.GitBlobResponse, api.ApiError))
+  GitTreeResponse(Result(api.GitTreeResponse, api.ApiError))
+  GitCommitResponse(Result(api.GitCommitResponse, api.ApiError))
   Logout
 }
 
@@ -134,6 +155,8 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         None, router.Tenants -> router.Login
         None, router.TenantNew -> router.Login
         None, router.TenantDetail(_) -> router.Login
+        None, router.DocumentList(_) -> router.Login
+        None, router.DocumentDetail(_, _) -> router.Login
         _, r -> r
       }
 
@@ -142,7 +165,31 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           api.list_tenants(token, DashboardTenantsResponse)
         router.Tenants, Some(token) -> api.list_tenants(token, TenantsResponse)
         router.TenantDetail(id), Some(token) ->
-          api.get_tenant(token, id, GetTenantResponse)
+          effect.batch([
+            api.get_tenant(token, id, GetTenantResponse),
+            api.list_documents(token, id, TenantDocumentCountResponse),
+          ])
+        router.DocumentList(tid), Some(token) ->
+          api.list_documents(token, tid, DocumentListResponse)
+        router.DocumentDetail(tid, did), Some(token) ->
+          effect.batch([
+            api.get_document(token, tid, did, DocumentDetailResponse),
+            api.get_document_deltas(
+              token,
+              tid,
+              did,
+              -1,
+              100,
+              DocumentDeltasResponse,
+            ),
+            api.get_document_summaries(
+              token,
+              tid,
+              did,
+              DocumentSummariesResponse,
+            ),
+            api.get_document_refs(token, tid, DocumentRefsResponse),
+          ])
         _, _ -> effect.none()
       }
 
@@ -157,6 +204,14 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
             ..model,
             route: route,
             dashboard: dashboard.start_loading(dashboard.init()),
+          )
+        router.DocumentList(tid) ->
+          Model(..model, route: route, document_list: document_list.init(tid))
+        router.DocumentDetail(tid, did) ->
+          Model(
+            ..model,
+            route: route,
+            document_detail: document_detail.init(tid, did),
           )
         _ -> Model(..model, route: route)
       }
@@ -496,6 +551,258 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(Model(..model, tenant_detail: detail_model), effect.none())
     }
 
+    // Document list page messages
+    DocumentListMsg(doc_list_msg) -> {
+      let #(doc_list_model, doc_list_effect) =
+        document_list.update(model.document_list, doc_list_msg)
+      let mapped_effect = effect.map(doc_list_effect, DocumentListMsg)
+
+      case doc_list_msg {
+        document_list.Retry ->
+          case model.session_token {
+            Some(token) -> #(
+              Model(..model, document_list: doc_list_model),
+              api.list_documents(
+                token,
+                doc_list_model.tenant_id,
+                DocumentListResponse,
+              ),
+            )
+            None -> #(
+              Model(..model, document_list: doc_list_model),
+              mapped_effect,
+            )
+          }
+        _ -> #(Model(..model, document_list: doc_list_model), mapped_effect)
+      }
+    }
+
+    // Document detail page messages
+    DocumentDetailMsg(doc_detail_msg) -> {
+      let #(doc_detail_model, doc_detail_effect) =
+        document_detail.update(model.document_detail, doc_detail_msg)
+      let mapped_effect = effect.map(doc_detail_effect, DocumentDetailMsg)
+
+      // Handle pending actions that need API calls
+      let api_effect = case model.session_token {
+        Some(token) -> {
+          let tid = doc_detail_model.tenant_id
+          let did = doc_detail_model.document_id
+
+          // Check for pending deltas load
+          let deltas_effect = case
+            document_detail.get_pending_deltas_load(doc_detail_model)
+          {
+            True ->
+              api.get_document_deltas(
+                token,
+                tid,
+                did,
+                doc_detail_model.deltas_from,
+                100,
+                DocumentDeltasResponse,
+              )
+            False -> effect.none()
+          }
+
+          // Check for pending git object load
+          let git_effect = case
+            document_detail.get_pending_git_action(doc_detail_model)
+          {
+            document_detail.GitBlobView(sha, None) ->
+              api.get_admin_blob(token, tid, sha, GitBlobResponse)
+            document_detail.GitTreeView(sha, None) ->
+              api.get_admin_tree(token, tid, sha, False, GitTreeResponse)
+            document_detail.GitCommitView(sha, None) ->
+              api.get_admin_commit(token, tid, sha, GitCommitResponse)
+            _ -> effect.none()
+          }
+
+          effect.batch([deltas_effect, git_effect])
+        }
+        None -> effect.none()
+      }
+
+      #(
+        Model(..model, document_detail: doc_detail_model),
+        effect.batch([mapped_effect, api_effect]),
+      )
+    }
+
+    // Tenant document count response (for tenant detail page)
+    TenantDocumentCountResponse(Ok(resp)) -> {
+      let count = list.length(resp.documents)
+      let detail_model =
+        tenant_detail.set_document_count(model.tenant_detail, count)
+      #(Model(..model, tenant_detail: detail_model), effect.none())
+    }
+
+    TenantDocumentCountResponse(Error(_)) -> #(model, effect.none())
+
+    // Document list API response
+    DocumentListResponse(Ok(resp)) -> {
+      let doc_models =
+        list.map(resp.documents, fn(d) {
+          document_list.Document(
+            id: d.id,
+            tenant_id: d.tenant_id,
+            sequence_number: d.sequence_number,
+            session_alive: d.session_alive,
+          )
+        })
+      let doc_list_model =
+        document_list.update(
+          model.document_list,
+          document_list.DocumentsLoaded(doc_models),
+        ).0
+      #(Model(..model, document_list: doc_list_model), effect.none())
+    }
+
+    DocumentListResponse(Error(_)) -> {
+      let doc_list_model =
+        document_list.update(
+          model.document_list,
+          document_list.LoadError("Failed to load documents"),
+        ).0
+      #(Model(..model, document_list: doc_list_model), effect.none())
+    }
+
+    // Document detail API response
+    DocumentDetailResponse(Ok(resp)) -> {
+      let doc_detail_model =
+        document_detail.update(
+          model.document_detail,
+          document_detail.DocumentLoaded(resp),
+        ).0
+      #(Model(..model, document_detail: doc_detail_model), effect.none())
+    }
+
+    DocumentDetailResponse(Error(api.ServerError(404, _))) -> {
+      let doc_detail_model =
+        document_detail.update(
+          model.document_detail,
+          document_detail.DocumentLoadError("Document not found"),
+        ).0
+      #(Model(..model, document_detail: doc_detail_model), effect.none())
+    }
+
+    DocumentDetailResponse(Error(_)) -> {
+      let doc_detail_model =
+        document_detail.update(
+          model.document_detail,
+          document_detail.DocumentLoadError("Failed to load document"),
+        ).0
+      #(Model(..model, document_detail: doc_detail_model), effect.none())
+    }
+
+    DocumentDeltasResponse(Ok(resp)) -> {
+      let doc_detail_model =
+        document_detail.update(
+          model.document_detail,
+          document_detail.DeltasLoaded(resp.deltas),
+        ).0
+      #(Model(..model, document_detail: doc_detail_model), effect.none())
+    }
+
+    DocumentDeltasResponse(Error(_)) -> {
+      let doc_detail_model =
+        document_detail.update(
+          model.document_detail,
+          document_detail.DeltasLoadError("Failed to load deltas"),
+        ).0
+      #(Model(..model, document_detail: doc_detail_model), effect.none())
+    }
+
+    DocumentSummariesResponse(Ok(resp)) -> {
+      let doc_detail_model =
+        document_detail.update(
+          model.document_detail,
+          document_detail.SummariesLoaded(resp.summaries),
+        ).0
+      #(Model(..model, document_detail: doc_detail_model), effect.none())
+    }
+
+    DocumentSummariesResponse(Error(_)) -> {
+      let doc_detail_model =
+        document_detail.update(
+          model.document_detail,
+          document_detail.SummariesLoadError("Failed to load summaries"),
+        ).0
+      #(Model(..model, document_detail: doc_detail_model), effect.none())
+    }
+
+    DocumentRefsResponse(Ok(resp)) -> {
+      let doc_detail_model =
+        document_detail.update(
+          model.document_detail,
+          document_detail.RefsLoaded(resp.refs),
+        ).0
+      #(Model(..model, document_detail: doc_detail_model), effect.none())
+    }
+
+    DocumentRefsResponse(Error(_)) -> {
+      let doc_detail_model =
+        document_detail.update(
+          model.document_detail,
+          document_detail.RefsLoadError("Failed to load refs"),
+        ).0
+      #(Model(..model, document_detail: doc_detail_model), effect.none())
+    }
+
+    GitBlobResponse(Ok(resp)) -> {
+      let doc_detail_model =
+        document_detail.update(
+          model.document_detail,
+          document_detail.BlobLoaded(resp.blob),
+        ).0
+      #(Model(..model, document_detail: doc_detail_model), effect.none())
+    }
+
+    GitBlobResponse(Error(_)) -> {
+      let doc_detail_model =
+        document_detail.update(
+          model.document_detail,
+          document_detail.GitLoadError("Failed to load blob"),
+        ).0
+      #(Model(..model, document_detail: doc_detail_model), effect.none())
+    }
+
+    GitTreeResponse(Ok(resp)) -> {
+      let doc_detail_model =
+        document_detail.update(
+          model.document_detail,
+          document_detail.TreeLoaded(resp.tree),
+        ).0
+      #(Model(..model, document_detail: doc_detail_model), effect.none())
+    }
+
+    GitTreeResponse(Error(_)) -> {
+      let doc_detail_model =
+        document_detail.update(
+          model.document_detail,
+          document_detail.GitLoadError("Failed to load tree"),
+        ).0
+      #(Model(..model, document_detail: doc_detail_model), effect.none())
+    }
+
+    GitCommitResponse(Ok(resp)) -> {
+      let doc_detail_model =
+        document_detail.update(
+          model.document_detail,
+          document_detail.CommitLoaded(resp.commit),
+        ).0
+      #(Model(..model, document_detail: doc_detail_model), effect.none())
+    }
+
+    GitCommitResponse(Error(_)) -> {
+      let doc_detail_model =
+        document_detail.update(
+          model.document_detail,
+          document_detail.GitLoadError("Failed to load commit"),
+        ).0
+      #(Model(..model, document_detail: doc_detail_model), effect.none())
+    }
+
     Logout -> {
       let model =
         Model(..model, user: None, session_token: None, route: router.Login)
@@ -540,6 +847,21 @@ fn view_content(model: Model) -> Element(Msg) {
       view_authenticated_layout(
         model,
         element.map(tenant_detail.view(model.tenant_detail), TenantDetailMsg),
+      )
+
+    router.DocumentList(_tid) ->
+      view_authenticated_layout(
+        model,
+        element.map(document_list.view(model.document_list), DocumentListMsg),
+      )
+
+    router.DocumentDetail(_tid, _did) ->
+      view_authenticated_layout(
+        model,
+        element.map(
+          document_detail.view(model.document_detail),
+          DocumentDetailMsg,
+        ),
       )
 
     router.NotFound -> view_not_found()
