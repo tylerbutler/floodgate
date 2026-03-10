@@ -20,7 +20,8 @@
 		"test:integration": "start-server-and-test 'docker compose -f packages/levee-driver/docker-compose.yml up' http://localhost:4000/health 'vitest run integration'",
 		"test:integration:up": "docker compose -f packages/levee-driver/docker-compose.yml up -d --wait",
 		"test:integration:down": "docker compose -f packages/levee-driver/docker-compose.yml down -v",
-		"test:integration:run": "vitest run integration"
+		"test:integration:run": "vitest run integration",
+		"ci:publish": "pnpm publish -r --access public --provenance --report-summary --no-git-checks"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.3.8",

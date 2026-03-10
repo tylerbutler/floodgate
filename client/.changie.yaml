@@ -1,7 +1,6 @@
 changesDir: .changes
 unreleasedDir: unreleased
 headerPath: ""
-changelogPath: CHANGELOG.md
 versionHeaderPath: ""
 versionFooterPath: ""
 versionExt: md
@@ -9,12 +8,22 @@ envPrefix: CHANGIE
 versionFormat: '## {{.Version}} - {{.Time.Format "2006-01-02"}}'
 kindFormat: '### {{.Kind}}'
 changeFormat: '- {{.Body}}'
-componentFormat: '{{if .Component}}#### {{.Component}}{{end}}'
-components:
-    - levee-driver
-    - levee-client
-    - levee-example
-    - levee-presence-tracker
+projects:
+    - label: levee-driver
+      key: levee-driver
+      changelog: packages/levee-driver/CHANGELOG.md
+      replacements:
+          - path: packages/levee-driver/package.json
+            find: '"version": ".*"'
+            replace: '"version": "{{.VersionNoPrefix}}"'
+    - label: levee-client
+      key: levee-client
+      changelog: packages/levee-client/CHANGELOG.md
+      replacements:
+          - path: packages/levee-client/package.json
+            find: '"version": ".*"'
+            replace: '"version": "{{.VersionNoPrefix}}"'
+projectsVersionSeparator: /
 kinds:
     - label: Added
       auto: minor
@@ -33,9 +42,6 @@ kinds:
 newlines:
     afterChangelogHeader: 1
     afterChangelogVersion: 1
-    afterComponent: 1
     afterKind: 1
     afterVersion: 1
-    beforeComponent: 1
-    beforeKind: 1
     endOfVersion: 1
