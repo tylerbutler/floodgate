@@ -23,6 +23,15 @@ fn do_navigate_to(url: String) -> Nil
 @external(javascript, "./levee_admin_ffi.mjs", "get_current_path")
 fn get_current_path() -> String
 
+@external(javascript, "./levee_admin_ffi.mjs", "save_token")
+fn save_token(token: String) -> Nil
+
+@external(javascript, "./levee_admin_ffi.mjs", "load_token")
+fn load_token() -> Option(String)
+
+@external(javascript, "./levee_admin_ffi.mjs", "clear_token")
+fn clear_token() -> Nil
+
 import levee_admin/api
 import levee_admin/pages/dashboard
 import levee_admin/pages/document_detail
@@ -59,10 +68,18 @@ pub type User {
 }
 
 fn init(_flags) -> #(Model, Effect(Msg)) {
-  // Check if we're returning from OAuth with a token in the URL
+  // Check if we're returning from OAuth with a token in the URL,
+  // or restore a previously saved token from localStorage
   let #(session_token, oauth_effect) = case get_query_param("token") {
-    Some(token) -> #(Some(token), api.get_me(token, MeResponse))
-    None -> #(None, effect.none())
+    Some(token) -> {
+      save_token(token)
+      #(Some(token), api.get_me(token, MeResponse))
+    }
+    None ->
+      case load_token() {
+        Some(token) -> #(Some(token), api.get_me(token, MeResponse))
+        None -> #(None, effect.none())
+      }
   }
 
   // Parse the initial route from the current URL path,
@@ -353,6 +370,7 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     }
 
     LoginResponse(Ok(response)) -> {
+      save_token(response.token)
       let user =
         User(
           id: response.user.id,
@@ -380,6 +398,7 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     }
 
     RegisterResponse(Ok(response)) -> {
+      save_token(response.token)
       let user =
         User(
           id: response.user.id,
@@ -426,6 +445,7 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
     MeResponse(Error(_error)) -> {
       // Token was invalid — clear it and stay on login
+      clear_token()
       #(Model(..model, session_token: None), effect.none())
     }
 
@@ -804,6 +824,7 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     }
 
     Logout -> {
+      clear_token()
       let model =
         Model(..model, user: None, session_token: None, route: router.Login)
       #(model, modem.push("/admin/login", None, None))
