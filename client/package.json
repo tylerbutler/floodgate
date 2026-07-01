@@ -21,6 +21,7 @@
 		"test:integration:up": "docker compose -f packages/levee-driver/docker-compose.yml up -d --wait",
 		"test:integration:down": "docker compose -f packages/levee-driver/docker-compose.yml down -v",
 		"test:integration:run": "vitest run integration",
+		"test:sluice-routerlicious": "SLUICE_ROUTERLICIOUS_COMPAT=1 vitest run packages/levee-driver/test/integration/sluice-routerlicious.test.ts",
 		"ci:publish": "pnpm publish -r --access public --provenance --report-summary --no-git-checks"
 	},
 	"devDependencies": {
