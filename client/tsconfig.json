@@ -7,6 +7,9 @@
 	"files": [],
 	"references": [
 		{
+			"path": "./packages/floodgate-client"
+		},
+		{
 			"path": "./packages/levee-driver"
 		},
 		{

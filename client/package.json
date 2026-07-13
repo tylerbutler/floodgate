@@ -23,6 +23,9 @@
 		"test:integration:run": "vitest run integration",
 		"test:floodgate-routerlicious": "FLOODGATE_ROUTERLICIOUS_COMPAT=1 vitest run packages/levee-driver/test/integration/floodgate-routerlicious.test.ts",
 		"test:conformance": "pnpm test:floodgate-routerlicious",
+		"check:floodgate-readiness-manifest": "vitest run packages/levee-driver/test/integration/floodgate-readiness.test.ts",
+		"check:floodgate-readiness": "node scripts/check-floodgate-release.mjs",
+		"test:release-config": "vitest run scripts/release-config.test.ts",
 		"ci:publish": "pnpm publish -r --access public --provenance --report-summary --no-git-checks"
 	},
 	"devDependencies": {

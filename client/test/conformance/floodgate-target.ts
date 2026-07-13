@@ -13,10 +13,8 @@
  * The standalone `floodgate/` service *does* expose its own HTTP/WS listener
  * today (Mist, started by `serve/1`/`main()` in `floodgate.gleam`) — it is not
  * gated behind Levee. Its REST surface is currently a minimal subset,
- * though: only document create, deltas catch-up, and git blob/tree/commit
- * object storage are implemented; session-discovery
- * (`GET /documents/:tenant/session/:doc`) and git ref endpoints
- * (`POST/GET /repos/:tenant/git/refs...`) exist only on Levee's proxy today.
+ * though: document create/discovery, deltas catch-up, and Historian
+ * blob/tree/commit/ref storage are implemented.
  * Run the same test file against both targets by pointing these env vars
  * at whichever backend is up; tests that need routes standalone Floodgate
  * doesn't have yet are gated on `FLOODGATE_TARGET_LABEL` with a matching
@@ -31,8 +29,10 @@
  * To run against both targets:
  *   1. Levee proxy:    start Levee (`just server`, port 4000, the default
  *      env), then `FLOODGATE_ROUTERLICIOUS_COMPAT=1 pnpm test:floodgate-routerlicious`.
- *   2. Floodgate direct:  start the standalone service (`cd server/floodgate &&
- *      gleam run`, port 3000), then run with
+ *   2. Floodgate direct: start the standalone service on port 3000 with
+ *      `cd server/floodgate && FLOODGATE_JWT_SECRET=floodgate-routerlicious-compat-secret
+ *      FLOODGATE_TOKEN_MINT_SECRET=floodgate-routerlicious-mint-secret gleam run`,
+ *      then run with
  *      `FLOODGATE_ROUTERLICIOUS_COMPAT=1 FLOODGATE_HTTP_URL=http://localhost:3000
  *      FLOODGATE_SOCKET_URL=http://localhost:3000 pnpm test:floodgate-routerlicious`
  *      (these are also the defaults, so plain `FLOODGATE_ROUTERLICIOUS_COMPAT=1
@@ -45,10 +45,18 @@ import type {
 	IClient,
 	ISummaryTree,
 } from "@fluidframework/protocol-definitions";
+import type {
+	ITokenProvider,
+	ITokenResponse,
+} from "@fluidframework/routerlicious-driver";
 import { RouterliciousDocumentServiceFactory } from "@fluidframework/routerlicious-driver/internal";
 import { SignJWT } from "jose";
 import { v4 as uuid } from "uuid";
-import { InsecureLeveeTokenProvider } from "../../src/tokenProvider.js";
+import {
+	InsecureLeveeTokenProvider,
+	RemoteLeveeTokenProvider,
+} from "../../src/tokenProvider.js";
+import { FLOODGATE_REST_ENDPOINTS } from "./floodgate-contract.js";
 
 export const FLOODGATE_HTTP_URL = (
 	process.env["FLOODGATE_HTTP_URL"] ?? "http://localhost:3000"
@@ -58,19 +66,17 @@ export const FLOODGATE_SOCKET_URL =
 export const FLOODGATE_TENANT_ID =
 	process.env["FLOODGATE_TENANT_ID"] ?? "fluid";
 /**
- * Standalone Floodgate's `authorize()` (see `floodgate/document_channel.gleam`)
- * skips JWT verification entirely when its own `FLOODGATE_JWT_SECRET` is unset,
- * so any non-empty client-side secret works against it. It must still be
- * non-empty here regardless, though: `jose`'s HMAC signer throws
- * ("Zero-length key is not supported") on an empty key when *minting* the
- * token client-side, independent of whether the receiving end checks it.
- * When pointed at Levee's proxy, override this to match its configured
- * tenant secret (e.g. `dev-tenant-secret-key` in
- * `client/packages/levee-driver/docker-compose.yml`).
+ * The standalone server requires this value explicitly at startup and verifies
+ * every REST/socket JWT signature. The default here is only the integration
+ * harness value; start Floodgate with the matching environment variable.
+ * When pointed at Levee's proxy, override it to match Levee's tenant secret.
  */
 export const FLOODGATE_JWT_SECRET =
 	process.env["FLOODGATE_JWT_SECRET"] ??
 	"floodgate-routerlicious-compat-secret";
+export const FLOODGATE_TOKEN_MINT_SECRET =
+	process.env["FLOODGATE_TOKEN_MINT_SECRET"] ??
+	"floodgate-routerlicious-mint-secret";
 
 /**
  * Opt-in switch: live probing/tests only run when this is set, regardless of
@@ -88,8 +94,8 @@ export const FLOODGATE_TARGET_LABEL =
 
 /**
  * True when this run is pointed at Levee's proxy/mount of Floodgate rather than
- * the standalone Gleam service. Some REST routes (session discovery, git
- * refs) are implemented only on the Levee-proxy side today — see the
+ * the standalone Gleam service. Tests use this for behavior that intentionally
+ * differs between the independent stacks — see the
  * target-matrix comment above — so tests exercising those routes gate on
  * this instead of assuming every route exists on every target.
  */
@@ -168,9 +174,12 @@ export async function isFloodgateRunning(): Promise<boolean> {
 	}
 }
 
-export function createFloodgateTestClient(userId: string): IClient {
+export function createFloodgateTestClient(
+	userId: string,
+	mode: IClient["mode"] = "write",
+): IClient {
 	return {
-		mode: "write",
+		mode,
 		details: {
 			capabilities: { interactive: true },
 			environment: "node:vitest",
@@ -194,19 +203,41 @@ export function createFloodgateTokenProvider(
 export function createFloodgateServiceFactory(
 	userId?: string,
 ): RouterliciousDocumentServiceFactory {
-	return new RouterliciousDocumentServiceFactory(
+	return createFloodgateServiceFactoryWithTokenProvider(
 		createFloodgateTokenProvider(userId),
-		{
-			enableDiscovery: false,
-			enableLongPollingDowngrade: false,
-			// RestLess mode (on by default) moves the Authorization header into
-			// an encoded request body for environments without XHR header
-			// support; neither Floodgate nor Levee's proxy understand that
-			// encoding, so REST calls (e.g. createContainer()'s orderer POST)
-			// would otherwise 401 with "Missing Authorization header" even
-			// though a token was generated.
-			enableRestLess: false,
-		},
+	);
+}
+
+export function createFloodgateServiceFactoryWithTokenProvider(
+	tokenProvider: ITokenProvider,
+): RouterliciousDocumentServiceFactory {
+	return new RouterliciousDocumentServiceFactory(tokenProvider, {
+		enableDiscovery: false,
+		enableLongPollingDowngrade: false,
+		// Floodgate normalizes the official driver's RestLess envelope before
+		// routing. This preserves JSON request bodies in Fluid 2.81, whose
+		// non-RestLess fetch path otherwise sends objects as "[object Object]".
+		enableRestLess: true,
+	});
+}
+
+export function createStaticFloodgateTokenProvider(
+	token: string,
+): ITokenProvider {
+	const response = async (): Promise<ITokenResponse> => ({ jwt: token });
+	return {
+		fetchOrdererToken: response,
+		fetchStorageToken: response,
+	};
+}
+
+export function createFloodgateRemoteTokenProvider(
+	userId = "routerlicious-minted-user",
+): RemoteLeveeTokenProvider {
+	return new RemoteLeveeTokenProvider(
+		`${FLOODGATE_HTTP_URL}${FLOODGATE_REST_ENDPOINTS.tokenMint(FLOODGATE_TENANT_ID)}`,
+		{ id: userId, name: "Routerlicious Minted User" },
+		FLOODGATE_TOKEN_MINT_SECRET,
 	);
 }
 
@@ -218,13 +249,15 @@ export function createFloodgateServiceFactory(
 export async function generateFloodgateToken(
 	documentId = "",
 	scopes: string[] = ["doc:read", "doc:write", "summary:write"],
+	secretValue = FLOODGATE_JWT_SECRET,
+	tenantId = FLOODGATE_TENANT_ID,
 ): Promise<string> {
 	const now = Math.floor(Date.now() / 1000);
-	const secret = new TextEncoder().encode(FLOODGATE_JWT_SECRET);
+	const secret = new TextEncoder().encode(secretValue);
 
 	return new SignJWT({
 		documentId,
-		tenantId: FLOODGATE_TENANT_ID,
+		tenantId,
 		scopes,
 		user: {
 			id: "routerlicious-compat-user",
@@ -282,6 +315,15 @@ export async function createBlobTreeCommit(
 	contentStr: string,
 	messageStr: string,
 ): Promise<string> {
+	return (await createBlobTreeCommitGraph(tenantId, contentStr, messageStr))
+		.commitSha;
+}
+
+export async function createBlobTreeCommitGraph(
+	tenantId: string,
+	contentStr: string,
+	messageStr: string,
+): Promise<{ blobSha: string; treeSha: string; commitSha: string }> {
 	// Create blob from content string
 	const content = Buffer.from(contentStr).toString("base64");
 	const blobResponse = await floodgateFetch(`/repos/${tenantId}/git/blobs`, {
@@ -336,5 +378,5 @@ export async function createBlobTreeCommit(
 	}
 	const { sha: commitSha } = (await commitResponse.json()) as { sha: string };
 
-	return commitSha;
+	return { blobSha, treeSha, commitSha };
 }

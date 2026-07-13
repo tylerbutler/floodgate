@@ -1,9 +1,11 @@
+import beryl/wire/codec
+import floodgate/connect_document
+import floodgate/server_codec
+import floodgate/socketio
 import gleam/dict
 import gleam/dynamic
 import gleam/json
 import gleeunit/should
-import floodgate/connect_document
-import floodgate/socketio
 import windsock
 
 pub fn classify_engine_ping_test() {
@@ -50,6 +52,20 @@ pub fn encode_op_shape_test() {
       json.string("doc-1"),
       json.preprocessed_array([]),
     ))
+  decoded_doc_id |> should.equal(dynamic.string("doc-1"))
+  decoded_messages |> should.equal(dynamic.list([]))
+}
+
+pub fn server_codec_encodes_routerlicious_op_arguments_test() {
+  let configured = server_codec.server_codec()
+  let assert codec.TextFrame(frame) =
+    configured.encode_push(
+      "document:tenant-a:doc-1",
+      "op",
+      json.preprocessed_array([]),
+    )
+  let assert socketio.FluidEvent("op", [decoded_doc_id, decoded_messages]) =
+    socketio.classify(frame)
   decoded_doc_id |> should.equal(dynamic.string("doc-1"))
   decoded_messages |> should.equal(dynamic.list([]))
 }

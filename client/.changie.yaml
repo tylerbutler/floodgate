@@ -23,6 +23,13 @@ projects:
           - path: packages/levee-client/package.json
             find: '"version": ".*"'
             replace: '"version": "{{.VersionNoPrefix}}"'
+    - label: floodgate-client
+      key: floodgate-client
+      changelog: packages/floodgate-client/CHANGELOG.md
+      replacements:
+          - path: packages/floodgate-client/package.json
+            find: '"version": ".*"'
+            replace: '"version": "{{.VersionNoPrefix}}"'
 projectsVersionSeparator: /
 kinds:
     - label: Added

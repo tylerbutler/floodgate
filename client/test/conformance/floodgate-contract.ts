@@ -9,10 +9,10 @@
  * conformance suites) green against this contract rather than growing a new,
  * parallel definition of "what Floodgate supports".
  *
- * Floodgate is the destination service; Phoenix/Levee
- * (`server/lib/levee_web/socket_io_websock.ex`, `server/lib/levee_web/router.ex`)
- * is temporary migration scaffolding and must not be treated as the source of
- * truth once Floodgate implements a given endpoint or event.
+ * Floodgate and Levee are independent supported services (ADR-004). This file
+ * is authoritative for Floodgate's Routerlicious compatibility; Levee keeps
+ * its own Phoenix Channels contract and may also exercise this suite through
+ * its optional Socket.IO compatibility endpoint.
  *
  * Event names below mirror the dewdrop package's Socket.IO event definitions
  * (https://github.com/tylerbutler/dewdrop/blob/main/src/dewdrop/events.gleam)
@@ -81,6 +81,8 @@ export const CONNECTED_RESPONSE_REQUIRED_FIELDS = [
  * same contract can be checked against either backend during migration.
  */
 export const FLOODGATE_REST_ENDPOINTS = {
+	/** Mint a tenant-signed document token when integration minting is enabled. */
+	tokenMint: (tenantId: string) => `/api/tenants/${tenantId}/token-mint`,
 	/** Create a document. */
 	createDocument: (tenantId: string) => `/documents/${tenantId}`,
 	/** Session discovery (ordering service location for a document). */
@@ -139,10 +141,11 @@ export const FLOODGATE_REQUIRED_SCOPES = {
 /**
  * Storage backend acceptance boundary: Floodgate must be able to run against an
  * in-memory (ETS) backend now and a PostgreSQL-backed one later without
- * changing the wire contract above. This is a documentation-only marker
- * today (no runtime code to type-check); a future task should replace this
- * with a real `Storage` behaviour/protocol type once the Gleam interface
- * lands, per `server/lib/levee/storage/behaviour.ex` (Elixir analogue).
+ * changing the wire contract above. The executable boundary is
+ * `floodgate/store.Backend`; ETS and actor-memory runtime/session/Historian
+ * observations are compared by `server/floodgate/test/store_backend_test.gleam`.
+ * Full HTTP and Socket.IO invariance is established by running this live suite
+ * against both selectable runtime backends. PostgreSQL remains future work.
  */
 export const FLOODGATE_STORAGE_BACKENDS = ["ets", "postgres"] as const;
 export type FloodgateStorageBackend =

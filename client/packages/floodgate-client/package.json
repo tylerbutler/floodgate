@@ -1,0 +1,55 @@
+{
+	"name": "@tylerbu/floodgate-client",
+	"version": "0.0.1",
+	"description": "Routerlicious-compatible client primitives for the Floodgate collaborative document service",
+	"bugs": "https://github.com/tylerbutler/levee/issues",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/tylerbutler/levee.git",
+		"directory": "client/packages/floodgate-client"
+	},
+	"license": "MIT",
+	"author": "Tyler Butler <tyler@tylerbutler.com>",
+	"sideEffects": false,
+	"type": "module",
+	"exports": {
+		".": {
+			"import": {
+				"types": "./esm/index.d.ts",
+				"default": "./esm/index.js"
+			}
+		}
+	},
+	"main": "esm/index.js",
+	"types": "esm/index.d.ts",
+	"files": [
+		"esm"
+	],
+	"scripts": {
+		"build:compile": "tsc --project ./tsconfig.json",
+		"check:format": "biome format .",
+		"clean": "rimraf --glob esm \"**/*.tsbuildinfo\"",
+		"format": "biome check . --linter-enabled=false --write",
+		"lint": "biome lint .",
+		"lint:fix": "biome lint . --write",
+		"test:vitest": "vitest run test"
+	},
+	"dependencies": {
+		"@fluidframework/container-definitions": "^2.81.1",
+		"@fluidframework/container-loader": "^2.81.1",
+		"@fluidframework/core-interfaces": "^2.81.1",
+		"@fluidframework/driver-definitions": "<2.100.0",
+		"@fluidframework/fluid-static": "^2.81.1",
+		"@fluidframework/routerlicious-driver": "<2.100.0",
+		"@fluidframework/telemetry-utils": "^2.81.1"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.3.8",
+		"@fluidframework/map": "^2.81.1",
+		"@tsconfig/node18": "^18.2.6",
+		"@types/node": "^20.19.25",
+		"rimraf": "^6.1.2",
+		"typescript": "~5.9.3",
+		"vitest": "^4.1.0"
+	}
+}

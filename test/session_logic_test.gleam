@@ -1,10 +1,10 @@
+import floodgate/nack
+import floodgate/session_logic
+import floodgate/signals
 import gleam/dict
 import gleam/dynamic
 import gleam/option.{None, Some}
 import gleeunit/should
-import floodgate/nack
-import floodgate/session_logic
-import floodgate/signals
 
 // ─────────────────────────────────────────────────────────────────────────────
 // session_logic: feature/version negotiation
