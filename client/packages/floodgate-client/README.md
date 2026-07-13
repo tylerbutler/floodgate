@@ -47,6 +47,40 @@ const { container: loaded } = await client.getContainer(
 );
 ```
 
+## Token provider
+
+Use `RemoteFloodgateTokenProvider` to authenticate against the Floodgate
+`POST /api/tenants/:tenant/token-mint` endpoint with a bearer credential:
+
+```typescript
+import {
+  FloodgateClient,
+  RemoteFloodgateTokenProvider,
+} from "@tylerbu/floodgate-client";
+
+const tokenProvider = new RemoteFloodgateTokenProvider(
+  "http://localhost:3000/api/tenants/fluid/token-mint",
+  process.env.FLOODGATE_TOKEN_MINT_SECRET,
+);
+
+// Resolve user identity before constructing the client
+const user = await tokenProvider.resolveUser("fluid");
+
+const client = new FloodgateClient({
+  connection: {
+    httpUrl: "http://localhost:3000",
+    tenantId: "fluid",
+    tokenProvider,
+    user,
+  },
+});
+```
+
+Tokens are cached until one minute before the server-reported expiry.
+Pass `refresh: true` to `fetchOrdererToken` / `fetchStorageToken` to force
+a new request. After the first successful fetch, `tokenProvider.resolvedUser`
+holds the server-returned user identity.
+
 ## Driver adapter
 
 ```typescript

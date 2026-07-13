@@ -19,3 +19,7 @@ export {
 	type FloodgateDriverPolicies,
 	FloodgateUrlResolver,
 } from "./clientAdapter.js";
+export {
+	type FloodgateIdentity,
+	RemoteFloodgateTokenProvider,
+} from "./tokenProvider.js";
