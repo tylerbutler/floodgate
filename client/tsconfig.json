@@ -10,6 +10,9 @@
 			"path": "./packages/floodgate-client"
 		},
 		{
+			"path": "./packages/floodgate-example"
+		},
+		{
 			"path": "./packages/levee-driver"
 		},
 		{

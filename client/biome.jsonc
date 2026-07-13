@@ -20,7 +20,10 @@
 			"!**/.coverage",
 			"!**/build",
 			"!**/dist",
-			"!**/esm"
+			"!**/esm",
+
+			// SvelteKit generated files
+			"!**/.svelte-kit/**"
 		]
 	},
 	"linter": {

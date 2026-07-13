@@ -1,7 +1,16 @@
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 const config = defineConfig({
+	resolve: {
+		alias: {
+			// Mock SvelteKit's $app/paths for Sandbag unit tests run from the workspace root.
+			"$app/paths": fileURLToPath(
+				new URL("./packages/sandbag/test/mocks/app-paths.ts", import.meta.url),
+			),
+		},
+	},
 	test: {
 		// Explicitly disable watch mode to prevent interactive TUI
 		watch: false,
