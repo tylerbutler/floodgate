@@ -128,6 +128,110 @@ importers:
         specifier: ^4.1.0
         version: 4.1.0(@types/node@20.19.33)(vite@7.3.2(@types/node@20.19.33)(yaml@2.8.2))
 
+  packages/floodgate-presence-tracker:
+    dependencies:
+      '@fluidframework/map':
+        specifier: <2.100.0
+        version: 2.81.1
+      '@fluidframework/presence':
+        specifier: <2.100.0
+        version: 2.81.1
+      '@tylerbu/floodgate-client':
+        specifier: workspace:^
+        version: link:../floodgate-client
+      fluid-framework:
+        specifier: <2.100.0
+        version: 2.81.1
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.3.1
+        version: 18.3.1(react@18.3.1)
+    devDependencies:
+      '@biomejs/biome':
+        specifier: 2.3.8
+        version: 2.3.8
+      '@types/node':
+        specifier: ^20.19.25
+        version: 20.19.33
+      '@types/react':
+        specifier: ^18.3.12
+        version: 18.3.28
+      '@types/react-dom':
+        specifier: ^18.3.1
+        version: 18.3.7(@types/react@18.3.28)
+      '@vitejs/plugin-react':
+        specifier: ^4.3.4
+        version: 4.7.0(vite@7.3.2(@types/node@20.19.33)(yaml@2.8.2))
+      rimraf:
+        specifier: ^6.1.2
+        version: 6.1.2
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vite:
+        specifier: ^7.3.2
+        version: 7.3.2(@types/node@20.19.33)(yaml@2.8.2)
+      vitest:
+        specifier: ^4.1.0
+        version: 4.1.0(@types/node@20.19.33)(vite@7.3.2(@types/node@20.19.33)(yaml@2.8.2))
+
+  packages/floodgate-todo-list:
+    dependencies:
+      '@fluidframework/merge-tree':
+        specifier: <2.100.0
+        version: 2.81.1
+      '@fluidframework/react':
+        specifier: <2.100.0
+        version: 2.81.1
+      '@fluidframework/sequence':
+        specifier: <2.100.0
+        version: 2.81.1
+      '@fluidframework/shared-object-base':
+        specifier: <2.100.0
+        version: 2.81.1
+      '@tylerbu/floodgate-client':
+        specifier: workspace:^
+        version: link:../floodgate-client
+      fluid-framework:
+        specifier: <2.100.0
+        version: 2.81.1
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.3.1
+        version: 18.3.1(react@18.3.1)
+    devDependencies:
+      '@biomejs/biome':
+        specifier: 2.3.8
+        version: 2.3.8
+      '@types/node':
+        specifier: ^20.19.25
+        version: 20.19.33
+      '@types/react':
+        specifier: ^18.3.12
+        version: 18.3.28
+      '@types/react-dom':
+        specifier: ^18.3.1
+        version: 18.3.7(@types/react@18.3.28)
+      '@vitejs/plugin-react':
+        specifier: ^4.3.4
+        version: 4.7.0(vite@7.3.2(@types/node@20.19.33)(yaml@2.8.2))
+      rimraf:
+        specifier: ^6.1.2
+        version: 6.1.2
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vite:
+        specifier: ^7.3.2
+        version: 7.3.2(@types/node@20.19.33)(yaml@2.8.2)
+      vitest:
+        specifier: ^4.1.0
+        version: 4.1.0(@types/node@20.19.33)(vite@7.3.2(@types/node@20.19.33)(yaml@2.8.2))
+
   packages/levee-client:
     dependencies:
       '@fluidframework/container-definitions':
@@ -444,6 +548,12 @@ importers:
       '@tylerbu/floodgate-example':
         specifier: workspace:^
         version: link:../floodgate-example
+      '@tylerbu/floodgate-presence-tracker':
+        specifier: workspace:^
+        version: link:../floodgate-presence-tracker
+      '@tylerbu/floodgate-todo-list':
+        specifier: workspace:^
+        version: link:../floodgate-todo-list
       '@tylerbu/levee-example':
         specifier: workspace:^
         version: link:../levee-example

@@ -103,15 +103,22 @@ fn join(
       let initial_signals = case mode {
         "write" -> {
           let assert Some(#(sn, message)) = membership
-          beryl.broadcast(
+          // The joining client receives its own join op in initialMessages.
+          // Excluding it from fan-out avoids an early duplicate before the
+          // connect response has established its client ID.
+          beryl.broadcast_from(
             channels,
+            cid,
             topic,
             events.op,
             json.preprocessed_array([
               session.stored_message_json(#(sn, message)),
             ]),
           )
-          []
+          // Fluid Presence relies on the self join signal after the connection
+          // has a client ID. Returning it as an initial signal preserves that
+          // ordering while the sequenced join op is fanned out to peers.
+          [presence_join(cid, mode, claims)]
         }
         _ -> {
           beryl.broadcast_from(

@@ -13,6 +13,9 @@
 			"path": "./packages/floodgate-example"
 		},
 		{
+			"path": "./packages/floodgate-presence-tracker"
+		},
+		{
 			"path": "./packages/levee-driver"
 		},
 		{
@@ -26,6 +29,9 @@
 		},
 		{
 			"path": "./packages/levee-todo-list"
+		},
+		{
+			"path": "./packages/floodgate-todo-list"
 		}
 	]
 }
