@@ -7,8 +7,8 @@
 //// Fluid document-session protocol logic that levee's
 //// `Levee.Documents.Session` GenServer needs. The GenServer state itself
 //// (connected client PIDs, storage, summaries) stays in Levee; only the
-//// decision logic moves here so it isn't duplicated between Levee's
-//// vendored `levee_protocol` copy and this package's `spillway` dependency.
+//// decision logic lives here, built on the shared `spillway` dependency that
+//// the classic Levee path also uses.
 
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
