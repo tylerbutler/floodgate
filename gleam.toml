@@ -17,6 +17,7 @@ spillway = { git = "https://github.com/tylerbutler/spillway", ref = "main" }
 windsock = { git = "https://github.com/tylerbutler/windsock", ref = "main" }
 mist = ">= 6.0.0 and < 7.0.0"
 gleam_http = ">= 4.3.0 and < 5.0.0"
+shelf = ">= 1.0.1 and < 2.0.0"
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

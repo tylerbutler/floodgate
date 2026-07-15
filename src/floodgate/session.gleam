@@ -2,6 +2,7 @@
 //// sockets on a `document:*` topic (beryl assigns are per-socket). Analogue of
 //// levee's Elixir Session GenServer: SN assignment + delta catch-up history.
 
+import floodgate/memory_store
 import floodgate/store
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
@@ -163,8 +164,10 @@ type State {
   State(docs: Dict(String, Doc))
 }
 
+/// Start a session over a fresh, ephemeral in-memory backend. For a persistent
+/// runtime, construct a `shelf_store` backend and use `start_with_backend`.
 pub fn start() -> Session {
-  start_with_backend(store.ets())
+  start_with_backend(memory_store.new())
 }
 
 pub fn start_with_backend(storage: store.Backend) -> Session {

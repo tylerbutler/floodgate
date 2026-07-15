@@ -1,5 +1,6 @@
 import floodgate
 import floodgate/git
+import floodgate/memory_store
 import floodgate/session
 import floodgate/store
 import gleam/int
@@ -20,6 +21,7 @@ pub fn start_registers_channel_test() {
 
 pub fn standalone_storage_backend_selection_test() {
   let assert Ok(_) = floodgate.backend_from_name("ets")
+  let assert Ok(_) = floodgate.backend_from_name("shelf")
   let assert Ok(_) = floodgate.backend_from_name("memory")
   floodgate.backend_from_name("postgres")
   |> should.equal(Error(floodgate.UnsupportedStorageBackend("postgres")))
@@ -45,18 +47,23 @@ pub fn session_create_marks_document_existing_without_audience_client_test() {
 
 pub fn session_create_persists_document_existence_test() {
   let topic = "document:t:persist-created"
-  let s1 = session.start()
+  // Shared backend: a fresh session over the same store sees the document.
+  let backend = memory_store.new()
+  let s1 = session.start_with_backend(backend)
   session.create(s1, topic) |> should.be_false
   session.exists(s1, topic) |> should.be_true
 
-  let s2 = session.start()
+  let s2 = session.start_with_backend(backend)
   session.exists(s2, topic) |> should.be_true
   session.create(s2, topic) |> should.be_true
 }
 
 pub fn initialized_document_starts_at_summary_checkpoint_test() {
   let topic = "document:t:initialized-checkpoint"
-  let s = session.start()
+  // A shared backend outlives the session actor: a fresh session over the same
+  // storage still sees the persisted summary checkpoint.
+  let backend = memory_store.new()
+  let s = session.start_with_backend(backend)
 
   session.create_initialized(s, topic, fn() {
     Ok(Some(#("initial-summary", 7)))
@@ -65,7 +72,7 @@ pub fn initialized_document_starts_at_summary_checkpoint_test() {
   session.summary(s, topic) |> should.equal(#("initial-summary", 7))
   session.sequence_number(s, topic) |> should.equal(7)
 
-  let restarted = session.start()
+  let restarted = session.start_with_backend(backend)
   session.summary(restarted, topic) |> should.equal(#("initial-summary", 7))
   session.sequence_number(restarted, topic) |> should.equal(7)
   let assert session.Joined(True, 8, 7, _) =
@@ -268,22 +275,24 @@ pub fn summary_nack_does_not_replace_latest_summary_test() {
 }
 
 pub fn ops_persist_across_session_restart_test() {
-  let s1 = session.start()
+  let backend = memory_store.new()
+  let s1 = session.start_with_backend(backend)
   session.join(s1, "document:t:persist", "c1")
   let assert session.Assigned(_, _) =
     session.submit(s1, "document:t:persist", "c1", 1, 0, "DURABLE")
-  // A fresh session actor (ETS-backed store) still sees the op.
-  let s2 = session.start()
+  // A fresh session actor over the same store still sees the op.
+  let s2 = session.start_with_backend(backend)
   session.since(s2, "document:t:persist", 0) |> should.equal([#(1, "DURABLE")])
 }
 
 pub fn sequence_continues_after_session_restart_test() {
-  let s1 = session.start()
+  let backend = memory_store.new()
+  let s1 = session.start_with_backend(backend)
   session.join(s1, "document:t:resume", "c1")
   let assert session.Assigned(1, _) =
     session.submit(s1, "document:t:resume", "c1", 1, 0, "x")
-  // Fresh actor resumes numbering after the last persisted SN.
-  let s2 = session.start()
+  // Fresh actor over the same store resumes numbering after the last SN.
+  let s2 = session.start_with_backend(backend)
   session.join(s2, "document:t:resume", "c2")
   let assert session.Assigned(2, _) =
     session.submit(s2, "document:t:resume", "c2", 1, 0, "y")
@@ -291,7 +300,7 @@ pub fn sequence_continues_after_session_restart_test() {
 }
 
 pub fn git_create_fetch_roundtrip_test() {
-  let storage = store.ets()
+  let storage = memory_store.new()
   store.open(storage)
   let body = "{\"content\":\"aGk=\",\"encoding\":\"base64\"}"
   let assert Ok(sha) = git.create(storage, "t", "blobs", body)
@@ -301,7 +310,7 @@ pub fn git_create_fetch_roundtrip_test() {
 }
 
 pub fn git_ref_roundtrip_test() {
-  let storage = store.ets()
+  let storage = memory_store.new()
   store.open(storage)
   git.create_ref(storage, "t", "heads/main", "commit-sha")
   |> should.be_true
@@ -314,7 +323,7 @@ pub fn git_ref_roundtrip_test() {
 }
 
 pub fn git_commit_history_follows_first_parent_test() {
-  let storage = store.ets()
+  let storage = memory_store.new()
   store.open(storage)
   let first_body =
     "{\"tree\":\"tree-1\",\"parents\":[],\"message\":\"first\",\"author\":{}}"

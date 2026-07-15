@@ -2,11 +2,22 @@ import floodgate
 import floodgate/git
 import floodgate/memory_store
 import floodgate/session
+import floodgate/shelf_store
 import floodgate/store
+import gleam/bit_array
+import gleam/crypto
 import gleam/json
 import gleam/list
 import gleam/option.{Some}
 import gleeunit/should
+
+/// A fresh, unique on-disk data directory so each run starts from empty DETS
+/// (shelf persists via WriteThrough, so reused dirs would leak state between
+/// runs). Lives under build/, which is gitignored and cleaned by `gleam clean`.
+fn unique_dir() -> String {
+  "build/floodgate_shelf_test/"
+  <> { crypto.strong_random_bytes(8) |> bit_array.base16_encode }
+}
 
 type RuntimeObservation {
   RuntimeObservation(
@@ -21,11 +32,11 @@ type RuntimeObservation {
   )
 }
 
-pub fn ets_backend_satisfies_storage_boundary_test() {
+pub fn shelf_backend_satisfies_storage_boundary_test() {
   assert_backend_contract(
-    store.ets(),
-    "document:backend-contract:ets",
-    "backend-contract-ets",
+    shelf_store.new(unique_dir()),
+    "document:backend-contract:shelf",
+    "backend-contract-shelf",
   )
 }
 
@@ -39,9 +50,10 @@ pub fn actor_memory_backend_satisfies_storage_boundary_test() {
 
 pub fn backend_substitution_preserves_runtime_session_and_historian_observations_test() {
   let memory_observation = observe_runtime_contract(memory_store.new())
-  let ets_observation = observe_runtime_contract(store.ets())
+  let shelf_observation =
+    observe_runtime_contract(shelf_store.new(unique_dir()))
 
-  ets_observation |> should.equal(memory_observation)
+  shelf_observation |> should.equal(memory_observation)
 }
 
 fn assert_backend_contract(

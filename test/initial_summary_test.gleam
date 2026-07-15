@@ -1,5 +1,6 @@
 import floodgate/git
 import floodgate/initial_summary
+import floodgate/memory_store
 import floodgate/store
 import gleam/json
 import gleam/option.{None, Some}
@@ -7,7 +8,7 @@ import gleam/string
 import gleeunit/should
 
 pub fn persists_whole_summary_as_historian_graph_test() {
-  let storage = store.ets()
+  let storage = memory_store.new()
   store.open(storage)
   let tenant = "initial-summary-tenant"
   let document_id = "initial-summary-doc"
@@ -75,13 +76,13 @@ pub fn persists_whole_summary_as_historian_graph_test() {
 }
 
 pub fn accepts_document_create_without_summary_test() {
-  initial_summary.persist(store.ets(), "no-summary", "doc", "{}", 0)
+  initial_summary.persist(memory_store.new(), "no-summary", "doc", "{}", 0)
   |> should.equal(Ok(None))
 }
 
 pub fn rejects_blob_as_summary_root_test() {
   let body =
     "{\"summary\":{\"type\":\"blob\",\"content\":\"invalid\",\"encoding\":\"utf-8\"}}"
-  initial_summary.persist(store.ets(), "invalid-summary", "doc", body, 0)
+  initial_summary.persist(memory_store.new(), "invalid-summary", "doc", body, 0)
   |> should.equal(Error(Nil))
 }

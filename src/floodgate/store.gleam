@@ -1,7 +1,9 @@
 //// Typed storage boundary for documents, ops, summaries, and Historian data.
 ////
 //// A backend is a value, rather than a process-global selection, so a complete
-//// Floodgate runtime can be constructed with ETS today and PostgreSQL later.
+//// Floodgate runtime can be constructed from any implementation. Concrete
+//// backends: `floodgate/shelf_store` (shelf typed ETS + DETS, the default) and
+//// `floodgate/memory_store` (actor-backed, for tests).
 
 import gleam/int
 import gleam/list
@@ -22,25 +24,6 @@ pub type Backend {
     create_ref: fn(String, String, String) -> Bool,
     get_ref: fn(String, String) -> Result(String, Nil),
     list_refs: fn(String) -> List(#(String, String)),
-  )
-}
-
-/// The default VM-lifetime ETS backend.
-pub fn ets() -> Backend {
-  Backend(
-    open: ets_open,
-    put_document: ets_put_document,
-    has_document: ets_has_document,
-    put_op: ets_put_op,
-    get_ops: ets_get_ops,
-    put_summary: ets_put_summary,
-    get_summary: ets_get_summary,
-    put_obj: ets_put_obj,
-    get_obj: ets_get_obj,
-    put_ref: ets_put_ref,
-    create_ref: ets_create_ref,
-    get_ref: ets_get_ref,
-    list_refs: ets_list_refs,
   )
 }
 
@@ -132,42 +115,3 @@ pub fn list_refs(backend: Backend, tenant: String) -> List(#(String, String)) {
   backend.list_refs(tenant)
   |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
 }
-
-@external(erlang, "floodgate_store_ffi", "open")
-fn ets_open() -> Nil
-
-@external(erlang, "floodgate_store_ffi", "put_document")
-fn ets_put_document(topic: String) -> Nil
-
-@external(erlang, "floodgate_store_ffi", "has_document")
-fn ets_has_document(topic: String) -> Bool
-
-@external(erlang, "floodgate_store_ffi", "put_op")
-fn ets_put_op(topic: String, sn: Int, contents: String) -> Nil
-
-@external(erlang, "floodgate_store_ffi", "get_ops")
-fn ets_get_ops(topic: String) -> List(#(Int, String))
-
-@external(erlang, "floodgate_store_ffi", "put_summary")
-fn ets_put_summary(topic: String, handle: String, sn: Int) -> Nil
-
-@external(erlang, "floodgate_store_ffi", "get_summary")
-fn ets_get_summary(topic: String) -> #(String, Int)
-
-@external(erlang, "floodgate_store_ffi", "put_obj")
-fn ets_put_obj(tenant: String, sha: String, data: String) -> Nil
-
-@external(erlang, "floodgate_store_ffi", "get_obj")
-fn ets_get_obj(tenant: String, sha: String) -> Result(String, Nil)
-
-@external(erlang, "floodgate_store_ffi", "put_ref")
-fn ets_put_ref(tenant: String, ref: String, sha: String) -> Nil
-
-@external(erlang, "floodgate_store_ffi", "create_ref")
-fn ets_create_ref(tenant: String, ref: String, sha: String) -> Bool
-
-@external(erlang, "floodgate_store_ffi", "get_ref")
-fn ets_get_ref(tenant: String, ref: String) -> Result(String, Nil)
-
-@external(erlang, "floodgate_store_ffi", "list_refs")
-fn ets_list_refs(tenant: String) -> List(#(String, String))

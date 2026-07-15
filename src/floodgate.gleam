@@ -11,6 +11,7 @@ import floodgate/initial_summary
 import floodgate/memory_store
 import floodgate/server_codec
 import floodgate/session
+import floodgate/shelf_store
 import floodgate/socketio_transport
 import floodgate/store
 import gleam/bit_array
@@ -48,22 +49,33 @@ pub type StorageBackendError {
   UnsupportedStorageBackend(String)
 }
 
-/// Resolve the explicit standalone runtime backend name.
+/// Resolve the explicit standalone runtime backend name. "ets" and "shelf" both
+/// select the shelf-backed persistent store (`floodgate/shelf_store`); "ets" is
+/// kept as a backward-compatible alias for the FLOODGATE_STORAGE_BACKEND value.
 pub fn backend_from_name(
   name: String,
 ) -> Result(store.Backend, StorageBackendError) {
   case name {
-    "ets" -> Ok(store.ets())
+    "ets" | "shelf" -> Ok(shelf_store.new(storage_data_dir()))
     "memory" -> Ok(memory_store.new())
     unsupported -> Error(UnsupportedStorageBackend(unsupported))
   }
+}
+
+/// Directory for the shelf DETS files, overridable via FLOODGATE_DATA_DIR.
+fn storage_data_dir() -> String {
+  getenv("FLOODGATE_DATA_DIR", "priv/floodgate_data")
 }
 
 pub fn start(
   configured_tenant: String,
   jwt_secret: String,
 ) -> Result(#(beryl.Channels, session.Session), beryl.StartError) {
-  start_with_backend(configured_tenant, jwt_secret, store.ets())
+  start_with_backend(
+    configured_tenant,
+    jwt_secret,
+    shelf_store.new(storage_data_dir()),
+  )
 }
 
 /// Start a complete Floodgate socket runtime with the supplied storage backend.
@@ -94,7 +106,7 @@ pub fn start_with_backend(
 fn getenv(name: String, default: String) -> String
 
 pub fn serve(port: Int) -> Result(Nil, Nil) {
-  serve_with_backend(port, store.ets())
+  serve_with_backend(port, shelf_store.new(storage_data_dir()))
 }
 
 /// Serve the complete REST and socket surface with the supplied backend.

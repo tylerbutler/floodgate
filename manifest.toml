@@ -25,6 +25,7 @@ packages = [
   { name = "mist", version = "6.0.3", build_tools = ["gleam"], requirements = ["exception", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "glisten", "gramps", "hpack_erl", "logging"], otp_app = "mist", source = "hex", outer_checksum = "1B07F321D5FA0CB162D81496F2DE96AEB6EF8980F4F38230A4CC3F849497E020" },
   { name = "palabres", version = "1.0.4", build_tools = ["gleam"], requirements = ["envoy", "gleam_stdlib"], otp_app = "palabres", source = "hex", outer_checksum = "2809B7C10AE929E82454B4A6A0FB7D02073C5A509F9A63EE9F7B268A75D98965" },
   { name = "roost", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/tylerbutler/roost.git", commit = "7e4dc7c327ec233c9dc22a9d2037a620e700e127" },
+  { name = "shelf", version = "1.0.1", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_stdlib"], otp_app = "shelf", source = "hex", outer_checksum = "5D8326C14DDCCA9EB7C20C128F6D5B90B54DF8DC2E56AED7F0F6AF50145D06B3" },
   { name = "spillway", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/tylerbutler/spillway", commit = "566c63b13fa1118eaa82bee93c5573f51d95f955" },
   { name = "windsock", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/tylerbutler/windsock", commit = "a0745584f6291ac00e7f59dbd47ad90b25774bd6" },
 ]
@@ -40,5 +41,6 @@ gleam_otp = { version = ">= 0.12.0 and < 2.0.0" }
 gleam_stdlib = { version = ">= 0.62.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 mist = { version = ">= 6.0.0 and < 7.0.0" }
+shelf = { version = ">= 1.0.1 and < 2.0.0" }
 spillway = { git = "https://github.com/tylerbutler/spillway", ref = "main" }
 windsock = { git = "https://github.com/tylerbutler/windsock", ref = "main" }
