@@ -15,6 +15,7 @@ beryl = { git = "https://github.com/tylerbutler/beryl", ref = "main" }
 dewdrop = { git = "https://github.com/tylerbutler/dewdrop", ref = "main" }
 spillway = { git = "https://github.com/tylerbutler/spillway", ref = "main" }
 signet = { git = "https://github.com/tylerbutler/signet", ref = "main" }
+silt = { git = "https://github.com/tylerbutler/silt", ref = "main" }
 windsock = { git = "https://github.com/tylerbutler/windsock", ref = "main" }
 mist = ">= 6.0.0 and < 7.0.0"
 gleam_http = ">= 4.3.0 and < 5.0.0"
