@@ -21,7 +21,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
-import spillway/types.{type TokenClaims}
+import signet/types.{type TokenClaims}
 
 pub type DocAssigns {
   DocAssigns(
@@ -146,7 +146,7 @@ fn join(
         )),
         socket: socket.set_assigns(
           sock,
-          DocAssigns(cid, mode, topic, claims.scopes),
+          DocAssigns(cid, mode, topic, types.scopes_to_strings(claims.scopes)),
         ),
       )
     }
@@ -247,7 +247,7 @@ fn client_json(mode: String, claims: TokenClaims) -> json.Json {
       ]),
     ),
     #("permission", json.preprocessed_array([])),
-    #("scopes", json.array(claims.scopes, json.string)),
+    #("scopes", json.array(types.scopes_to_strings(claims.scopes), json.string)),
     #(
       "user",
       json.object([
@@ -296,11 +296,19 @@ fn authorize(
           let payload_fields =
             decode.run(payload, decode.dict(decode.string, decode.dynamic))
           case
-            list.contains(claims.scopes, connect_document.read_scope()),
+            list.contains(
+              types.scopes_to_strings(claims.scopes),
+              connect_document.read_scope(),
+            ),
             payload_fields
           {
             True, Ok(fields) ->
-              case connect_document.validate_mode_scope(fields, claims.scopes) {
+              case
+                connect_document.validate_mode_scope(
+                  fields,
+                  types.scopes_to_strings(claims.scopes),
+                )
+              {
                 Ok(_) -> Ok(claims)
                 Error(_) -> Error("unauthorized")
               }
@@ -352,7 +360,7 @@ fn connected_response(
 fn claims_json(claims: TokenClaims) -> json.Json {
   json.object([
     #("documentId", json.string(claims.document_id)),
-    #("scopes", json.array(claims.scopes, json.string)),
+    #("scopes", json.array(types.scopes_to_strings(claims.scopes), json.string)),
     #("tenantId", json.string(claims.tenant_id)),
     #("user", json.object([#("id", json.string(claims.user.id))])),
     #("iat", json.int(claims.issued_at)),

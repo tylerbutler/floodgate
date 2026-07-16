@@ -14,7 +14,7 @@ import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/list
 import gleam/result
-import spillway/types
+import signet/types
 
 /// The tenant/document/token fields every `connect_document` payload must
 /// carry.
@@ -27,12 +27,12 @@ pub type ConnectError {
   WriteModeWithoutWriteScope
 }
 
-/// The `doc:read` scope string, from spillway's `Scope` vocabulary.
+/// The `doc:read` scope string, from signet's `Scope` vocabulary.
 pub fn read_scope() -> String {
   types.scope_to_string(types.DocRead)
 }
 
-/// The `doc:write` scope string, from spillway's `Scope` vocabulary.
+/// The `doc:write` scope string, from signet's `Scope` vocabulary.
 pub fn write_scope() -> String {
   types.scope_to_string(types.DocWrite)
 }

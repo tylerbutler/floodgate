@@ -59,7 +59,7 @@ pub fn encode_op_shape_test() {
 pub fn server_codec_encodes_routerlicious_op_arguments_test() {
   let configured = server_codec.server_codec()
   let assert codec.TextFrame(frame) =
-    configured.encode_push(
+    codec.encode_push(configured)(
       "document:tenant-a:doc-1",
       "op",
       json.preprocessed_array([]),

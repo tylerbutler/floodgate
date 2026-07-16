@@ -3,7 +3,7 @@
 
 import beryl.{type Channels}
 import beryl/coordinator.{type Message as CoordinatorMessage}
-import beryl/wire/codec.{type Inbound, Event, Heartbeat, Inbound, Join}
+import beryl/wire/codec.{type Inbound, Event, Heartbeat, Join}
 import dewdrop/events
 import floodgate/socketio
 import gleam/bit_array
@@ -153,7 +153,7 @@ fn handle_text(
       coordinator.route_decoded(
         state.coordinator,
         state.socket_id,
-        Inbound(None, None, "", Heartbeat, dynamic.nil()),
+        codec.inbound(None, None, "", Heartbeat, dynamic.nil()),
       )
       mist.continue(state)
     }
@@ -161,7 +161,7 @@ fn handle_text(
       coordinator.route_decoded(
         state.coordinator,
         state.socket_id,
-        Inbound(None, None, "", Heartbeat, dynamic.nil()),
+        codec.inbound(None, None, "", Heartbeat, dynamic.nil()),
       )
       mist.continue(state)
     }
@@ -196,14 +196,14 @@ fn inbound_event(
       let topic = topic_from_connect(payload)
       case topic {
         "" -> Error(Nil)
-        _ -> Ok(#(Inbound(None, None, topic, Join, payload), topic))
+        _ -> Ok(#(codec.inbound(None, None, topic, Join, payload), topic))
       }
     }
     e, [client_id, messages, ..]
       if e == events.submit_op && current_topic != ""
     ->
       Ok(#(
-        Inbound(
+        codec.inbound(
           None,
           None,
           current_topic,
@@ -219,7 +219,7 @@ fn inbound_event(
       if e == events.submit_signal && current_topic != ""
     ->
       Ok(#(
-        Inbound(
+        codec.inbound(
           None,
           None,
           current_topic,
@@ -233,7 +233,7 @@ fn inbound_event(
       ))
     _, [payload, ..] if current_topic != "" ->
       Ok(#(
-        Inbound(None, None, current_topic, Event(event), payload),
+        codec.inbound(None, None, current_topic, Event(event), payload),
         current_topic,
       ))
     _, _ -> Error(Nil)

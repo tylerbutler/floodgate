@@ -11,8 +11,8 @@ import gleam/json
 import gleam/option.{None}
 import gleam/result
 import gleam/string
-import spillway/jwt
-import spillway/types.{type TokenClaims, TokenClaims, User}
+import signet/jwt
+import signet/types.{type TokenClaims, TokenClaims, User, scopes_from_strings}
 
 pub type AuthError {
   BadFormat
@@ -266,7 +266,7 @@ fn parse_claims(payload: String) -> Result(TokenClaims, AuthError) {
     )
     decode.success(TokenClaims(
       doc,
-      scopes,
+      scopes_from_strings(scopes),
       tenant,
       user,
       issued_at,
