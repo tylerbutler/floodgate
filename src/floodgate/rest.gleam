@@ -46,7 +46,11 @@ pub fn commit_url(base_url: String, tenant_id: String, sha: String) -> String {
 
 /// The "refs/" prefix is stripped for the URL (e.g. `refs/heads/main`
 /// becomes `.../git/refs/heads/main`).
-pub fn ref_url(base_url: String, tenant_id: String, ref_path: String) -> String {
+pub fn ref_url(
+  base_url: String,
+  tenant_id: String,
+  ref_path: String,
+) -> String {
   let path = case string.starts_with(ref_path, "refs/") {
     True -> string.drop_start(ref_path, 5)
     False -> ref_path

@@ -62,7 +62,9 @@ pub fn determine_signal_recipients(
 }
 
 /// Build a sequenced operation for the wire format.
-pub fn build_sequenced_op(params: SequencedOpParams) -> List(#(String, Dynamic)) {
+pub fn build_sequenced_op(
+  params: SequencedOpParams,
+) -> List(#(String, Dynamic)) {
   spillway_session_logic.build_sequenced_op(params)
 }
 
