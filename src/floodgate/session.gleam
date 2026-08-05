@@ -97,6 +97,7 @@ pub type Msg {
   InitializeSummary(topic: String, handle: String, sn: Int, reply: Subject(Nil))
   SetSummary(topic: String, handle: String, sn: Int)
   GetSummary(topic: String, reply: Subject(#(String, Int)))
+  UpdateClientRsn(topic: String, client_id: String, rsn: Int)
 }
 
 pub type SubmitResult {
@@ -352,6 +353,13 @@ pub fn sequence_number(s: Session, t: String) -> Int {
 
 pub fn set_summary(s: Session, t: String, handle: String, sn: Int) {
   process.send(s.subject, SetSummary(t, handle, sn))
+}
+
+/// Advance a client's reference sequence number without sequencing an op, so
+/// an idle client still lets the minimum sequence number move. Fire-and-forget,
+/// mirroring levee's `Session.update_client_rsn` cast.
+pub fn update_client_rsn(s: Session, t: String, client_id: String, rsn: Int) {
+  process.send(s.subject, UpdateClientRsn(t, client_id, rsn))
 }
 
 pub fn initialize_summary(s: Session, t: String, handle: String, sn: Int) {
@@ -819,6 +827,14 @@ fn handle(storage: store.Backend, st: State, m: Msg) -> actor.Next(State, Msg) {
     GetSummary(t, reply) -> {
       process.send(reply, store.get_summary(storage, t))
       actor.continue(st)
+    }
+    UpdateClientRsn(t, client_id, rsn) -> {
+      let d = doc(storage, st, t)
+      case sequencing.update_client_rsn(d.seq, client_id, rsn) {
+        Error(_) -> actor.continue(st)
+        Ok(seq) ->
+          actor.continue(State(dict.insert(st.docs, t, Doc(..d, seq: seq))))
+      }
     }
   }
 }

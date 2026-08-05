@@ -5,6 +5,7 @@ import beryl.{type Channels}
 import beryl/coordinator.{type Message as CoordinatorMessage}
 import beryl/wire/codec.{type Inbound, Event, Heartbeat, Join}
 import dewdrop/events
+import floodgate/server_codec
 import floodgate/socketio
 import gleam/bit_array
 import gleam/crypto
@@ -98,7 +99,7 @@ fn on_init(
       socket_id,
       send_text,
       send_binary,
-      None,
+      Some(server_codec.server_codec()),
       dynamic.nil(),
     ),
   )

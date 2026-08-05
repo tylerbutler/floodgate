@@ -4,12 +4,13 @@
 
 import beryl
 import beryl/pubsub
+import beryl/transport/mist as beryl_mist
+import beryl/wire
 import floodgate/auth
 import floodgate/document_channel
 import floodgate/git
 import floodgate/initial_summary
 import floodgate/memory_store
-import floodgate/server_codec
 import floodgate/session
 import floodgate/shelf_store
 import floodgate/socketio_transport
@@ -85,8 +86,10 @@ pub fn start_with_backend(
   storage: store.Backend,
 ) -> Result(#(beryl.Channels, session.Session), beryl.StartError) {
   let ps = pubsub.start(pubsub.default_config())
-  let config =
-    beryl.config(server_codec.server_codec()) |> beryl.with_pubsub(ps)
+  // Phoenix framing is the coordinator default so `levee-driver` sockets on
+  // the stock beryl transport need no per-connection codec; the Socket.IO
+  // transport overrides it per socket with the dewdrop/Routerlicious codec.
+  let config = beryl.config(wire.phoenix_codec()) |> beryl.with_pubsub(ps)
   case beryl.start(config) {
     Ok(channels) -> {
       let sess = session.start_with_backend(storage)
@@ -105,12 +108,35 @@ pub fn start_with_backend(
 @external(erlang, "floodgate_ffi", "getenv")
 fn getenv(name: String, default: String) -> String
 
+/// Upgrade path for the Phoenix Channels endpoint. The phoenix js client used
+/// by `levee-driver` is pointed at `<host>/socket` and appends `/websocket`.
+const phoenix_socket_path = "/socket/websocket"
+
+/// Phoenix endpoint transport config. beryl defaults to a same-origin policy,
+/// which rejects browser clients served from another origin; FLOODGATE_ALLOWED_ORIGINS
+/// takes a comma-separated allow-list, or `*` to disable origin checking.
+fn phoenix_transport_config() -> beryl_mist.TransportConfig(Nil) {
+  let config = beryl_mist.default_config(phoenix_socket_path)
+  case getenv("FLOODGATE_ALLOWED_ORIGINS", "") {
+    "" -> config
+    "*" -> beryl_mist.with_allow_all_origins(config)
+    origins ->
+      beryl_mist.with_allowed_origins(
+        config,
+        string.split(origins, ",") |> list.map(string.trim),
+      )
+  }
+}
+
 pub fn serve(port: Int) -> Result(Nil, Nil) {
   serve_with_backend(port, shelf_store.new(storage_data_dir()))
 }
 
 /// Serve the complete REST and socket surface with the supplied backend.
-pub fn serve_with_backend(port: Int, storage: store.Backend) -> Result(Nil, Nil) {
+pub fn serve_with_backend(
+  port: Int,
+  storage: store.Backend,
+) -> Result(Nil, Nil) {
   let configured_tenant = getenv("FLOODGATE_TENANT_ID", "fluid")
   let jwt_secret = getenv("FLOODGATE_JWT_SECRET", "")
   case jwt_secret {
@@ -138,7 +164,12 @@ pub fn serve_with_backend(port: Int, storage: store.Backend) -> Result(Nil, Nil)
         Ok(#(channels, sess)) -> {
           let assert Ok(_) =
             socketio_transport.handler(channels, fn(req) {
-              rest(sess, config, public_url, req)
+              beryl_mist.upgrade(
+                req,
+                channels,
+                phoenix_transport_config(),
+                fn() { rest(sess, config, public_url, req) },
+              )
             })
             |> mist.new
             |> mist.port(port)

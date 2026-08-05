@@ -11,7 +11,9 @@ import floodgate/connect_document
 import floodgate/git
 import floodgate/session.{type Session}
 import floodgate/session_logic
+import floodgate/signals
 import floodgate/store
+import gleam/bool
 import gleam/dict
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -29,7 +31,19 @@ pub type DocAssigns {
     mode: String,
     topic: String,
     scopes: List(String),
+    connected: Bool,
   )
+}
+
+/// A failed connect. `reason` is the Socket.IO join-error string; `code` and
+/// `message` are the Routerlicious-style pair the Phoenix path pushes as
+/// `connect_document_error`.
+pub type ConnectError {
+  ConnectError(reason: String, code: Int, message: String)
+}
+
+fn unauthorized(code: Int, message: String) -> ConnectError {
+  ConnectError(reason: "unauthorized", code: code, message: message)
 }
 
 type SubmittedOp {
@@ -63,10 +77,17 @@ pub fn new(
   channel.new(fn(t, p, s) {
     join(channels, sess, configured_tenant, secret, t, p, s)
   })
-  |> channel.with_handle_in(fn(e, p, s) { handle_in(channels, sess, e, p, s) })
+  |> channel.with_handle_in(fn(e, p, s) {
+    handle_in(channels, sess, configured_tenant, secret, e, p, s)
+  })
   |> channel.with_terminate(fn(_reason, s) { on_leave(channels, sess, s) })
 }
 
+/// Two wire protocols enter this channel differently. Socket.IO carries the
+/// whole `connect_document` payload as the join, so joining and connecting are
+/// one step. A Phoenix `phx_join` carries only `{token}` — `mode` and the rest
+/// of IConnect arrive later on the `connect_document` event — so the socket
+/// joins first and connects in a second phase.
 fn join(
   channels,
   sess: Session,
@@ -77,8 +98,80 @@ fn join(
   sock: Socket(DocAssigns),
 ) {
   let cid = socket.id(sock)
+  case is_connect_payload(payload) {
+    True ->
+      case
+        connect_core(
+          channels,
+          sess,
+          configured_tenant,
+          secret,
+          topic,
+          payload,
+          cid,
+        )
+      {
+        Error(error) -> join_error(error)
+        Ok(#(response, assigns)) ->
+          JoinOk(
+            reply: Some(response),
+            socket: socket.set_assigns(sock, assigns),
+          )
+      }
+    False ->
+      case authorize_topic_token(configured_tenant, secret, topic, payload) {
+        Error(error) -> join_error(error)
+        Ok(_claims) ->
+          JoinOk(
+            reply: None,
+            socket: socket.set_assigns(sock, pending_assigns(topic)),
+          )
+      }
+  }
+}
+
+/// A Socket.IO join is a `connect_document` payload: it always carries the
+/// tenant and document ids (the transport derives the topic from them). Phoenix
+/// join params carry only the token.
+fn is_connect_payload(payload: Dynamic) -> Bool {
+  field(payload, "tenantId", "") != "" && field(payload, "id", "") != ""
+}
+
+/// Assigns for a Phoenix socket that has joined but not yet connected.
+fn pending_assigns(topic: String) -> DocAssigns {
+  DocAssigns(
+    client_id: "",
+    mode: "",
+    topic: topic,
+    scopes: [],
+    connected: False,
+  )
+}
+
+fn join_error(error: ConnectError) {
+  JoinError(json.object([#("reason", json.string(error.reason))]))
+}
+
+fn connect_error_json(error: ConnectError) -> json.Json {
+  json.object([
+    #("code", json.int(error.code)),
+    #("message", json.string(error.message)),
+  ])
+}
+
+/// Authorize, open the session, fan out the join, and build the connected
+/// response. Shared by the Socket.IO join and the Phoenix `connect_document`.
+fn connect_core(
+  channels,
+  sess: Session,
+  configured_tenant: String,
+  secret: String,
+  topic: String,
+  payload: Dynamic,
+  cid: String,
+) -> Result(#(json.Json, DocAssigns), ConnectError) {
   case authorize(configured_tenant, secret, topic, payload) {
-    Error(reason) -> JoinError(json.object([#("reason", json.string(reason))]))
+    Error(error) -> Error(error)
     Ok(claims) -> {
       let mode = connection_mode(payload)
       let client = client_json(mode, claims)
@@ -131,8 +224,8 @@ fn join(
           [presence_join(cid, mode, claims)]
         }
       }
-      JoinOk(
-        reply: Some(connected_response(
+      Ok(#(
+        connected_response(
           claims,
           cid,
           mode,
@@ -143,18 +236,24 @@ fn join(
           summary_handle,
           summary_sequence_number,
           current_sequence_number,
-        )),
-        socket: socket.set_assigns(
-          sock,
-          DocAssigns(cid, mode, topic, types.scopes_to_strings(claims.scopes)),
         ),
-      )
+        DocAssigns(
+          client_id: cid,
+          mode: mode,
+          topic: topic,
+          scopes: types.scopes_to_strings(claims.scopes),
+          connected: True,
+        ),
+      ))
     }
   }
 }
 
 fn on_leave(channels, sess: Session, sock: Socket(DocAssigns)) {
   let a = socket.get_assigns(sock)
+  // A Phoenix socket that joined but never sent connect_document holds no
+  // session membership, so there is nothing to tear down or announce.
+  use <- bool.guard(when: !a.connected, return: Nil)
   case a.mode {
     "write" -> {
       let session.Left(sn, _, message) =
@@ -274,15 +373,18 @@ fn connection_mode(payload: Dynamic) -> String {
   }
 }
 
-fn authorize(
+/// Verify the topic names a document under this tenant and that the payload
+/// carries a token granting read access to it. Shared by both join paths; the
+/// Phoenix path stops here because `mode` is not known until connect.
+fn authorize_topic_token(
   configured_tenant: String,
   secret: String,
   topic: String,
   payload: Dynamic,
-) -> Result(TokenClaims, String) {
+) -> Result(TokenClaims, ConnectError) {
   case string.split(topic, ":") {
-    ["document", tenant, doc] if tenant == configured_tenant -> {
-      let claims =
+    ["document", tenant, doc] if tenant == configured_tenant ->
+      case
         auth.verify(
           field(payload, "token", ""),
           secret,
@@ -290,34 +392,58 @@ fn authorize(
           doc,
           now_seconds(),
         )
-      case claims {
-        Error(_) -> Error("unauthorized")
-        Ok(claims) -> {
-          let payload_fields =
-            decode.run(payload, decode.dict(decode.string, decode.dynamic))
+      {
+        Error(_) -> Error(unauthorized(401, "Invalid or expired token"))
+        Ok(claims) ->
           case
             list.contains(
               types.scopes_to_strings(claims.scopes),
               connect_document.read_scope(),
-            ),
-            payload_fields
+            )
           {
-            True, Ok(fields) ->
-              case
-                connect_document.validate_mode_scope(
-                  fields,
-                  types.scopes_to_strings(claims.scopes),
-                )
-              {
-                Ok(_) -> Ok(claims)
-                Error(_) -> Error("unauthorized")
-              }
-            _, _ -> Error("unauthorized")
+            False -> Error(unauthorized(403, "Token lacks document read scope"))
+            True -> Ok(claims)
           }
-        }
       }
-    }
-    _ -> Error("invalid_topic")
+    _ ->
+      Error(ConnectError(
+        reason: "invalid_topic",
+        code: 400,
+        message: "Topic does not name a document in this tenant",
+      ))
+  }
+}
+
+fn authorize(
+  configured_tenant: String,
+  secret: String,
+  topic: String,
+  payload: Dynamic,
+) -> Result(TokenClaims, ConnectError) {
+  use claims <- result.try(authorize_topic_token(
+    configured_tenant,
+    secret,
+    topic,
+    payload,
+  ))
+  case decode.run(payload, decode.dict(decode.string, decode.dynamic)) {
+    Error(_) ->
+      Error(ConnectError(
+        reason: "unauthorized",
+        code: 400,
+        message: "Malformed connect_document payload",
+      ))
+    Ok(fields) ->
+      case
+        connect_document.validate_mode_scope(
+          fields,
+          types.scopes_to_strings(claims.scopes),
+        )
+      {
+        Error(_) ->
+          Error(unauthorized(403, "Write mode requires document write scope"))
+        Ok(_) -> Ok(claims)
+      }
   }
 }
 
@@ -388,21 +514,61 @@ fn now_seconds() -> Int
 fn handle_in(
   channels,
   sess: Session,
+  configured_tenant: String,
+  secret: String,
   event,
   payload: Dynamic,
   sock: Socket(DocAssigns),
 ) {
   let a = socket.get_assigns(sock)
-  case event {
-    e if e == events.submit_op -> submit_op(channels, sess, payload, sock, a)
-    e if e == events.submit_signal -> submit_signals(channels, payload, sock, a)
-    "requestOps" ->
+  case event, a.connected {
+    e, False if e == events.connect_document ->
+      connect_phase_two(
+        channels,
+        sess,
+        configured_tenant,
+        secret,
+        payload,
+        sock,
+        a,
+      )
+    // Everything below needs session membership, which only connect
+    // establishes. Mirrors levee's `connected` assign guard.
+    e, False if e == events.submit_op ->
+      Push(
+        events.nack,
+        json.preprocessed_array([
+          nack_json(None, 0, 400, "Client not connected"),
+        ]),
+        sock,
+      )
+    _, False -> NoReply(sock)
+    e, True if e == events.submit_op ->
+      submit_op(channels, sess, payload, sock, a)
+    e, True if e == events.submit_signal ->
+      submit_signals(channels, payload, sock, a)
+    "requestOps", True ->
       Push(
         events.op,
         ops_json(session.since(sess, a.topic, int_field(payload, "from", 0))),
         sock,
       )
-    e if e == events.submit_summary ->
+    // Without this an idle levee-mode client never advances its reference
+    // sequence number and the minimum sequence number stalls for the document.
+    "noop", True -> {
+      case field(payload, "clientId", "") == a.client_id {
+        False -> Nil
+        True ->
+          session.update_client_rsn(
+            sess,
+            a.topic,
+            a.client_id,
+            int_field(payload, "referenceSequenceNumber", 0),
+          )
+      }
+      NoReply(sock)
+    }
+    e, True if e == events.submit_summary ->
       Push(
         events.nack,
         json.preprocessed_array([
@@ -415,7 +581,40 @@ fn handle_in(
         ]),
         sock,
       )
-    _ -> NoReply(sock)
+    _, True -> NoReply(sock)
+  }
+}
+
+/// Phoenix path only: IConnect arrives as an event after the join, and the
+/// driver listens for a pushed result rather than a reply.
+fn connect_phase_two(
+  channels,
+  sess: Session,
+  configured_tenant: String,
+  secret: String,
+  payload: Dynamic,
+  sock: Socket(DocAssigns),
+  a: DocAssigns,
+) {
+  case
+    connect_core(
+      channels,
+      sess,
+      configured_tenant,
+      secret,
+      a.topic,
+      payload,
+      socket.id(sock),
+    )
+  {
+    Ok(#(response, assigns)) ->
+      Push(
+        events.connect_document_success,
+        response,
+        socket.set_assigns(sock, assigns),
+      )
+    Error(error) ->
+      Push(events.connect_document_error, connect_error_json(error), sock)
   }
 }
 
@@ -667,15 +866,15 @@ fn submit_signals(channels, payload: Dynamic, sock, a: DocAssigns) {
     field(payload, "clientId", "") == a.client_id,
     submitted_signals(payload)
   {
-    True, Ok(signals) -> {
-      list.each(signals, fn(content) {
+    True, Ok(contents) -> {
+      list.each(contents, fn(content) {
         beryl.broadcast(
           channels,
           a.topic,
           events.signal,
           json.object([
             #("clientId", json.string(a.client_id)),
-            #("content", json.string(content)),
+            #("content", content),
           ]),
         )
       })
@@ -725,7 +924,32 @@ fn optional_dynamic_field(name: String, next) {
   decode.optional_field(name, None, decode.optional(decode.dynamic), next)
 }
 
-fn submitted_signals(payload: Dynamic) {
+/// Signal payloads arrive in two shapes: floodgate's Socket.IO clients send
+/// `{signals: [...]}`, while `levee-driver` sends
+/// `{contentBatches: [[{content, targetClientId?}]]}`. Batches go through
+/// spillway's v1/v2 normalization — the same path levee's
+/// `Bridge.normalize_signal_batch` takes — rather than a third ad-hoc parser.
+///
+/// Targeting fields are parsed but not yet honoured: floodgate has no
+/// per-socket push, so every signal is broadcast to the topic.
+fn submitted_signals(payload: Dynamic) -> Result(List(json.Json), Nil) {
+  let batches_decoder = {
+    use batches <- decode.field("contentBatches", decode.list(decode.dynamic))
+    decode.success(batches)
+  }
+  case decode.run(payload, batches_decoder) {
+    Ok(batches) ->
+      Ok(
+        list.flat_map(batches, fn(batch) {
+          signals.normalize_signal_batch(batch)
+          |> list.map(fn(signal) { dynamic_json(signal.content) })
+        }),
+      )
+    Error(_) -> legacy_submitted_signals(payload)
+  }
+}
+
+fn legacy_submitted_signals(payload: Dynamic) -> Result(List(json.Json), Nil) {
   let signal_decoder = {
     use content <- decode.field("content", decode.string)
     decode.success(content)
@@ -740,6 +964,8 @@ fn submitted_signals(payload: Dynamic) {
     decode.success(signals)
   }
   decode.run(payload, decoder)
+  |> result.map(list.map(_, json.string))
+  |> result.replace_error(Nil)
 }
 
 fn sequenced_op_json(
