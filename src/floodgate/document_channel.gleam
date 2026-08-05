@@ -20,7 +20,7 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import signet/types.{type TokenClaims}
@@ -174,7 +174,12 @@ fn connect_core(
     Error(error) -> Error(error)
     Ok(claims) -> {
       let mode = connection_mode(payload)
-      let client = client_json(mode, claims)
+      // Echo the peer's own IClient when it sent one, so the audience sees a
+      // single payload for this client id — see `supplied_client_json`.
+      let client = case supplied_client_json(payload) {
+        Some(supplied) -> supplied
+        None -> client_json(mode, claims)
+      }
       let session.Connected(
         existing,
         roster,
@@ -190,7 +195,7 @@ fn connect_core(
           cid,
           mode,
           json.to_string(client),
-          client_join_data(cid, mode, claims),
+          client_join_data(cid, client),
           now_seconds() * 1000,
         )
       let initial_signals = case mode {
@@ -211,7 +216,7 @@ fn connect_core(
           // Fluid Presence relies on the self join signal after the connection
           // has a client ID. Returning it as an initial signal preserves that
           // ordering while the sequenced join op is fanned out to peers.
-          [presence_join(cid, mode, claims)]
+          [presence_join(cid, client)]
         }
         _ -> {
           beryl.broadcast_from(
@@ -219,9 +224,9 @@ fn connect_core(
             cid,
             topic,
             events.signal,
-            presence_join(cid, mode, claims),
+            presence_join(cid, client),
           )
-          [presence_join(cid, mode, claims)]
+          [presence_join(cid, client)]
         }
       }
       Ok(#(
@@ -284,11 +289,7 @@ fn on_leave(channels, sess: Session, sock: Socket(DocAssigns)) {
   }
 }
 
-fn presence_join(
-  client_id: String,
-  mode: String,
-  claims: TokenClaims,
-) -> json.Json {
+fn presence_join(client_id: String, client: json.Json) -> json.Json {
   json.object([
     #("clientId", json.null()),
     #(
@@ -299,7 +300,7 @@ fn presence_join(
           "content",
           json.object([
             #("clientId", json.string(client_id)),
-            #("client", client_json(mode, claims)),
+            #("client", client),
           ]),
         ),
       ])
@@ -324,19 +325,68 @@ fn presence_leave(client_id: String) -> json.Json {
   ])
 }
 
-fn client_join_data(
-  client_id: String,
-  mode: String,
-  claims: TokenClaims,
-) -> String {
+fn client_join_data(client_id: String, client: json.Json) -> String {
   json.object([
     #("clientId", json.string(client_id)),
-    #("detail", client_json(mode, claims)),
+    #("detail", client),
   ])
   |> json.to_string
 }
 
+/// Re-encode a client payload through the same JSON → Erlang map → JSON
+/// round-trip that `initialClients` performs when it rebuilds clients from the
+/// stored roster.
+///
+/// `@fluidframework/container-loader`'s audience asserts that a client it
+/// already holds and the one carried by that client's sequenced join op
+/// serialize to the identical string (assert 0x4b2, "new client has different
+/// payload from existing one"). A second client loading a document receives the
+/// first in `initialClients` *and* replays its join op from `initialMessages`,
+/// so both payloads reach the audience. Erlang maps do not preserve key order,
+/// so the roster path reorders keys while a directly-built payload does not —
+/// putting every client payload through this same round-trip is what keeps the
+/// two byte-identical.
+pub fn normalize_client_json(value: json.Json) -> json.Json {
+  case json.parse(json.to_string(value), decode.dynamic) {
+    Ok(parsed) -> dynamic_json(parsed)
+    Error(_) -> value
+  }
+}
+
+/// Expose the dynamic → JSON conversion the roster path uses, so tests can
+/// assert on the exact bytes a client payload serializes to.
+pub fn dynamic_to_json(value: Dynamic) -> json.Json {
+  dynamic_json(value)
+}
+
+/// The `IClient` record the peer sent in its connect payload, if any.
+///
+/// Levee's `Session.client_join/2` stores `connect_msg["client"]` verbatim and
+/// serves that back; the Fluid container meanwhile seeds its audience with the
+/// very object it sent. Echoing it is therefore not a nicety — rebuilding the
+/// record from `mode` and token claims drops fields the server does not model
+/// (`details.environment`, extra `user` fields) and the audience then sees two
+/// different payloads for one client id, tripping assert 0x4b2.
+///
+/// `None` for a Phoenix `phx_join`, which carries only a token.
+pub fn supplied_client_json(payload: Dynamic) -> Option(json.Json) {
+  case decode.run(payload, decode.at(["client"], decode.dynamic)) {
+    Ok(client) ->
+      case decode.run(client, decode.dict(decode.string, decode.dynamic)) {
+        // Only an object is a usable IClient; anything else falls back to the
+        // server-built record.
+        Ok(_) -> Some(normalize_client_json(dynamic_json(client)))
+        Error(_) -> None
+      }
+    Error(_) -> None
+  }
+}
+
 fn client_json(mode: String, claims: TokenClaims) -> json.Json {
+  normalize_client_json(raw_client_json(mode, claims))
+}
+
+fn raw_client_json(mode: String, claims: TokenClaims) -> json.Json {
   json.object([
     #("mode", json.string(mode)),
     #(

@@ -7,10 +7,13 @@ import beryl
 import beryl/coordinator
 import floodgate
 import floodgate/auth
+import floodgate/document_channel
 import floodgate/memory_store
 import floodgate/session
 import gleam/dynamic
+import gleam/dynamic/decode
 import gleam/erlang/process
+import gleam/json
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
@@ -260,3 +263,78 @@ pub fn noop_advances_minimum_sequence_number_test() {
 
 @external(erlang, "erlang", "integer_to_binary")
 fn string_of(value: Int) -> String
+
+/// `@fluidframework/container-loader`'s audience asserts that a client it
+/// already holds and the one carried by that client's sequenced join op
+/// serialize to the identical string (assert 0x4b2, "new client has different
+/// payload from existing one"). `initialClients` is rebuilt from the roster,
+/// which stores each client as a string and so round-trips through an Erlang
+/// map — and maps do not preserve key order — while the join op's payload is
+/// built directly. Normalizing every client payload through the same
+/// round-trip is what makes the two agree, so that normalization has to be
+/// idempotent.
+pub fn client_payload_survives_roster_round_trip_test() {
+  let client =
+    document_channel.normalize_client_json(
+      json.object([
+        #("mode", json.string("write")),
+        #(
+          "details",
+          json.object([
+            #("capabilities", json.object([#("interactive", json.bool(True))])),
+          ]),
+        ),
+        #("permission", json.preprocessed_array([])),
+        #("scopes", json.array(["doc:read", "doc:write"], json.string)),
+        #(
+          "user",
+          json.object([
+            #("id", json.string("u1")),
+            #("name", json.string("User One")),
+          ]),
+        ),
+      ]),
+    )
+
+  // Storing the client and rebuilding it — what initialClients does — must not
+  // change a single byte.
+  document_channel.normalize_client_json(client)
+  |> json.to_string
+  |> should.equal(json.to_string(client))
+}
+
+/// Levee's `Session.client_join/2` stores `connect_msg["client"]` verbatim and
+/// serves it back in both `initialClients` and the sequenced join op. The Fluid
+/// container adds its *own* `IClient` to the audience from the object it sent,
+/// so a server that rebuilds the record from `mode` + token claims hands the
+/// audience two different payloads for one client id and trips assert 0x4b2
+/// ("new client has different payload from existing one"). Fields the server
+/// does not model — `details.environment` above all — are exactly what differ.
+pub fn client_payload_echoes_the_clients_own_record_test() {
+  let supplied =
+    "{\"mode\":\"write\",\"details\":{\"capabilities\":{\"interactive\":true},"
+    <> "\"environment\":\"loaderVersion:2.81.1\"},\"permission\":[],"
+    <> "\"scopes\":[\"doc:read\"],\"user\":{\"id\":\"u1\"}}"
+  let assert Ok(payload) =
+    json.parse("{\"client\":" <> supplied <> "}", decode.dynamic)
+  let assert Ok(sent) = json.parse(supplied, decode.dynamic)
+
+  let assert Some(echoed) = document_channel.supplied_client_json(payload)
+  json.to_string(echoed)
+  |> should.equal(
+    json.to_string(
+      document_channel.normalize_client_json(document_channel.dynamic_to_json(
+        sent,
+      )),
+    ),
+  )
+  // The field the server has no model for is the one that must survive.
+  json.to_string(echoed) |> string.contains("environment") |> should.be_true
+}
+
+/// A Phoenix `phx_join` carries only a token, so there is nothing to echo and
+/// the server-built record remains the fallback.
+pub fn supplied_client_json_absent_when_not_sent_test() {
+  let assert Ok(payload) = json.parse("{\"mode\":\"write\"}", decode.dynamic)
+  document_channel.supplied_client_json(payload) |> should.equal(None)
+}

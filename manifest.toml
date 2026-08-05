@@ -27,7 +27,7 @@ packages = [
   { name = "roost", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/tylerbutler/roost.git", commit = "7e4dc7c327ec233c9dc22a9d2037a620e700e127" },
   { name = "shelf", version = "1.0.1", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_stdlib"], otp_app = "shelf", source = "hex", outer_checksum = "5D8326C14DDCCA9EB7C20C128F6D5B90B54DF8DC2E56AED7F0F6AF50145D06B3" },
   { name = "signet", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/tylerbutler/signet", commit = "6ea697d3d1d6c5ab60e214414fbfbb134b355a8c" },
-  { name = "silt", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/tylerbutler/silt", commit = "f83ec97389042e80effa704158a014daced4ad92" },
+  { name = "silt", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/tylerbutler/silt", commit = "7df0c9e60e6d4de94fadb3a351b32cac801cb69b" },
   { name = "spillway", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib", "signet"], source = "git", repo = "https://github.com/tylerbutler/spillway", commit = "25f515cf67027e4b2db2344c3abb2141056e45fc" },
   { name = "windsock", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/tylerbutler/windsock", commit = "a0745584f6291ac00e7f59dbd47ad90b25774bd6" },
 ]

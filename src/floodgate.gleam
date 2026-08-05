@@ -31,6 +31,7 @@ import gleam/result
 import gleam/string
 import gleam/uri
 import mist
+import signet/jwt
 
 type AuthConfig {
   AuthConfig(
@@ -173,6 +174,10 @@ pub fn serve_with_backend(
             })
             |> mist.new
             |> mist.port(port)
+            // Mist binds to localhost by default, which is unreachable from
+            // outside a container. FLOODGATE_BIND overrides it; the Docker
+            // image sets 0.0.0.0.
+            |> mist.bind(getenv("FLOODGATE_BIND", "localhost"))
             |> mist.start
           process.sleep_forever()
           Ok(Nil)
@@ -192,14 +197,26 @@ fn rest(
   let req = normalize_restless_request(req)
   let storage = session.storage(sess)
   case req.method, request.path_segments(req) {
+    // Unauthenticated readiness probe, byte-identical to levee's
+    // `HealthController`, so container healthchecks and levee's integration
+    // harness (`isServerRunning`) work unchanged against either server.
+    // HEAD as well as GET: Phoenix answers HEAD for every GET route, and
+    // container probes (`wget --spider`, most orchestrators) use HEAD.
+    method, ["health"] if method == http.Get || method == http.Head ->
+      health_body() |> json_response(200)
     http.Post, ["api", "tenants", tenant, "token-mint"] ->
       token_mint_response(config, req, tenant)
     http.Post, ["documents", tenant] -> {
-      case authorize_write(req, config, tenant, "") {
-        Error(_) -> unauthorized()
+      let body = read_body(req)
+      case authorize_tenant_write(req, config, tenant) {
+        Error(e) -> auth_error_response(e)
         Ok(_) -> {
-          let doc = generate_document_id()
-          create_document(sess, tenant, doc, read_body(req))
+          // Levee: `params["id"] || generate_document_id()`.
+          let doc = case requested_document_id(body) {
+            Some(id) -> id
+            None -> generate_document_id()
+          }
+          create_document(sess, tenant, doc, public_url, body)
         }
       }
     }
@@ -208,7 +225,7 @@ fn rest(
         authorize_read(req, config, tenant, doc),
         session.exists(sess, topic(tenant, doc))
       {
-        Error(_), _ -> unauthorized()
+        Error(e), _ -> auth_error_response(e)
         _, False -> not_found()
         Ok(_), True ->
           json.object([
@@ -231,7 +248,7 @@ fn rest(
         authorize_read(req, config, tenant, doc),
         session.exists(sess, topic(tenant, doc))
       {
-        Error(_), _ -> unauthorized()
+        Error(e), _ -> auth_error_response(e)
         _, False -> not_found()
         Ok(_), True ->
           json.object([
@@ -250,8 +267,8 @@ fn rest(
       if method == http.Post || method == http.Put
     -> {
       case authorize_write(req, config, tenant, doc) {
-        Error(_) -> unauthorized()
-        Ok(_) -> create_document(sess, tenant, doc, read_body(req))
+        Error(e) -> auth_error_response(e)
+        Ok(_) -> create_document(sess, tenant, doc, public_url, read_body(req))
       }
     }
     http.Get, ["repos", tenant, "commits"] ->
@@ -268,29 +285,56 @@ fn rest(
       && { kind == "blobs" || kind == "trees" || kind == "commits" }
     -> {
       case authorize_storage_write(req, config, tenant) {
-        Error(_) -> unauthorized()
+        Error(e) -> auth_error_response(e)
         Ok(_) -> {
           let body = read_body(req)
           case git.create(storage, tenant, kind, body) {
             Error(_) -> bad_request()
+            // Levee's GitController returns `{sha, url}` for a created blob but
+            // the *whole* object for a created tree or commit — same shape its
+            // GET returns. Match that, or clients reading `tree`/`message` off
+            // the create response break.
             Ok(sha) ->
-              json.object([
-                #("sha", json.string(sha)),
-                #(
-                  "url",
-                  json.string(
-                    public_url
-                    <> "/repos/"
-                    <> tenant
-                    <> "/git/"
-                    <> kind
-                    <> "/"
-                    <> sha,
-                  ),
-                ),
-              ])
-              |> json.to_string
-              |> json_response(201)
+              case kind {
+                "blobs" ->
+                  json.object([
+                    #("sha", json.string(sha)),
+                    #(
+                      "url",
+                      json.string(
+                        public_url
+                        <> "/repos/"
+                        <> tenant
+                        <> "/git/"
+                        <> kind
+                        <> "/"
+                        <> sha,
+                      ),
+                    ),
+                  ])
+                  |> json.to_string
+                  |> json_response(201)
+                _ ->
+                  case git.fetch(storage, tenant, sha) {
+                    Error(_) -> bad_request()
+                    Ok(data) ->
+                      case
+                        git.object_response(
+                          storage,
+                          public_url,
+                          tenant,
+                          kind,
+                          sha,
+                          data,
+                          False,
+                        )
+                      {
+                        Error(_) -> bad_request()
+                        Ok(object) ->
+                          object |> json.to_string |> json_response(201)
+                      }
+                  }
+              }
           }
         }
       }
@@ -302,7 +346,7 @@ fn rest(
         authorize_storage_read(req, config, tenant),
         git.fetch(storage, tenant, sha)
       {
-        Error(_), _ -> unauthorized()
+        Error(e), _ -> auth_error_response(e)
         _, Error(_) -> not_found()
         Ok(_), Ok(data) -> {
           let query =
@@ -346,6 +390,8 @@ fn token_mint_response(
     _, None, _ -> not_found()
     _, _, Error(_) -> unauthorized()
     True, Some(mint_secret), Ok(authorization) ->
+      // The mint credential is floodgate's own, with no levee counterpart, so
+      // it keeps the opaque rejection rather than levee's auth-plug wording.
       case auth.verify_token_mint_authorization(authorization, mint_secret) {
         Error(_) -> unauthorized()
         Ok(Nil) ->
@@ -404,6 +450,37 @@ fn decode_token_mint_request(body: String) -> Result(TokenMintRequest, Nil) {
   json.parse(body, decoder) |> result.replace_error(Nil)
 }
 
+/// The `Authorization` header plus the tenant check both routes share, reported
+/// with levee's distinctions: a wrong tenant is a 403 mismatch, a missing header
+/// is a 401.
+fn authorization_header(
+  req: request.Request(mist.Connection),
+  config: AuthConfig,
+  tenant: String,
+) -> Result(String, auth.AuthError) {
+  case tenant == config.tenant, request.get_header(req, "authorization") {
+    False, _ -> Error(auth.BadClaims(jwt.TenantMismatch(config.tenant, tenant)))
+    _, Error(_) -> Error(auth.MissingAuthorization)
+    True, Ok(authorization) -> Ok(authorization)
+  }
+}
+
+/// Write authorization for `POST /documents/:tenant`, which has no document id
+/// in its path. See `auth.verify_tenant_write_authorization`.
+fn authorize_tenant_write(
+  req: request.Request(mist.Connection),
+  config: AuthConfig,
+  tenant: String,
+) {
+  use authorization <- result.try(authorization_header(req, config, tenant))
+  auth.verify_tenant_write_authorization(
+    authorization,
+    config.jwt_secret,
+    tenant,
+    now_seconds(),
+  )
+}
+
 fn authorize_write(
   req: request.Request(mist.Connection),
   config: AuthConfig,
@@ -411,7 +488,8 @@ fn authorize_write(
   doc: String,
 ) {
   case tenant == config.tenant, request.get_header(req, "authorization") {
-    False, _ | _, Error(_) -> Error(auth.BadFormat)
+    False, _ -> Error(auth.BadClaims(jwt.TenantMismatch(config.tenant, tenant)))
+    _, Error(_) -> Error(auth.MissingAuthorization)
     True, Ok(authorization) ->
       auth.verify_write_authorization(
         authorization,
@@ -430,7 +508,8 @@ fn authorize_read(
   doc: String,
 ) {
   case tenant == config.tenant, request.get_header(req, "authorization") {
-    False, _ | _, Error(_) -> Error(auth.BadFormat)
+    False, _ -> Error(auth.BadClaims(jwt.TenantMismatch(config.tenant, tenant)))
+    _, Error(_) -> Error(auth.MissingAuthorization)
     True, Ok(authorization) ->
       auth.verify_read_authorization(
         authorization,
@@ -448,7 +527,8 @@ fn authorize_storage_read(
   tenant: String,
 ) {
   case tenant == config.tenant, request.get_header(req, "authorization") {
-    False, _ | _, Error(_) -> Error(auth.BadFormat)
+    False, _ -> Error(auth.BadClaims(jwt.TenantMismatch(config.tenant, tenant)))
+    _, Error(_) -> Error(auth.MissingAuthorization)
     True, Ok(authorization) ->
       auth.verify_storage_read_authorization(
         authorization,
@@ -465,7 +545,8 @@ fn authorize_storage_write(
   tenant: String,
 ) {
   case tenant == config.tenant, request.get_header(req, "authorization") {
-    False, _ | _, Error(_) -> Error(auth.BadFormat)
+    False, _ -> Error(auth.BadClaims(jwt.TenantMismatch(config.tenant, tenant)))
+    _, Error(_) -> Error(auth.MissingAuthorization)
     True, Ok(authorization) ->
       auth.verify_storage_write_authorization(
         authorization,
@@ -484,7 +565,7 @@ fn commits_response(
   tenant: String,
 ) {
   case authorize_storage_read(req, config, tenant) {
-    Error(_) -> unauthorized()
+    Error(e) -> auth_error_response(e)
     Ok(_) -> {
       let query =
         uri.parse_query(req.query |> option_unwrap) |> result_unwrap_list
@@ -523,7 +604,7 @@ fn refs_response(
   tenant: String,
 ) {
   case authorize_storage_read(req, config, tenant) {
-    Error(_) -> unauthorized()
+    Error(e) -> auth_error_response(e)
     Ok(_) ->
       git.list_refs(storage, tenant)
       |> list.map(fn(ref) { git.ref_response(public_url, tenant, ref.0, ref.1) })
@@ -541,7 +622,7 @@ fn create_ref_response(
   tenant: String,
 ) {
   case authorize_storage_write(req, config, tenant) {
-    Error(_) -> unauthorized()
+    Error(e) -> auth_error_response(e)
     Ok(_) ->
       case git.decode_ref(read_body(req)) {
         Error(_) -> bad_request()
@@ -574,7 +655,7 @@ fn ref_response(
         authorize_storage_read(req, config, tenant),
         git.get_ref(storage, tenant, ref)
       {
-        Error(_), _ -> unauthorized()
+        Error(e), _ -> auth_error_response(e)
         _, Error(_) -> not_found()
         Ok(_), Ok(sha) ->
           git.ref_response(public_url, tenant, ref, sha)
@@ -586,7 +667,7 @@ fn ref_response(
         authorize_storage_write(req, config, tenant),
         decode_sha(read_body(req))
       {
-        Error(_), _ -> unauthorized()
+        Error(e), _ -> auth_error_response(e)
         _, Error(_) -> bad_request()
         Ok(_), Ok(sha) -> {
           git.put_ref(storage, tenant, ref, sha)
@@ -616,7 +697,7 @@ fn deltas_response(
     authorize_read(req, config, tenant, doc),
     session.exists(sess, topic(tenant, doc))
   {
-    Error(_), _ -> unauthorized()
+    Error(e), _ -> auth_error_response(e)
     _, False -> not_found()
     Ok(_), True -> {
       let query =
@@ -650,6 +731,7 @@ fn create_document(
   sess: session.Session,
   tenant: String,
   doc: String,
+  public_url: String,
   body: String,
 ) {
   let document_topic = topic(tenant, doc)
@@ -667,13 +749,100 @@ fn create_document(
     session.AlreadyExists -> conflict()
     session.InvalidInitialSummary -> bad_request()
     session.Created ->
-      json.object([
-        #("id", json.string(doc)),
-        #("tenantId", json.string(tenant)),
-      ])
+      create_response(doc, tenant, public_url, enable_discovery(body))
       |> json.to_string
       |> json_response(201)
   }
+}
+
+/// Levee's `DocumentController.create/2` responds with the bare document id —
+/// `json(document_id)`, a JSON string — which is what `levee-driver`'s
+/// `restWrapper.post<string>` consumes, and only wraps it in an object when the
+/// caller asked for discovery.
+pub fn create_response(
+  doc: String,
+  tenant: String,
+  public_url: String,
+  enable_discovery: Bool,
+) -> json.Json {
+  case enable_discovery {
+    False -> json.string(doc)
+    True ->
+      json.object([
+        #("id", json.string(doc)),
+        #("session", session_info_json(tenant, public_url)),
+      ])
+  }
+}
+
+fn session_info_json(tenant: String, public_url: String) -> json.Json {
+  json.object([
+    #("ordererUrl", json.string(public_url)),
+    #("historianUrl", json.string(public_url <> "/repos/" <> tenant)),
+    #("deltaStreamUrl", json.string(public_url)),
+    #("isSessionAlive", json.bool(True)),
+    #("isSessionActive", json.bool(True)),
+  ])
+}
+
+/// Whether a create request asked for the discovery-shaped response.
+pub fn enable_discovery(body: String) -> Bool {
+  case
+    json.parse(
+      body,
+      decode.optionally_at(["enableDiscovery"], False, decode.bool),
+    )
+  {
+    Ok(value) -> value
+    Error(_) -> False
+  }
+}
+
+/// Body of `GET /health`. Kept public so the wire shape is pinned by a test
+/// rather than only by a live server.
+pub fn health_body() -> String {
+  json.object([#("status", json.string("ok"))]) |> json.to_string
+}
+
+/// The document id a `POST /documents/:tenant` body asks for, if any. Levee's
+/// `DocumentController.create/2` does `params["id"] || generate_document_id()`;
+/// an absent or empty id means "generate one".
+pub fn requested_document_id(body: String) -> option.Option(String) {
+  case json.parse(body, decode.optionally_at(["id"], "", decode.string)) {
+    Ok("") | Error(_) -> None
+    Ok(id) -> Some(id)
+  }
+}
+
+/// Every rejection is 401, which is the Routerlicious contract the official
+/// driver is held to (`floodgate-routerlicious.test.ts`, gated for release by
+/// `floodgate-readiness.json`) and a deliberate divergence from levee.
+///
+/// Levee's `Plugs.Auth.error_response/1` — and `signet`'s own
+/// `jwt.error_to_http_code` — answer 403 for a token that authenticates but is
+/// not entitled (wrong tenant/document, missing scope). Floodgate keeps 401
+/// there because the two statuses are not interchangeable to a Fluid client:
+/// 401 prompts a token refresh and retry, 403 is fatal. See ADR-009.
+pub fn auth_error_status(_error: auth.AuthError) -> Int {
+  401
+}
+
+/// Rejection message, matching levee's wording closely enough that clients
+/// keying off the text behave identically against either server.
+pub fn auth_error_message(error: auth.AuthError) -> String {
+  case error {
+    auth.MissingAuthorization -> "Missing Authorization header"
+    auth.BadFormat ->
+      "Invalid Authorization header format. Expected: Bearer <token>"
+    auth.BadSignature -> "Invalid token signature"
+    auth.BadClaims(e) -> jwt.format_error(e)
+  }
+}
+
+fn auth_error_response(error: auth.AuthError) {
+  json.object([#("error", json.string(auth_error_message(error)))])
+  |> json.to_string
+  |> json_response(auth_error_status(error))
 }
 
 fn unauthorized() {
@@ -803,8 +972,23 @@ fn result_unwrap_list(
 
 pub const topic_prefix = "document:"
 
+/// Default listen port when neither `PORT` nor `FLOODGATE_PORT` is set.
+pub const default_port = 3000
+
+/// Resolve the listen port, preferring `PORT` (the Docker/PaaS convention
+/// levee already honours) over `FLOODGATE_PORT`, which stays available for
+/// running floodgate alongside a levee server on one host.
+pub fn resolve_port(port: String, floodgate_port: String) -> Int {
+  case int.parse(port), int.parse(floodgate_port) {
+    Ok(p), _ -> p
+    _, Ok(p) -> p
+    _, _ -> default_port
+  }
+}
+
 pub fn main() {
   let backend_name = getenv("FLOODGATE_STORAGE_BACKEND", "ets")
   let assert Ok(storage) = backend_from_name(backend_name)
-  let assert Ok(Nil) = serve_with_backend(3000, storage)
+  let port = resolve_port(getenv("PORT", ""), getenv("FLOODGATE_PORT", ""))
+  let assert Ok(Nil) = serve_with_backend(port, storage)
 }

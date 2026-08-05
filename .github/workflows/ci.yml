@@ -1,0 +1,84 @@
+# CI for Floodgate as a standalone repository.
+#
+# Inert while Floodgate lives inside the Levee repo — GitHub only reads
+# workflows from the repository root's .github/ — but it moves with the
+# directory when Floodgate is extracted, so the new repo has CI on day one.
+# See ../../../../docs/adr/009-floodgate-standalone-repo.md.
+#
+# While Floodgate remains here, its build and tests run from the Levee root
+# workflow (.github/workflows/ci.yml) via `just build-gleam` / `just test-gleam`.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          gleam-version: "1.18.1"
+
+      # Dependencies are git-pinned in manifest.toml, so the cache key is exact.
+      - uses: actions/cache@v4
+        with:
+          path: build/packages
+          key: ${{ runner.os }}-gleam-${{ hashFiles('manifest.toml') }}
+          restore-keys: ${{ runner.os }}-gleam-
+
+      - run: gleam deps download
+
+      - run: gleam format --check
+
+      - run: gleam build --target erlang
+
+      - run: gleam test
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: floodgate:ci
+
+      # The image is only useful if it actually serves; /health is the same
+      # readiness probe the container healthcheck and the Levee integration
+      # suites use.
+      - name: Verify the container serves /health
+        run: |
+          docker run -d --name floodgate-ci \
+            -p 3000:3000 \
+            -e FLOODGATE_JWT_SECRET=ci-secret \
+            -e FLOODGATE_STORAGE_BACKEND=memory \
+            floodgate:ci
+          for i in $(seq 1 30); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/health)" = "200" ]; then
+              echo "Floodgate is serving."
+              docker rm -f floodgate-ci
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Floodgate did not become ready." >&2
+          docker logs floodgate-ci >&2
+          docker rm -f floodgate-ci
+          exit 1

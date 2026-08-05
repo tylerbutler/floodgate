@@ -1,4 +1,5 @@
 import floodgate
+import floodgate/auth
 import floodgate/git
 import floodgate/memory_store
 import floodgate/session
@@ -9,6 +10,8 @@ import gleam/option.{None, Some}
 import gleam/string
 import gleeunit
 import gleeunit/should
+import signet/jwt
+import signet/types
 
 pub fn main() {
   gleeunit.main()
@@ -17,6 +20,76 @@ pub fn main() {
 pub fn start_registers_channel_test() {
   let assert Ok(_) = floodgate.start("fluid", "test-jwt-secret")
   floodgate.topic_prefix |> should.equal("document:")
+}
+
+/// The readiness probe both Docker and levee's integration harness use is
+/// `GET /health`, so the body has to match levee's `HealthController` exactly.
+pub fn health_body_matches_levee_test() {
+  floodgate.health_body() |> should.equal("{\"status\":\"ok\"}")
+}
+
+/// `PORT` is the Docker/PaaS convention levee already honours; `FLOODGATE_PORT`
+/// stays available for running alongside a levee server.
+pub fn resolve_port_prefers_port_then_floodgate_port_test() {
+  floodgate.resolve_port("8080", "3001") |> should.equal(8080)
+  floodgate.resolve_port("", "3001") |> should.equal(3001)
+  floodgate.resolve_port("", "") |> should.equal(3000)
+  floodgate.resolve_port("not-a-port", "") |> should.equal(3000)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Levee REST parity — see docs/adr/009-floodgate-standalone-repo.md
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Levee's `DocumentController.create/2` uses `params["id"] || generate/0`, so
+/// `POST /documents/:tenant` must create the document the caller asked for.
+pub fn requested_document_id_honours_body_id_test() {
+  floodgate.requested_document_id("{\"id\":\"my-doc\"}")
+  |> should.equal(Some("my-doc"))
+  floodgate.requested_document_id("{}") |> should.equal(None)
+  floodgate.requested_document_id("") |> should.equal(None)
+  // An empty id is not a usable document id — fall back to generating one.
+  floodgate.requested_document_id("{\"id\":\"\"}") |> should.equal(None)
+}
+
+/// Messages mirror levee's `Plugs.Auth.error_response/1`. Statuses do not:
+/// every rejection stays 401 to preserve the Routerlicious contract, where 401
+/// means "refresh the token and retry" and 403 is fatal. Levee answers 403 for
+/// wrong tenant/document and missing scopes. Deliberate — see ADR-009.
+pub fn auth_error_response_matches_levee_test() {
+  floodgate.auth_error_status(auth.MissingAuthorization) |> should.equal(401)
+  floodgate.auth_error_message(auth.MissingAuthorization)
+  |> should.equal("Missing Authorization header")
+
+  floodgate.auth_error_status(auth.BadFormat) |> should.equal(401)
+  floodgate.auth_error_message(auth.BadFormat)
+  |> string.contains("Invalid Authorization header format")
+  |> should.be_true
+
+  floodgate.auth_error_status(auth.BadSignature) |> should.equal(401)
+
+  floodgate.auth_error_status(auth.BadClaims(jwt.TokenExpired(1, 2)))
+  |> should.equal(401)
+  floodgate.auth_error_message(auth.BadClaims(jwt.TokenExpired(1, 2)))
+  |> string.contains("expired")
+  |> should.be_true
+
+  // Levee answers 403 for these; floodgate stays 401 so the official driver
+  // can refresh and retry rather than treating the rejection as fatal.
+  floodgate.auth_error_status(
+    auth.BadClaims(jwt.MissingScope(types.DocWrite, [])),
+  )
+  |> should.equal(401)
+  floodgate.auth_error_message(
+    auth.BadClaims(jwt.MissingScope(types.DocWrite, [])),
+  )
+  |> string.contains("scope")
+  |> should.be_true
+
+  floodgate.auth_error_status(auth.BadClaims(jwt.DocumentMismatch("a", "b")))
+  |> should.equal(401)
+  floodgate.auth_error_status(auth.BadClaims(jwt.TenantMismatch("a", "b")))
+  |> should.equal(401)
 }
 
 pub fn standalone_storage_backend_selection_test() {

@@ -1,0 +1,22 @@
+# Build artifacts — the image rebuilds these from source.
+build
+
+# Local shelf (DETS) data; the container uses FLOODGATE_DATA_DIR=/data.
+priv/floodgate_data
+
+# Git
+.git
+.gitignore
+
+# Editor/IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Docs and tooling that do not affect the build
+*.md
+Dockerfile
+docker-compose*.yml
+.dockerignore

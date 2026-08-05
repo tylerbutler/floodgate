@@ -15,6 +15,9 @@ import signet/jwt
 import signet/types.{type TokenClaims, TokenClaims, User, scopes_from_strings}
 
 pub type AuthError {
+  /// No `Authorization` header at all, as distinct from a malformed one —
+  /// levee reports these differently, so floodgate has to as well.
+  MissingAuthorization
   BadFormat
   BadSignature
   BadClaims(jwt.JwtValidationError)
@@ -66,6 +69,26 @@ pub fn verify_read_authorization(
   use claims <- result.try(verify_signature(token, secret))
   use _ <- result.try(
     jwt.validate_read_access(claims, tenant, doc, now)
+    |> result.map_error(BadClaims),
+  )
+  Ok(claims)
+}
+
+/// Verify write access for a route that carries no document id in its path
+/// (`POST /documents/:tenant`, where the id is chosen from the body or
+/// generated). Levee's auth plug skips document validation entirely when the
+/// route has no `:id` param; validating against the token's own document id is
+/// the equivalent, and keeps a document-scoped token working for the create
+/// call the driver makes.
+pub fn verify_tenant_write_authorization(
+  authorization: String,
+  secret: String,
+  tenant: String,
+  now: Int,
+) -> Result(TokenClaims, AuthError) {
+  use claims <- result.try(authorization_claims(authorization, secret))
+  use _ <- result.try(
+    jwt.validate_write_access(claims, tenant, claims.document_id, now)
     |> result.map_error(BadClaims),
   )
   Ok(claims)

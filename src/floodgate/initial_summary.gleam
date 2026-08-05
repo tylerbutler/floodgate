@@ -3,6 +3,7 @@
 
 import floodgate/git
 import floodgate/store
+import gleam/dict
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
@@ -54,19 +55,12 @@ pub fn persist(
         None -> Ok(None)
         Some(SummaryBlob(_, _)) -> Error(Nil)
         Some(SummaryTree(entries)) -> {
-          use app_tree_sha <- result.try(persist_tree(storage, tenant, entries))
-          use protocol_tree_sha <- result.try(persist_protocol(
+          use tree_sha <- result.try(persist_root_tree(
             storage,
             tenant,
-            payload.sequence_number,
-            payload.values,
+            entries,
+            payload,
           ))
-          use tree_sha <- result.try(
-            persist_tree_entries(storage, tenant, [
-              tree_entry(".app", "tree", app_tree_sha),
-              tree_entry(".protocol", "tree", protocol_tree_sha),
-            ]),
-          )
           let author =
             json.object([
               #("name", json.string("Floodgate")),
@@ -93,6 +87,67 @@ pub fn persist(
         }
       }
     }
+  }
+}
+
+/// The two client stacks post structurally different create payloads, and the
+/// resulting Historian graph has to be the one each stack's loader can read:
+///
+///   - The official Routerlicious driver splits the combined summary itself and
+///     posts the `.app` contents as `summary` plus the quorum in `values`. The
+///     protocol tree is synthesized here, and the root is `.app` + `.protocol`.
+///   - `levee-driver` posts the whole combined `ISummaryTree`, `.app` and
+///     `.protocol` included, and no `values`. Its `convertGitTreeToSnapshotTree`
+///     does not unwrap `.app`, so — exactly as levee's
+///     `process_initial_summary/3` does — `.app`'s *children* are flattened to
+///     the root tree and the summary's own `.protocol` is stored beside them.
+fn persist_root_tree(
+  storage: store.Backend,
+  tenant: String,
+  entries: List(SummaryEntry),
+  payload: CreatePayload,
+) -> Result(String, Nil) {
+  case find_entry(entries, ".app") {
+    Some(SummaryTree(app_entries)) -> {
+      use app_tree_entries <- result.try(
+        list.try_map(app_entries, persist_entry(storage, tenant, _)),
+      )
+      use protocol_entries <- result.try(case find_entry(entries, ".protocol") {
+        Some(SummaryTree(_) as protocol) -> {
+          use sha <- result.try(persist_value(storage, tenant, protocol))
+          Ok([tree_entry(".protocol", "tree", sha)])
+        }
+        _ -> Ok([])
+      })
+      persist_tree_entries(
+        storage,
+        tenant,
+        list.append(app_tree_entries, protocol_entries),
+      )
+    }
+    _ -> {
+      use app_tree_sha <- result.try(persist_tree(storage, tenant, entries))
+      use protocol_tree_sha <- result.try(persist_protocol(
+        storage,
+        tenant,
+        payload.sequence_number,
+        payload.values,
+      ))
+      persist_tree_entries(storage, tenant, [
+        tree_entry(".app", "tree", app_tree_sha),
+        tree_entry(".protocol", "tree", protocol_tree_sha),
+      ])
+    }
+  }
+}
+
+fn find_entry(
+  entries: List(SummaryEntry),
+  path: String,
+) -> Option(SummaryValue) {
+  case list.find(entries, fn(entry) { entry.path == path }) {
+    Ok(entry) -> entry.value
+    Error(_) -> None
   }
 }
 
@@ -232,8 +287,22 @@ fn create_payload_decoder() {
   decode.success(CreatePayload(summary, sequence_number, values))
 }
 
+/// Two wire shapes reach this endpoint and both have to work, because one
+/// floodgate process serves both client stacks (ADR-008):
+///
+///   - Routerlicious whole-summary — string `type`, `entries` array — sent by
+///     the official driver via `floodgate-client`.
+///   - Fluid `ISummaryTree` — numeric `type`, `tree` map keyed by path — sent
+///     by `levee-driver`/`levee-client`, and the only shape levee's
+///     `process_initial_summary/3` accepts.
 fn summary_value_decoder() -> decode.Decoder(SummaryValue) {
   use <- decode.recursive
+  decode.one_of(routerlicious_summary_value_decoder(), [
+    fluid_summary_value_decoder(),
+  ])
+}
+
+fn routerlicious_summary_value_decoder() -> decode.Decoder(SummaryValue) {
   use kind <- decode.field("type", decode.string)
   case kind {
     "tree" -> {
@@ -251,6 +320,53 @@ fn summary_value_decoder() -> decode.Decoder(SummaryValue) {
     }
     _ -> decode.failure(SummaryTree([]), "whole summary value")
   }
+}
+
+/// `SummaryType.Tree` = 1 and `SummaryType.Blob` = 2 in
+/// `@fluidframework/driver-definitions`. Handles (3) and attachments (4) only
+/// appear in incremental summaries, never in a create-container payload.
+fn fluid_summary_value_decoder() -> decode.Decoder(SummaryValue) {
+  use kind <- decode.field("type", decode.int)
+  case kind {
+    1 -> {
+      use tree <- decode.optional_field(
+        "tree",
+        dict.new(),
+        decode.dict(decode.string, summary_value_decoder()),
+      )
+      decode.success(SummaryTree(fluid_tree_entries(tree)))
+    }
+    2 -> {
+      use content <- decode.field("content", blob_content_decoder())
+      decode.success(SummaryBlob(content, "utf-8"))
+    }
+    _ -> decode.failure(SummaryTree([]), "fluid summary value")
+  }
+}
+
+/// The path→node map carries no explicit entry kind; it follows from the node.
+/// Sorted so the resulting tree object is deterministic for a given summary.
+fn fluid_tree_entries(
+  tree: dict.Dict(String, SummaryValue),
+) -> List(SummaryEntry) {
+  tree
+  |> dict.to_list
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  |> list.map(fn(pair) {
+    let #(path, value) = pair
+    let kind = case value {
+      SummaryTree(_) -> "tree"
+      SummaryBlob(_, _) -> "blob"
+    }
+    SummaryEntry(path, kind, Some(value), None)
+  })
+}
+
+/// `ISummaryBlob.content` is `string | Uint8Array` in the Fluid types, and
+/// callers put plain JSON there too. Levee re-encodes anything non-binary with
+/// `Jason.encode!/1`; do the same rather than rejecting the summary.
+fn blob_content_decoder() -> decode.Decoder(String) {
+  decode.one_of(decode.string, [decode.map(decode.dynamic, json_encode)])
 }
 
 fn summary_entry_decoder() {

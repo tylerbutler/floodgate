@@ -969,12 +969,15 @@ describe.runIf(floodgateAvailable)(
 				);
 
 				expect(response.status).toBe(201);
-				const body = (await response.json()) as {
-					id: string;
-					tenantId: string;
-				};
-				expect(body.id).not.toHaveLength(0);
-				expect(body.tenantId).toBe(FLOODGATE_TENANT_ID);
+				// Levee's DocumentController responds with the bare document id
+				// (`json(document_id)`), and `levee-driver`'s
+				// `restWrapper.post<string>` consumes exactly that, so Floodgate
+				// matches it rather than returning an object. The official
+				// Routerlicious driver reads the id from its own resolved URL and
+				// is unaffected — its createContainer() path is covered above.
+				const documentId = (await response.json()) as string;
+				expect(typeof documentId).toBe("string");
+				expect(documentId).not.toHaveLength(0);
 			},
 		);
 
@@ -1014,9 +1017,7 @@ describe.runIf(floodgateAvailable)(
 					FLOODGATE_REST_ENDPOINTS.createDocument(FLOODGATE_TENANT_ID),
 					{ method: "POST", body: { sequenceNumber: 0 } },
 				);
-				const { id: documentId } = (await createResponse.json()) as {
-					id: string;
-				};
+				const documentId = (await createResponse.json()) as string;
 
 				const response = await floodgateFetch(
 					FLOODGATE_REST_ENDPOINTS.sessionDiscovery(
