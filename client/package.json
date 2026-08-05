@@ -22,6 +22,7 @@
 		"test:integration:down": "docker compose -f packages/levee-driver/docker-compose.yml down -v",
 		"test:integration:run": "vitest run integration",
 		"test:floodgate-routerlicious": "FLOODGATE_ROUTERLICIOUS_COMPAT=1 vitest run packages/levee-driver/test/integration/floodgate-routerlicious.test.ts",
+		"test:floodgate-phoenix": "FLOODGATE_PHOENIX_COMPAT=1 FLOODGATE_ROUTERLICIOUS_COMPAT=1 vitest run packages/levee-driver/test/integration/floodgate-phoenix.test.ts",
 		"test:conformance": "pnpm test:floodgate-routerlicious",
 		"check:floodgate-readiness-manifest": "vitest run packages/levee-driver/test/integration/floodgate-readiness.test.ts",
 		"check:floodgate-readiness": "node scripts/check-floodgate-release.mjs",
