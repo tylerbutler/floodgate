@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Portable setsid: run a command in its own session/process group so
+# `kill -- -$pid` reaches the whole tree (e.g. BEAM descendants).
+# Uses real setsid where available (Linux); macOS ships no setsid, so fall
+# back to perl's setpgrp, which gives the same PGID = PID property.
+if command -v setsid >/dev/null 2>&1; then
+    exec setsid "$@"
+fi
+exec perl -e 'setpgrp 0, 0; exec @ARGV or die "exec failed: $!"' -- "$@"
