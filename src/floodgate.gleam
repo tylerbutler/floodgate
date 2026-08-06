@@ -4,8 +4,9 @@
 
 import beryl
 import beryl/pubsub
-import beryl/transport/mist as beryl_mist
+import beryl/supervisor as beryl_supervisor
 import beryl/wire
+import beryl_mist
 import floodgate/auth
 import floodgate/document_channel
 import floodgate/git
@@ -27,6 +28,8 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/otp/actor
+import gleam/otp/static_supervisor
 import gleam/result
 import gleam/string
 import gleam/uri
@@ -72,7 +75,7 @@ fn storage_data_dir() -> String {
 pub fn start(
   configured_tenant: String,
   jwt_secret: String,
-) -> Result(#(beryl.Channels, session.Session), beryl.StartError) {
+) -> Result(#(beryl.Channels, session.Session), actor.StartError) {
   start_with_backend(
     configured_tenant,
     jwt_secret,
@@ -85,14 +88,20 @@ pub fn start_with_backend(
   configured_tenant: String,
   jwt_secret: String,
   storage: store.Backend,
-) -> Result(#(beryl.Channels, session.Session), beryl.StartError) {
+) -> Result(#(beryl.Channels, session.Session), actor.StartError) {
   let ps = pubsub.start(pubsub.default_config())
   // Phoenix framing is the coordinator default so `levee-driver` sockets on
   // the stock beryl transport need no per-connection codec; the Socket.IO
   // transport overrides it per socket with the dewdrop/Routerlicious codec.
   let config = beryl.config(wire.phoenix_codec()) |> beryl.with_pubsub(ps)
-  case beryl.start(config) {
-    Ok(channels) -> {
+  let supervised = beryl_supervisor.config(config)
+  case
+    static_supervisor.new(static_supervisor.OneForOne)
+    |> static_supervisor.add(beryl_supervisor.start(supervised))
+    |> static_supervisor.start()
+  {
+    Ok(_) -> {
+      let channels = beryl_supervisor.channels(supervised)
       let sess = session.start_with_backend(storage)
       let _ =
         beryl.register(

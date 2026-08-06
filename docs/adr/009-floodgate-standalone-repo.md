@@ -132,14 +132,19 @@ Divergence 9 was fixed in `silt` (`7df0c9e`) and `floodgate/manifest.toml` is
 bumped to it, verified on a freshly resolved dependency tree and in the
 container image.
 
-The bump was applied by editing the pinned commit in `manifest.toml` directly
-rather than with `gleam update silt`, because a full re-resolve fails: `signet`
-is reachable both as a direct floodgate dependency and through `spillway`, at
-two different commits, and `gleam` rejects that as "conflicting provided
-dependencies". Bumping one git dependency at a time keeps the rest of the tree
-pinned and avoids it. Worth resolving properly before extraction, since a fresh
-clone of a standalone Floodgate would hit the same conflict on any
-`gleam update`.
+The bump was originally applied by editing the pinned commit in
+`manifest.toml` directly rather than with `gleam update silt`, because a full
+re-resolve failed: `signet` was reachable both as a direct floodgate dependency
+and through `spillway`, at two different commits, and `gleam` rejects that as
+"conflicting provided dependencies".
+
+**Resolved (2026-08-06):** the `signet` refs were aligned upstream, and a full
+`gleam update` now succeeds. Doing so pulled in beryl's monorepo split
+(`packages/beryl` + `packages/beryl_mist`, pinned to the `v0.0` tag) and its
+new supervised-startup and `beryl/transport` APIs, which floodgate has been
+migrated to — the beryl-main migration noted in ADR-008. Verified: floodgate's
+Gleam suite, both dual-mode conformance suites, and Levee's Elixir suite all
+pass on the freshly resolved tree.
 
 ## Consequences
 

@@ -2,7 +2,7 @@
 //// official Routerlicious driver.
 
 import beryl.{type Channels}
-import beryl/coordinator.{type Message as CoordinatorMessage}
+import beryl/transport
 import beryl/wire/codec.{type Inbound, Event, Heartbeat, Join}
 import dewdrop/events
 import floodgate/server_codec
@@ -28,7 +28,7 @@ const max_payload = 1_000_000
 type ConnectionState {
   ConnectionState(
     socket_id: String,
-    coordinator: Subject(CoordinatorMessage),
+    channels: Channels,
     send_subject: Subject(SendRequest),
     topic: String,
   )
@@ -67,16 +67,14 @@ fn upgrade(
   mist.websocket(
     request: request,
     handler: on_message,
-    on_init: fn(connection) {
-      on_init(connection, beryl.coordinator_subject(channels))
-    },
+    on_init: fn(connection) { on_init(connection, channels) },
     on_close: on_close,
   )
 }
 
 fn on_init(
   connection: WebsocketConnection,
-  coordinator: Subject(CoordinatorMessage),
+  channels: Channels,
 ) -> #(ConnectionState, Option(process.Selector(SendRequest))) {
   let socket_id = generate_socket_id()
   let send_subject = process.new_subject()
@@ -93,15 +91,13 @@ fn on_init(
     Ok(Nil)
   }
 
-  process.send(
-    coordinator,
-    coordinator.SocketConnected(
-      socket_id,
-      send_text,
-      send_binary,
-      Some(server_codec.server_codec()),
-      dynamic.nil(),
-    ),
+  transport.socket_connected_with_codec(
+    channels: channels,
+    socket_id: socket_id,
+    send: send_text,
+    send_binary: send_binary,
+    codec: Some(server_codec.server_codec()),
+    assigns: dynamic.nil(),
   )
 
   let _ =
@@ -116,7 +112,7 @@ fn on_init(
     )
   schedule_ping(send_subject)
 
-  #(ConnectionState(socket_id, coordinator, send_subject, ""), Some(selector))
+  #(ConnectionState(socket_id, channels, send_subject, ""), Some(selector))
 }
 
 fn on_message(
@@ -127,7 +123,7 @@ fn on_message(
   case message {
     mist.Text(text) -> handle_text(state, text, connection)
     mist.Binary(data) -> {
-      coordinator.route_binary(state.coordinator, state.socket_id, data)
+      transport.route_binary(state.channels, state.socket_id, data)
       mist.continue(state)
     }
     mist.Closed | mist.Shutdown -> mist.stop()
@@ -151,16 +147,16 @@ fn handle_text(
 ) -> mist.Next(ConnectionState, SendRequest) {
   case socketio.classify(text) {
     socketio.EnginePing -> {
-      coordinator.route_decoded(
-        state.coordinator,
+      transport.route_decoded(
+        state.channels,
         state.socket_id,
         codec.inbound(None, None, "", Heartbeat, dynamic.nil()),
       )
       mist.continue(state)
     }
     socketio.EnginePong -> {
-      coordinator.route_decoded(
-        state.coordinator,
+      transport.route_decoded(
+        state.channels,
         state.socket_id,
         codec.inbound(None, None, "", Heartbeat, dynamic.nil()),
       )
@@ -181,7 +177,7 @@ fn handle_fluid_event(
   case inbound_event(state.topic, event, args) {
     Error(Nil) -> mist.continue(state)
     Ok(#(inbound, topic)) -> {
-      coordinator.route_decoded(state.coordinator, state.socket_id, inbound)
+      transport.route_decoded(state.channels, state.socket_id, inbound)
       mist.continue(ConnectionState(..state, topic: topic))
     }
   }
@@ -269,10 +265,7 @@ fn send_text(
 }
 
 fn on_close(state: ConnectionState) -> Nil {
-  process.send(
-    state.coordinator,
-    coordinator.SocketDisconnected(state.socket_id),
-  )
+  transport.socket_disconnected(state.channels, state.socket_id)
 }
 
 fn schedule_ping(subject: Subject(SendRequest)) -> Nil {
