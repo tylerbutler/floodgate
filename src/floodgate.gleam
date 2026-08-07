@@ -3,6 +3,7 @@
 //// can connect. Gleam analogue of levee's DocumentChannel + Session + endpoint.
 
 import beryl
+import beryl/error as beryl_error
 import beryl/pubsub
 import beryl/supervisor as beryl_supervisor
 import beryl/wire
@@ -28,7 +29,6 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
-import gleam/otp/actor
 import gleam/otp/static_supervisor
 import gleam/result
 import gleam/string
@@ -75,7 +75,7 @@ fn storage_data_dir() -> String {
 pub fn start(
   configured_tenant: String,
   jwt_secret: String,
-) -> Result(#(beryl.Channels, session.Session), actor.StartError) {
+) -> Result(#(beryl.Channels, session.Session), beryl_error.StartFailure) {
   start_with_backend(
     configured_tenant,
     jwt_secret,
@@ -88,7 +88,7 @@ pub fn start_with_backend(
   configured_tenant: String,
   jwt_secret: String,
   storage: store.Backend,
-) -> Result(#(beryl.Channels, session.Session), actor.StartError) {
+) -> Result(#(beryl.Channels, session.Session), beryl_error.StartFailure) {
   let ps = pubsub.start(pubsub.default_config())
   // Phoenix framing is the coordinator default so `levee-driver` sockets on
   // the stock beryl transport need no per-connection codec; the Socket.IO
@@ -111,7 +111,7 @@ pub fn start_with_backend(
         )
       Ok(#(channels, sess))
     }
-    Error(e) -> Error(e)
+    Error(e) -> Error(beryl_error.from_actor_start_error(e))
   }
 }
 
