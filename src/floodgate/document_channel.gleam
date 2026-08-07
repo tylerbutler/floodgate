@@ -2,7 +2,7 @@
 //// + op fan-out (with contents), nack, submitSignal fan-out, requestOps delta
 //// catch-up. Gleam analogue of levee's DocumentChannel.
 
-import beryl
+import beryl.{type RegisteredChannel}
 import beryl/channel.{type Channel, JoinError, JoinOk, NoReply, Push}
 import beryl/socket.{type Socket}
 import dewdrop/events
@@ -17,10 +17,12 @@ import gleam/bool
 import gleam/dict
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/otp/actor
 import gleam/result
 import gleam/string
 import signet/types.{type TokenClaims}
@@ -68,17 +70,80 @@ type SummarizeContents {
   )
 }
 
+/// Server-originated messages delivered to a single socket's channel context via
+/// `beryl.send_info`. Signals with targeting cannot go out as a topic broadcast,
+/// so they arrive here instead and are pushed from `handle_info`.
+pub type DocInfo {
+  SignalPush(payload: json.Json)
+}
+
+/// Holds the `RegisteredChannel` handle `beryl.send_info` needs.
+///
+/// The handle only exists *after* `beryl.register` returns, and `register` takes
+/// the channel this module builds — so it cannot be passed in at construction.
+/// It also cannot live in `session`, because `RegisteredChannel` is opaque and
+/// parameterized on `DocAssigns`/`DocInfo`, and `document_channel` already
+/// depends on `session`. Hence a holder in this module, written once at startup
+/// and read on each targeted signal.
+pub opaque type Registration {
+  Registration(Subject(RegistrationMsg))
+}
+
+type RegistrationMsg {
+  Set(RegisteredChannel(DocAssigns, DocInfo))
+  Get(Subject(Option(RegisteredChannel(DocAssigns, DocInfo))))
+}
+
+/// Allocate an empty holder. Call before `beryl.register`.
+pub fn new_registration() -> Registration {
+  let assert Ok(started) =
+    actor.new(None)
+    |> actor.on_message(fn(state, message) {
+      case message {
+        Set(registered) -> actor.continue(Some(registered))
+        Get(reply) -> {
+          process.send(reply, state)
+          actor.continue(state)
+        }
+      }
+    })
+    |> actor.start
+  Registration(started.data)
+}
+
+/// Record the handle `beryl.register` returned.
+pub fn set_registration(
+  registration: Registration,
+  registered: RegisteredChannel(DocAssigns, DocInfo),
+) -> Nil {
+  let Registration(subject) = registration
+  process.send(subject, Set(registered))
+}
+
+fn registered_channel(
+  registration: Registration,
+) -> Option(RegisteredChannel(DocAssigns, DocInfo)) {
+  let Registration(subject) = registration
+  process.call(subject, 1000, Get)
+}
+
 pub fn new(
   channels: beryl.Channels,
   sess: Session,
   configured_tenant: String,
   secret: String,
-) -> Channel(DocAssigns, info) {
+  registration: Registration,
+) -> Channel(DocAssigns, DocInfo) {
   channel.new(fn(t, p, s) {
     join(channels, sess, configured_tenant, secret, t, p, s)
   })
   |> channel.with_handle_in(fn(e, p, s) {
-    handle_in(channels, sess, configured_tenant, secret, e, p, s)
+    handle_in(channels, sess, registration, configured_tenant, secret, e, p, s)
+  })
+  |> channel.with_handle_info(fn(info, s) {
+    case info {
+      SignalPush(payload) -> Push(events.signal, payload, s)
+    }
   })
   |> channel.with_terminate(fn(_reason, s) { on_leave(channels, sess, s) })
 }
@@ -570,6 +635,7 @@ fn now_seconds() -> Int
 fn handle_in(
   channels,
   sess: Session,
+  registration: Registration,
   configured_tenant: String,
   secret: String,
   event,
@@ -602,7 +668,7 @@ fn handle_in(
     e, True if e == events.submit_op ->
       submit_op(channels, sess, payload, sock, a)
     e, True if e == events.submit_signal ->
-      submit_signals(channels, payload, sock, a)
+      submit_signals(channels, sess, registration, payload, sock, a)
     "requestOps", True ->
       Push(
         events.op,
@@ -917,27 +983,82 @@ fn topic_ids(topic: String) -> Result(#(String, String), String) {
   }
 }
 
-fn submit_signals(channels, payload: Dynamic, sock, a: DocAssigns) {
+fn submit_signals(
+  channels,
+  sess: Session,
+  registration: Registration,
+  payload: Dynamic,
+  sock,
+  a: DocAssigns,
+) {
   case
     field(payload, "clientId", "") == a.client_id,
     submitted_signals(payload)
   {
-    True, Ok(contents) -> {
-      list.each(contents, fn(content) {
-        beryl.broadcast(
-          channels,
-          a.topic,
-          events.signal,
-          json.object([
-            #("clientId", json.string(a.client_id)),
-            #("content", content),
-          ]),
-        )
+    True, Ok(signals) -> {
+      list.each(signals, fn(signal) {
+        relay_signal(channels, sess, registration, a, signal)
       })
       NoReply(sock)
     }
     _, _ -> NoReply(sock)
   }
+}
+
+/// Deliver one signal to the clients its targeting fields name.
+///
+/// An untargeted signal keeps the broadcast path: it is one coordinator message
+/// rather than one per recipient, and it avoids the `session.clients` round-trip
+/// needed to resolve a recipient list. Only a signal that actually carries
+/// targeting pays for either.
+///
+/// Recipients come from `spillway/session_logic.determine_signal_recipients`,
+/// which is the same function levee's `Bridge.determine_signal_recipients` calls
+/// — levee's behaviour is the reference here, so the shared implementation is
+/// the one to use rather than `signals.get_signal_recipients`, which does not
+/// intersect the targeted list with the known clients.
+fn relay_signal(
+  channels,
+  sess: Session,
+  registration: Registration,
+  a: DocAssigns,
+  signal: signals.NormalizedSignal,
+) -> Nil {
+  let message =
+    json.object([
+      #("clientId", json.string(a.client_id)),
+      #("content", dynamic_json(signal.content)),
+    ])
+
+  case targeted(signal), registered_channel(registration) {
+    // Untargeted, or no registration handle to push through: broadcast, which
+    // is what this did unconditionally before targeting was honoured.
+    False, _ | _, None ->
+      beryl.broadcast(channels, a.topic, events.signal, message)
+    True, Some(registered) ->
+      session_logic.determine_signal_recipients(
+        a.client_id,
+        signal.targeted_clients,
+        signal.ignored_clients,
+        signal.target_client_id,
+        session.clients(sess, a.topic),
+      )
+      // The Fluid client id *is* the beryl socket id — `join` assigns
+      // `socket.id(sock)` as the client id — so a recipient addresses a socket
+      // directly, with no mapping to maintain.
+      |> list.each(fn(recipient) {
+        beryl.send_info(registered, recipient, a.topic, SignalPush(message))
+      })
+  }
+}
+
+/// Whether a signal names recipients at all. `determine_signal_recipients`
+/// treats all-absent as "broadcast to everyone but the sender", which the
+/// broadcast path already does more cheaply.
+fn targeted(signal: signals.NormalizedSignal) -> Bool {
+  option.is_some(signal.targeted_clients)
+  || option.is_some(signal.ignored_clients)
+  || option.is_some(signal.target_client_id)
 }
 
 fn submitted_ops(payload: Dynamic) {
@@ -986,26 +1107,26 @@ fn optional_dynamic_field(name: String, next) {
 /// spillway's v1/v2 normalization — the same path levee's
 /// `Bridge.normalize_signal_batch` takes — rather than a third ad-hoc parser.
 ///
-/// Targeting fields are parsed but not yet honoured: floodgate has no
-/// per-socket push, so every signal is broadcast to the topic.
-fn submitted_signals(payload: Dynamic) -> Result(List(json.Json), Nil) {
+/// Normalized signals keep their targeting fields, which `relay_signal` honours.
+fn submitted_signals(
+  payload: Dynamic,
+) -> Result(List(signals.NormalizedSignal), Nil) {
   let batches_decoder = {
     use batches <- decode.field("contentBatches", decode.list(decode.dynamic))
     decode.success(batches)
   }
   case decode.run(payload, batches_decoder) {
-    Ok(batches) ->
-      Ok(
-        list.flat_map(batches, fn(batch) {
-          signals.normalize_signal_batch(batch)
-          |> list.map(fn(signal) { dynamic_json(signal.content) })
-        }),
-      )
+    Ok(batches) -> Ok(list.flat_map(batches, signals.normalize_signal_batch))
     Error(_) -> legacy_submitted_signals(payload)
   }
 }
 
-fn legacy_submitted_signals(payload: Dynamic) -> Result(List(json.Json), Nil) {
+/// The `{signals: ["...", ...]}` shape carries content strings only — no
+/// targeting — so these normalize to untargeted signals and take the broadcast
+/// path.
+fn legacy_submitted_signals(
+  payload: Dynamic,
+) -> Result(List(signals.NormalizedSignal), Nil) {
   let signal_decoder = {
     use content <- decode.field("content", decode.string)
     decode.success(content)
@@ -1020,7 +1141,9 @@ fn legacy_submitted_signals(payload: Dynamic) -> Result(List(json.Json), Nil) {
     decode.success(signals)
   }
   decode.run(payload, decoder)
-  |> result.map(list.map(_, json.string))
+  |> result.map(
+    list.map(_, fn(content) { signals.untargeted(dynamic.string(content)) }),
+  )
   |> result.replace_error(Nil)
 }
 

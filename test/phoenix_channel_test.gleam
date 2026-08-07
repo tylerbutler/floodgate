@@ -236,6 +236,136 @@ pub fn content_batches_signals_are_broadcast_test() {
   signal |> string.contains("ping") |> should.be_true
 }
 
+/// A signal carrying `targetClientId` must reach only that client.
+///
+/// `spillway/session_logic.determine_signal_recipients` — the same function
+/// levee's `Bridge.determine_signal_recipients` calls — was fully implemented and
+/// entirely unused here: floodgate parsed the targeting fields and then
+/// broadcast to the whole topic anyway, because it had no handle to push to a
+/// single socket with. This is the divergence from levee that ADR-008 recorded as
+/// deferred.
+pub fn targeted_signal_reaches_only_its_target_test() {
+  let doc = "phx-signal-target"
+  let token = token_for(doc, ["doc:read", "doc:write"])
+  let assert Ok(#(channels, _sess)) =
+    floodgate.start_with_backend(tenant, secret, memory_store.new())
+
+  let sender = attach(channels, "s-tgt-sender")
+  let target = attach(channels, "s-tgt-target")
+  let bystander = attach(channels, "s-tgt-bystander")
+  connect(channels, doc, token, "s-tgt-sender")
+  connect(channels, doc, token, "s-tgt-target")
+  connect(channels, doc, token, "s-tgt-bystander")
+
+  // Joins fan out to peers; clear that traffic before observing the signal.
+  drain(sender)
+  drain(target)
+  drain(bystander)
+
+  route(
+    channels,
+    "s-tgt-sender",
+    phoenix_event(
+      doc,
+      "submitSignal",
+      "{\"clientId\":\"s-tgt-sender\",\"contentBatches\":[[{\"content\":\"psst\","
+        <> "\"targetClientId\":\"s-tgt-target\"}]]}",
+    ),
+  )
+
+  let assert Ok(signal) = process.receive(target, 1000)
+  signal |> string.contains("\"signal\"") |> should.be_true
+  signal |> string.contains("psst") |> should.be_true
+  // The client id is the beryl socket id, which is what makes addressing a
+  // recipient possible at all.
+  signal |> string.contains("s-tgt-sender") |> should.be_true
+
+  process.receive(bystander, 200) |> should.equal(Error(Nil))
+  // Nor does the sender receive its own signal back.
+  process.receive(sender, 200) |> should.equal(Error(Nil))
+}
+
+/// An untargeted signal still goes to the whole topic, via the cheaper broadcast
+/// path rather than one message per recipient.
+pub fn untargeted_signal_still_reaches_every_peer_test() {
+  let doc = "phx-signal-broadcast"
+  let token = token_for(doc, ["doc:read", "doc:write"])
+  let assert Ok(#(channels, _sess)) =
+    floodgate.start_with_backend(tenant, secret, memory_store.new())
+
+  let sender = attach(channels, "s-bc-sender")
+  let first = attach(channels, "s-bc-first")
+  let second = attach(channels, "s-bc-second")
+  connect(channels, doc, token, "s-bc-sender")
+  connect(channels, doc, token, "s-bc-first")
+  connect(channels, doc, token, "s-bc-second")
+  drain(sender)
+  drain(first)
+  drain(second)
+
+  route(
+    channels,
+    "s-bc-sender",
+    phoenix_event(
+      doc,
+      "submitSignal",
+      "{\"clientId\":\"s-bc-sender\",\"contentBatches\":[[{\"content\":\"hello\"}]]}",
+    ),
+  )
+
+  let assert Ok(to_first) = process.receive(first, 1000)
+  to_first |> string.contains("hello") |> should.be_true
+  let assert Ok(to_second) = process.receive(second, 1000)
+  to_second |> string.contains("hello") |> should.be_true
+}
+
+/// Attach a frame-capturing socket to an existing runtime, so several clients
+/// can share one coordinator and one document.
+fn attach(
+  channels: beryl.Channels,
+  socket_id: String,
+) -> process.Subject(String) {
+  let sent = process.new_subject()
+  process.send(
+    beryl.coordinator_subject(channels),
+    coordinator.SocketConnected(
+      socket_id,
+      fn(text) {
+        process.send(sent, text)
+        Ok(Nil)
+      },
+      fn(_binary) { Ok(Nil) },
+      None,
+      dynamic.nil(),
+    ),
+  )
+  sent
+}
+
+/// Both phases of a Phoenix connect.
+fn connect(
+  channels: beryl.Channels,
+  doc: String,
+  token: String,
+  socket_id: String,
+) -> Nil {
+  route(channels, socket_id, phoenix_join(doc, token))
+  route(
+    channels,
+    socket_id,
+    phoenix_event(doc, "connect_document", connect_payload(doc, token, "write")),
+  )
+}
+
+/// Discard already-queued frames, so a later `receive` observes only what the
+/// assertion is about.
+fn drain(sent: process.Subject(String)) -> Nil {
+  case process.receive(sent, 200) {
+    Ok(_) -> drain(sent)
+    Error(Nil) -> Nil
+  }
+}
+
 // noop advances the client's reference sequence number so the minimum
 // sequence number can move for an otherwise idle client.
 pub fn noop_advances_minimum_sequence_number_test() {

@@ -184,16 +184,23 @@ document).
   `FLOODGATE_ALLOWED_ORIGINS` (comma-separated allow-list, or `*` to disable
   checking). This asymmetry is intentional — the Phoenix endpoint is the
   stricter of the two — but it is a real behavioral difference to know about.
-- **Signal targeting is deferred.** `submitSignal` now accepts Levee's
-  `{clientId, contentBatches}` alongside the existing `{clientId, signals}`,
-  normalizing through spillway's `normalize_signal_batch` — the same path
-  levee's `Bridge.normalize_signal_batch` takes. Targeting fields are parsed
-  but not honoured: floodgate has no per-socket push (beryl's `send_info`
-  needs a `RegisteredChannel` handle that does not exist when the channel is
-  constructed), so every signal is still broadcast to the topic. Levee *does*
-  filter recipients, so this is a known parity gap; the blocking problem was
-  that `contentBatches` signals were previously dropped entirely, which broke
-  presence for `levee-driver` clients.
+- **Signal targeting is honoured** (initially deferred; closed later).
+  `submitSignal` accepts Levee's `{clientId, contentBatches}` alongside the
+  existing `{clientId, signals}`, normalizing through spillway's
+  `normalize_signal_batch` — the same path levee's
+  `Bridge.normalize_signal_batch` takes — and recipients now come from
+  `spillway/session_logic.determine_signal_recipients`, the same function
+  levee's `Bridge.determine_signal_recipients` calls.
+
+  The original blocker was that `beryl.send_info` needs a `RegisteredChannel`
+  handle which does not exist when the channel is constructed, and `register`
+  takes the channel. `document_channel` resolves that with a small holder built
+  before `register` and filled in immediately after; a targeted signal reads it
+  at push time. Addressing a recipient needs no client→socket map, because
+  floodgate assigns `socket.id(sock)` as the Fluid client id — the two are the
+  same string. Untargeted signals keep the topic broadcast, which is one
+  coordinator message instead of one per recipient and avoids resolving a
+  recipient list at all.
 - **The beryl-main migration was deferred.** The ADR assumed floodgate could
   move onto beryl's current `main` to pick up the split-out `beryl_mist`
   package and the public transport SPI. It cannot yet: `dewdrop` and

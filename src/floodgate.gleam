@@ -187,12 +187,25 @@ pub fn start_with_backend(
   {
     Ok(_) -> {
       let channels = beryl_supervisor.channels(supervised)
+      // The channel needs the handle `register` returns, to push a targeted
+      // signal to one socket via `beryl.send_info` — but `register` takes the
+      // channel, so the handle cannot exist at construction. The holder closes
+      // that loop: built first, filled in immediately after. Discarding the
+      // result here is what left signal targeting unimplementable.
+      let registration = document_channel.new_registration()
       let _ =
         beryl.register(
           channels,
           "document:*",
-          document_channel.new(channels, sess, configured_tenant, jwt_secret),
+          document_channel.new(
+            channels,
+            sess,
+            configured_tenant,
+            jwt_secret,
+            registration,
+          ),
         )
+        |> result.map(document_channel.set_registration(registration, _))
       Ok(#(channels, sess))
     }
     Error(e) -> Error(beryl_error.from_actor_start_error(e))
