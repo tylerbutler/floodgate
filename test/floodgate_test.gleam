@@ -583,3 +583,146 @@ pub fn git_commit_history_follows_first_parent_test() {
   |> list.length
   |> should.equal(2)
 }
+
+// ── Per-document sequencing ────────────────────────────────────────────────
+
+/// The point of one actor per document: work on one must not block another.
+///
+/// `create_initialized` runs its build closure *inside* the mailbox — which is
+/// why it alone has a 10 s timeout rather than 1 s — so under the old single
+/// actor a slow initial-summary build stalled every other document on the node.
+/// Here a 600 ms build on one document must not delay a join on another.
+pub fn slow_document_does_not_block_another_test() {
+  let backend = memory_store.new()
+  let sess = session.start_with_backend(backend)
+
+  process.spawn_unlinked(fn() {
+    session.create_initialized(sess, "document:t:slow", fn() {
+      process.sleep(600)
+      Ok(Some(#("slow-summary", 1)))
+    })
+  })
+  // Let the slow build take its actor's mailbox before racing it.
+  process.sleep(50)
+
+  // The slow build is genuinely mid-flight: its actor is up and holding its own
+  // mailbox. Without this the timing assertion below would also pass if the
+  // spawn had failed and nothing slow were running at all.
+  let assert Ok(_) = session.document_owner(sess, "document:t:slow")
+
+  let started = now_ms()
+  let assert session.Joined(_, _, _, _) =
+    session.join_sequenced(sess, "document:t:fast", "c1", "{}", 1000)
+  let elapsed = now_ms() - started
+
+  // Generous enough not to be flaky, tight enough to fail outright if the two
+  // documents still share a mailbox — that would put this at ~550 ms.
+  { elapsed < 300 } |> should.be_true
+
+  // And the slow build really did take its 600 ms and then commit, so the join
+  // above overlapped it rather than following it.
+  process.sleep(700)
+  session.summary(sess, "document:t:slow")
+  |> should.equal(#("slow-summary", 1))
+}
+
+/// A crash now costs one document's roster instead of every document's. Under
+/// the old single actor, killing the sequencer discarded `client_states` for
+/// everything on the node at once.
+pub fn document_crash_does_not_disturb_other_documents_test() {
+  let backend = memory_store.new()
+  let sess = session.start_with_backend(backend)
+  let victim = "document:t:crash-victim"
+  let bystander = "document:t:crash-bystander"
+
+  let assert session.Joined(_, _, _, _) =
+    session.join_sequenced(sess, victim, "c1", "{}", 1000)
+  let assert session.Joined(_, _, _, _) =
+    session.join_sequenced(sess, bystander, "c2", "{}", 1000)
+  let victim_sn = session.sequence_number(sess, victim)
+
+  let assert Ok(pid) = session.document_owner(sess, victim)
+  process.kill(pid)
+  process.sleep(50)
+
+  // The bystander kept its in-memory roster — it was never touched.
+  session.clients(sess, bystander) |> should.equal(["c2"])
+
+  // The victim rehydrates from storage on next touch: numbering survives, the
+  // roster does not. That is the documented restart contract, now scoped to one
+  // document rather than all of them.
+  session.sequence_number(sess, victim) |> should.equal(victim_sn)
+  session.clients(sess, victim) |> should.equal([])
+}
+
+/// The failure mode the ETS registry introduces: a row can outlive its actor for
+/// a moment, so a caller can resolve a subject that is already dead. `call_doc`
+/// has to turn that into a retry rather than a panic that takes the caller — a
+/// channel process, in production — down with it.
+pub fn call_against_a_dead_document_actor_recovers_test() {
+  let backend = memory_store.new()
+  let sess = session.start_with_backend(backend)
+  let topic = "document:t:stale-row"
+
+  let assert session.Joined(_, _, _, _) =
+    session.join_sequenced(sess, topic, "c1", "{}", 1000)
+  let before = session.sequence_number(sess, topic)
+
+  // Kill it and call straight away, without giving the owner's monitor time to
+  // clear the row — so the call really does resolve a dead subject.
+  let assert Ok(pid) = session.document_owner(sess, topic)
+  process.kill(pid)
+
+  let assert session.Joined(_, _, _, _) =
+    session.join_sequenced(sess, topic, "c2", "{}", 2000)
+  session.sequence_number(sess, topic) |> should.equal(before + 1)
+}
+
+/// Reading must not be able to allocate. `session.exists` is reachable from REST
+/// paths that do not require the document to exist, so routing it through
+/// get-or-start would let any `GET` for an unknown id spawn an actor.
+pub fn reading_an_unknown_document_starts_no_actor_test() {
+  let backend = memory_store.new()
+  let sess = session.start_with_backend(backend)
+
+  session.exists(sess, "document:t:never-created") |> should.be_false
+  session.clients(sess, "document:t:never-created") |> should.equal([])
+  session.roster(sess, "document:t:never-created") |> should.equal([])
+  session.sequence_number(sess, "document:t:never-created") |> should.equal(0)
+  session.since(sess, "document:t:never-created", 0) |> should.equal([])
+  session.summary(sess, "document:t:never-created") |> should.equal(#("", 0))
+
+  session.cached_documents(sess) |> should.equal(0)
+}
+
+/// The registry's ETS table belongs to the owner, so it dies with it. That is
+/// what the `RestForOne` pairing is for: restarting the factory after the owner
+/// takes every now-unreachable document actor down, rather than leaving them
+/// holding state nothing can find. The ordering is positional and easy to break
+/// silently, so pin it.
+pub fn owner_restart_takes_document_actors_with_it_test() {
+  let backend = memory_store.new()
+  let sess = session.start_with_backend(backend)
+  let topic = "document:t:owner-restart"
+
+  let assert session.Joined(_, _, _, _) =
+    session.join_sequenced(sess, topic, "c1", "{}", 1000)
+  let before = session.sequence_number(sess, topic)
+  let assert Ok(doc_pid) = session.document_owner(sess, topic)
+
+  let assert Ok(owner_pid) = session.owner(sess)
+  process.kill(owner_pid)
+  let assert Ok(_) = await_restart(sess, owner_pid, 100)
+
+  // No orphan: the document actor went down with the table that pointed at it.
+  process.is_alive(doc_pid) |> should.be_false
+  session.cached_documents(sess) |> should.equal(0)
+
+  // And the document still works, rebuilt from storage.
+  session.sequence_number(sess, topic) |> should.equal(before)
+  let assert session.Joined(_, _, _, _) =
+    session.join_sequenced(sess, topic, "c2", "{}", 2000)
+}
+
+@external(erlang, "floodgate_ffi", "now_ms")
+fn now_ms() -> Int

@@ -168,11 +168,13 @@ pub fn start_with_backend(
       burst: limit_env("FLOODGATE_JOIN_BURST", 200),
     )
   let supervised = beryl_supervisor.config(config)
-  // The session actor owns the sequence state for every document, so it has to
-  // be supervised — started outside the tree, a crash left every `process.call`
-  // from every channel timing out with nothing to restart it, i.e. permanent
-  // service death. Its name is allocated before the tree starts so the channel
-  // below can be registered with a handle that stays valid across restarts.
+  // Sequence state lives in one actor per document, under the registry owner
+  // and factory this child spec pairs. Supervising them matters because an
+  // unsupervised registry owner left every `process.call` from every channel
+  // timing out with nothing to restart it, i.e. permanent service death. The
+  // owner's name is allocated before the tree starts so the channel below can be
+  // registered with a handle that stays valid across restarts — and it doubles
+  // as the name of the registry's ETS table.
   let session_name = session.new_name()
   let sess = session.from_name(session_name, storage)
   case

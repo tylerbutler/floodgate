@@ -42,6 +42,7 @@ packages = [
 beryl = { git = "https://github.com/tylerbutler/beryl", ref = "v0.0", path = "packages/beryl" }
 beryl_mist = { git = "https://github.com/tylerbutler/beryl", ref = "v0.0", path = "packages/beryl_mist" }
 dewdrop = { git = "https://github.com/tylerbutler/dewdrop", ref = "main" }
+exception = { version = ">= 2.0.0 and < 3.0.0" }
 gleam_crypto = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_erlang = { version = ">= 0.29.0 and < 2.0.0" }
 gleam_http = { version = ">= 4.3.0 and < 5.0.0" }
