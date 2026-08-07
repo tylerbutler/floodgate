@@ -146,6 +146,81 @@ pub fn supervised_session_restarts_and_rehydrates_test() {
   session.sequence_number(sess, topic) |> should.equal(before)
 }
 
+/// `initialMessages` is served from a per-document op history that used to be
+/// unbounded and extended with `list.append` — a leak that also copied the whole
+/// list on every op. It is now newest-first and capped at 1000, matching levee's
+/// `@max_history_size`, and reversed on the way out. This pins both halves: the
+/// cap, and the order clients actually need.
+pub fn initial_messages_are_capped_and_oldest_first_test() {
+  let topic = "document:t:history-cap"
+  let s = session.start()
+  session.join(s, topic, "c1") |> should.be_false
+
+  submit_ops(s, topic, 1, 1005)
+
+  let session.Connected(_, _, initial_ops, _, _, _, _) =
+    session.connect(s, topic, "c2", "read", "{}", "{}", 0)
+
+  list.length(initial_ops) |> should.equal(1000)
+  // The newest 1000 of 1005, oldest first: sequence numbers 6 through 1005.
+  let assert [oldest, ..] = initial_ops
+  oldest.0 |> should.equal(6)
+  let assert Ok(newest) = list.last(initial_ops)
+  newest.0 |> should.equal(1005)
+}
+
+fn submit_ops(
+  s: session.Session,
+  topic: String,
+  csn: Int,
+  through: Int,
+) -> Nil {
+  case csn > through {
+    True -> Nil
+    False -> {
+      let assert session.Assigned(_, _) =
+        session.submit(s, topic, "c1", csn, 0, "op-" <> int.to_string(csn))
+      submit_ops(s, topic, csn + 1, through)
+    }
+  }
+}
+
+/// `docs` is a cache over storage, but nothing ever dropped from it: a server
+/// that had seen a million documents held a million of them, each with up to
+/// 1000 ops of history. The sweep evicts the ones with no connected client, and
+/// `doc/3` rebuilds them — the same path a supervised restart takes, which is
+/// what makes eviction safe rather than lossy.
+pub fn idle_documents_are_evicted_and_rehydrate_test() {
+  let topic = "document:fluid:idle-evict"
+  // Sweeps every 50 ms, evicting anything untouched for 100 ms. Read once at
+  // start, so restoring the variable straight away leaves other tests on the
+  // 5 minute default.
+  setenv("FLOODGATE_DOC_IDLE_MS", "100")
+  let backend = memory_store.new()
+  let sess = session.start_with_backend(backend)
+  setenv("FLOODGATE_DOC_IDLE_MS", "")
+
+  let assert session.Joined(_, _, _, _) =
+    session.join_sequenced(sess, topic, "c1", "{}", 1000)
+  let before = session.sequence_number(sess, topic)
+  session.cached_documents(sess) |> should.equal(1)
+
+  // A document with a connected client is never evicted, however idle.
+  process.sleep(250)
+  session.cached_documents(sess) |> should.equal(1)
+
+  let assert session.Left(_, _, _) =
+    session.leave_sequenced(sess, topic, "c1", 2000)
+  process.sleep(250)
+  session.cached_documents(sess) |> should.equal(0)
+
+  // Evicting it lost nothing: the numbering comes back from persisted ops.
+  session.sequence_number(sess, topic) |> should.equal(before + 1)
+}
+
+@external(erlang, "floodgate_ffi", "setenv")
+fn setenv(name: String, value: String) -> Nil
+
 /// Poll until the session's name resolves to a pid other than `dead`.
 fn await_restart(
   sess: session.Session,

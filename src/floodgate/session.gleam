@@ -7,12 +7,14 @@ import floodgate/store
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision
 import spillway/sequencing
+import spillway/session_logic
 
 /// A handle onto the session actor.
 ///
@@ -113,6 +115,10 @@ pub type Msg {
   SetSummary(topic: String, handle: String, sn: Int)
   GetSummary(topic: String, reply: Subject(#(String, Int)))
   UpdateClientRsn(topic: String, client_id: String, rsn: Int)
+  /// Self-scheduled: drop cached documents nobody is connected to. See
+  /// `sweep_idle_documents`.
+  Sweep
+  CachedDocuments(reply: Subject(Int))
 }
 
 pub type SubmitResult {
@@ -170,14 +176,48 @@ pub type SubmitSummaryMessagesResult {
 type Doc {
   Doc(
     seq: sequencing.SequenceState,
+    /// Recent ops for `initialMessages`, **newest first** and capped at
+    /// `max_history_size`, matching levee's `op_history`. Reversed at the two
+    /// points it is handed out. It was previously oldest-first, uncapped, and
+    /// extended with `list.append` — an unbounded per-document leak that also
+    /// cost a full copy of the list on every op.
     history: List(#(Int, String)),
     summary: #(String, Int),
     presence: Dict(String, String),
+    /// Monotonic ms of the last mutation, maintained by `doc/3` (see there) and
+    /// read only by the idle sweep.
+    last_touched_ms: Int,
   )
 }
 
+/// Ops retained per document for `initialMessages`. Levee uses the same figure
+/// (`@max_history_size` in `Levee.Documents.Session`); clients that need more
+/// history bootstrap from the summary and `requestOps`.
+const max_history_size = 1000
+
 type State {
   State(docs: Dict(String, Doc))
+}
+
+/// Prepend an op to a document's history and trim, via the same spillway helper
+/// levee's `Bridge.add_to_history` calls.
+fn remember(d: Doc, op: #(Int, String)) -> List(#(Int, String)) {
+  session_logic.add_to_history(op, d.history, max_history_size)
+}
+
+/// Two ops in sequence order — a summarize and its ack, which are always
+/// assigned and stored together.
+fn remember_both(
+  d: Doc,
+  first: #(Int, String),
+  second: #(Int, String),
+) -> List(#(Int, String)) {
+  session_logic.add_to_history(second, remember(d, first), max_history_size)
+}
+
+/// The history in the order clients expect: oldest first.
+fn initial_messages(history: List(#(Int, String))) -> List(#(Int, String)) {
+  list.reverse(history)
 }
 
 /// Allocate a fresh name for a session actor.
@@ -202,10 +242,64 @@ pub fn start_named(
   storage: store.Backend,
 ) -> Result(actor.Started(Subject(Msg)), actor.StartError) {
   store.open(storage)
-  actor.new(State(dict.new()))
-  |> actor.on_message(fn(state, message) { handle(storage, state, message) })
-  |> actor.named(name)
-  |> actor.start
+  // Read once, at start, and carried for the actor's lifetime: the sweep cadence
+  // and the window it enforces must agree, and re-reading per sweep would let
+  // them disagree.
+  let idle_ms = idle_document_ms()
+  let started =
+    actor.new(State(dict.new()))
+    |> actor.on_message(fn(state, message) {
+      handle(storage, name, idle_ms, state, message)
+    })
+    |> actor.named(name)
+    |> actor.start
+  case started {
+    Ok(_) -> schedule_sweep(process.named_subject(name), idle_ms)
+    Error(_) -> Nil
+  }
+  started
+}
+
+/// Documents with no connected clients are dropped after roughly this long,
+/// overridable via FLOODGATE_DOC_IDLE_MS; `0` disables eviction.
+///
+/// Without it `docs` only ever grew: a server that had seen a million documents
+/// held a million `Doc`s, each with up to `max_history_size` ops, whether or not
+/// anyone was still using them.
+fn idle_document_ms() -> Int {
+  case int.parse(getenv("FLOODGATE_DOC_IDLE_MS", "")) {
+    Ok(value) if value >= 0 -> value
+    _ -> 300_000
+  }
+}
+
+/// Sweeps run at half the idle window, so a document is dropped between one and
+/// two windows after its last use — the same relationship beryl uses between its
+/// heartbeat timeout and its check interval.
+fn schedule_sweep(self: Subject(Msg), idle_ms: Int) -> Nil {
+  case idle_ms {
+    0 -> Nil
+    _ -> {
+      let _ = process.send_after(self, int.max(idle_ms / 2, 1), Sweep)
+      Nil
+    }
+  }
+}
+
+/// Drop every cached document that has no connected client and has not been
+/// touched within the idle window.
+///
+/// Safe because eviction is only a cache drop: `doc/3` rebuilds sequence state
+/// and summary from storage on the next touch, and the condition guarantees
+/// there are no `client_states` or roster entries to lose. It is the same code
+/// path a supervised restart already exercises.
+fn sweep_idle_documents(st: State, idle_ms: Int) -> State {
+  let cutoff = now_ms() - idle_ms
+  State(
+    dict.filter(st.docs, fn(_topic, d) {
+      !dict.is_empty(d.presence) || d.last_touched_ms > cutoff
+    }),
+  )
 }
 
 /// Supervisable child specification for the session actor.
@@ -432,9 +526,24 @@ pub fn summary(s: Session, t: String) -> #(String, Int) {
   process.call(subject(s), 1000, GetSummary(t, _))
 }
 
+/// How many documents are currently held in memory. Documents are a cache over
+/// storage, so this is bounded by the idle sweep rather than by the number of
+/// documents the server has ever seen. For tests and diagnostics.
+pub fn cached_documents(s: Session) -> Int {
+  process.call(subject(s), 1000, CachedDocuments)
+}
+
+/// The in-memory state for a document, rehydrating it from storage on a miss.
+///
+/// The returned value carries a fresh `last_touched_ms`. Every handler that
+/// mutates a document reads it through here and writes the result back, so that
+/// one line is what keeps the idle sweep's clock current — no per-handler
+/// bookkeeping. Read-only handlers do not write back, so a document nobody is
+/// changing ages out even while it is being read; that is harmless, because
+/// eviction is just a cache drop and this function rebuilds it.
 fn doc(storage: store.Backend, st: State, t: String) -> Doc {
   case dict.get(st.docs, t) {
-    Ok(d) -> d
+    Ok(d) -> Doc(..d, last_touched_ms: now_ms())
     Error(Nil) -> {
       // Rebuild durable state from ETS so a restarted server keeps numbering
       // after the last persisted op and serves the latest summary.
@@ -452,16 +561,24 @@ fn doc(storage: store.Backend, st: State, t: String) -> Doc {
         False -> last_sn
       }
       Doc(
-        sequencing.from_checkpoint(checkpoint, ssn),
-        ops,
-        #(handle, ssn),
-        dict.new(),
+        seq: sequencing.from_checkpoint(checkpoint, ssn),
+        // Newest first, and only as much as a live document would have kept.
+        history: ops |> list.reverse |> list.take(max_history_size),
+        summary: #(handle, ssn),
+        presence: dict.new(),
+        last_touched_ms: now_ms(),
       )
     }
   }
 }
 
-fn handle(storage: store.Backend, st: State, m: Msg) -> actor.Next(State, Msg) {
+fn handle(
+  storage: store.Backend,
+  name: process.Name(Msg),
+  idle_ms: Int,
+  st: State,
+  m: Msg,
+) -> actor.Next(State, Msg) {
   case m {
     Create(t, reply) -> {
       let existing = case dict.get(st.docs, t) {
@@ -502,7 +619,13 @@ fn handle(storage: store.Backend, st: State, m: Msg) -> actor.Next(State, Msg) {
                 State(dict.insert(
                   st.docs,
                   t,
-                  Doc(seq, [], summary_state, dict.new()),
+                  Doc(
+                    seq: seq,
+                    history: [],
+                    summary: summary_state,
+                    presence: dict.new(),
+                    last_touched_ms: now_ms(),
+                  ),
                 )),
               )
             }
@@ -537,7 +660,7 @@ fn handle(storage: store.Backend, st: State, m: Msg) -> actor.Next(State, Msg) {
             Connected(
               existing,
               roster,
-              list.append(d.history, [#(sn, message)]),
+              initial_messages(remember(d, #(sn, message))),
               handle,
               summary_sn,
               sn,
@@ -551,7 +674,7 @@ fn handle(storage: store.Backend, st: State, m: Msg) -> actor.Next(State, Msg) {
               Doc(
                 ..d,
                 seq: seq,
-                history: list.append(d.history, [#(sn, message)]),
+                history: remember(d, #(sn, message)),
                 presence: dict.insert(d.presence, c, client),
               ),
             )),
@@ -563,7 +686,7 @@ fn handle(storage: store.Backend, st: State, m: Msg) -> actor.Next(State, Msg) {
             Connected(
               existing,
               roster,
-              d.history,
+              initial_messages(d.history),
               handle,
               summary_sn,
               d.seq.sequence_number,
@@ -640,7 +763,7 @@ fn handle(storage: store.Backend, st: State, m: Msg) -> actor.Next(State, Msg) {
           Doc(
             ..d,
             seq: seq,
-            history: list.append(d.history, [#(sn, message)]),
+            history: remember(d, #(sn, message)),
             presence: dict.insert(d.presence, c, minimal_client("write")),
           ),
         )),
@@ -693,7 +816,7 @@ fn handle(storage: store.Backend, st: State, m: Msg) -> actor.Next(State, Msg) {
           Doc(
             ..d,
             seq: seq,
-            history: list.append(d.history, [#(sn, message)]),
+            history: remember(d, #(sn, message)),
             presence: dict.delete(d.presence, c),
           ),
         )),
@@ -709,11 +832,7 @@ fn handle(storage: store.Backend, st: State, m: Msg) -> actor.Next(State, Msg) {
             State(dict.insert(
               st.docs,
               t,
-              Doc(
-                ..d,
-                seq: seq,
-                history: list.append(d.history, [#(sn, contents)]),
-              ),
+              Doc(..d, seq: seq, history: remember(d, #(sn, contents))),
             )),
           )
         }
@@ -734,11 +853,7 @@ fn handle(storage: store.Backend, st: State, m: Msg) -> actor.Next(State, Msg) {
             State(dict.insert(
               st.docs,
               t,
-              Doc(
-                ..d,
-                seq: seq,
-                history: list.append(d.history, [#(sn, message)]),
-              ),
+              Doc(..d, seq: seq, history: remember(d, #(sn, message))),
             )),
           )
         }
@@ -767,16 +882,16 @@ fn handle(storage: store.Backend, st: State, m: Msg) -> actor.Next(State, Msg) {
               st.docs,
               t,
               Doc(
-                seq,
-                list.append(d.history, [
-                  #(summary_sn, contents),
-                  #(response_sn, response_contents),
-                ]),
-                case handle {
+                ..d,
+                seq: seq,
+                history: remember_both(d, #(summary_sn, contents), #(
+                  response_sn,
+                  response_contents,
+                )),
+                summary: case handle {
                   Some(handle) -> #(handle, summary_sn)
                   _ -> d.summary
                 },
-                d.presence,
               ),
             )),
           )
@@ -817,16 +932,16 @@ fn handle(storage: store.Backend, st: State, m: Msg) -> actor.Next(State, Msg) {
               st.docs,
               t,
               Doc(
-                seq,
-                list.append(d.history, [
-                  #(summary_sn, summary_message),
-                  #(response_sn, response_message),
-                ]),
-                case handle {
+                ..d,
+                seq: seq,
+                history: remember_both(d, #(summary_sn, summary_message), #(
+                  response_sn,
+                  response_message,
+                )),
+                summary: case handle {
                   Some(handle) -> #(handle, summary_sn)
                   _ -> d.summary
                 },
-                d.presence,
               ),
             )),
           )
@@ -898,6 +1013,14 @@ fn handle(storage: store.Backend, st: State, m: Msg) -> actor.Next(State, Msg) {
           actor.continue(State(dict.insert(st.docs, t, Doc(..d, seq: seq))))
       }
     }
+    Sweep -> {
+      schedule_sweep(process.named_subject(name), idle_ms)
+      actor.continue(sweep_idle_documents(st, idle_ms))
+    }
+    CachedDocuments(reply) -> {
+      process.send(reply, dict.size(st.docs))
+      actor.continue(st)
+    }
   }
 }
 
@@ -941,6 +1064,12 @@ fn system_message(
 
 @external(erlang, "floodgate_ffi", "raw_json")
 fn raw_json(value: String) -> json.Json
+
+@external(erlang, "floodgate_ffi", "now_ms")
+fn now_ms() -> Int
+
+@external(erlang, "floodgate_ffi", "getenv")
+fn getenv(name: String, default: String) -> String
 
 fn stored_document_exists(storage: store.Backend, topic: String) -> Bool {
   let #(summary_handle, _) = store.get_summary(storage, topic)
