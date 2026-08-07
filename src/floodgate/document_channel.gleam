@@ -263,7 +263,16 @@ fn connect_core(
           client_join_data(cid, client),
           now_seconds() * 1000,
         )
-      let initial_signals = case mode {
+      // `initialSignals` is always empty, matching levee's
+      // `build_connected_response`. This used to return the client's own
+      // presence-join signal, which closed containers with assert 0x4b2: the
+      // container-loader seeds its audience with the IClient object it *sent*
+      // (original key order) and `Audience.addMember` demands byte-identity
+      // with any later add for the same client id — but every payload this
+      // server echoes has been through an Erlang map, which stores keys in
+      // term order, so the self add could never match the seed. Peers are
+      // unaffected: every copy *they* see is Erlang-map-ordered alike.
+      case mode {
         "write" -> {
           let assert Some(#(sn, message)) = membership
           // The joining client receives its own join op in initialMessages.
@@ -278,12 +287,8 @@ fn connect_core(
               session.stored_message_json(#(sn, message)),
             ]),
           )
-          // Fluid Presence relies on the self join signal after the connection
-          // has a client ID. Returning it as an initial signal preserves that
-          // ordering while the sequenced join op is fanned out to peers.
-          [presence_join(cid, client)]
         }
-        _ -> {
+        _ ->
           beryl.broadcast_from(
             channels,
             cid,
@@ -291,8 +296,6 @@ fn connect_core(
             events.signal,
             presence_join(cid, client),
           )
-          [presence_join(cid, client)]
-        }
       }
       Ok(#(
         connected_response(
@@ -302,7 +305,6 @@ fn connect_core(
           existing,
           roster,
           initial_ops,
-          initial_signals,
           summary_handle,
           summary_sequence_number,
           current_sequence_number,
@@ -570,7 +572,6 @@ fn connected_response(
   existing: Bool,
   roster: List(#(String, String)),
   initial_ops: List(#(Int, String)),
-  initial_signals: List(json.Json),
   summary_handle: String,
   summary_sequence_number: Int,
   current_sequence_number: Int,
@@ -595,7 +596,8 @@ fn connected_response(
     ),
     #("initialClients", initial_clients_json(roster)),
     #("initialMessages", ops_json(initial_ops)),
-    #("initialSignals", json.preprocessed_array(initial_signals)),
+    // Always empty, matching levee. See the 0x4b2 note in `connect_core`.
+    #("initialSignals", json.preprocessed_array([])),
     #("supportedVersions", json.array(["^0.1.0", "^1.0.0"], json.string)),
     #("version", json.string("1.0.0")),
     #("checkpointSequenceNumber", json.int(current_sequence_number)),

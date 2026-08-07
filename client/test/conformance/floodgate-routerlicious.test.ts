@@ -442,21 +442,15 @@ describe.runIf(floodgateAvailable)(
 			);
 
 			try {
+				// initialSignals is always empty, matching levee. Returning the
+				// client's own presence-join here used to close containers with
+				// assert 0x4b2: the container-loader seeds its audience with the
+				// IClient object it sent (original key order) and demands
+				// byte-identity with any later self add, which a payload that has
+				// been through an Erlang map (term-ordered keys) can never satisfy.
 				const initialSignals = Reflect.get(connection, "details")
 					.initialSignals as ISignalMessage[];
-				expect(initialSignals).toHaveLength(1);
-				const ownJoin = JSON.parse(initialSignals[0]?.content as string);
-				expect(ownJoin).toMatchObject({
-					type: "join",
-					content: {
-						clientId: connection.clientId,
-						client: {
-							mode: "read",
-							details: { capabilities: { interactive: true } },
-							user: { id: expect.any(String) },
-						},
-					},
-				});
+				expect(initialSignals).toHaveLength(0);
 
 				const nack = waitForNack(connection);
 				connection.submit([message(1, 0, "not-allowed")]);
