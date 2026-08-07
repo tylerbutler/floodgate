@@ -25,12 +25,17 @@
 //// it directly as the storage key, and keeping it meant the sequencing logic
 //// moved across unmodified.
 ////
-//// Read-only operations never *start* a document actor. `exists`, `clients` and
-//// `roster` are answerable from the registry plus storage outright; `since`,
-//// `summary` and `sequence_number` consult an actor when one already exists and
-//// fall back to storage when none does. That distinction matters because
-//// `exists` is reachable from unauthenticated REST paths — routing reads through
+//// Read-only operations never *start* a document actor, and most involve no
+//// process at all. `since` and `summary` read storage directly; `exists`,
+//// `clients` and `roster` answer from the registry plus storage; only
+//// `sequence_number` consults an actor when one exists, and then just to avoid
+//// re-deriving a checkpoint it already holds. That matters because `exists` is
+//// reachable from unauthenticated REST paths — routing reads through
 //// get-or-start would let any `GET` on an unknown document spawn an actor.
+////
+//// The storage reads are only correct because every submit handler writes before
+//// it acks (`2e59238`) and both backends' writes are synchronous. Reverse either
+//// and a caller could be told an op was assigned, then fail to read it back.
 
 import exception
 import floodgate/doc_registry
@@ -146,14 +151,12 @@ pub type Msg {
     build: fn(Int, Int, Int) -> #(String, String, Option(String)),
     reply: Subject(SubmitSummaryMessagesResult),
   )
-  Since(topic: String, sn: Int, reply: Subject(List(#(Int, String))))
   Clients(topic: String, reply: Subject(List(String)))
   Roster(topic: String, reply: Subject(List(#(String, String))))
   Exists(topic: String, reply: Subject(Bool))
   SequenceNumber(topic: String, reply: Subject(Int))
   InitializeSummary(topic: String, handle: String, sn: Int, reply: Subject(Nil))
-  SetSummary(topic: String, handle: String, sn: Int)
-  GetSummary(topic: String, reply: Subject(#(String, Int)))
+  SetSummary(topic: String, handle: String, sn: Int, reply: Subject(Nil))
   UpdateClientRsn(topic: String, client_id: String, rsn: Int)
   /// Self-scheduled: stop if nobody is connected and nothing has touched this
   /// document within the idle window. See `idle`.
@@ -632,22 +635,16 @@ pub fn leave_sequenced(
   call_doc(s, topic, 1000, LeaveSequenced(topic, client_id, timestamp, _))
 }
 
-/// Ops after `sn`.
+/// Ops after `sn`, straight from storage — no process involved, hot or cold.
 ///
-/// The handler reads storage rather than the in-memory `Doc`, so this looks like
-/// it could skip the actor entirely — but it cannot when one exists. The submit
-/// handlers reply *before* writing (`Submit` sends `Assigned` and only then
-/// calls `store.put_op`), so going straight to storage can observe a gap the
-/// shared mailbox used to close: a caller that has already been told an op was
-/// assigned could read back a history without it.
-///
-/// With no actor there is nothing in flight to miss, so the storage read is
-/// exact — and that is the path REST delta requests for cold documents take.
+/// Safe because every submit handler now writes before it acks, and both
+/// backends' writes are synchronous (`memory_store` blocks on a `process.call`,
+/// `shelf_store` inserts into ETS/DETS inline). So anything a caller has been
+/// told was assigned is already readable here. This briefly routed through the
+/// document's actor instead, to close the window the two mis-ordered handlers
+/// left open before `2e59238`; fixing the order removed the reason.
 pub fn since(s: Session, t: String, sn: Int) -> List(#(Int, String)) {
-  case doc_registry.lookup(registry(s), t) {
-    Ok(subject) -> process.call(subject, 1000, Since(t, sn, _))
-    Error(Nil) -> store.get_ops(s.storage, t) |> list.filter(fn(o) { o.0 > sn })
-  }
+  store.get_ops(s.storage, t) |> list.filter(fn(o) { o.0 > sn })
 }
 
 pub fn clients(s: Session, t: String) -> List(String) {
@@ -685,8 +682,14 @@ pub fn sequence_number(s: Session, t: String) -> Int {
   }
 }
 
-pub fn set_summary(s: Session, t: String, handle: String, sn: Int) {
-  send_doc_starting(s, t, SetSummary(t, handle, sn))
+/// Set the stored summary pointer.
+///
+/// Synchronous, like `initialize_summary` and unlike the other `process.send`
+/// messages, because it is the only fire-and-forget message with a *durable*
+/// effect. While it was async, `summary` could not read storage directly — the
+/// read raced the write it had just asked for.
+pub fn set_summary(s: Session, t: String, handle: String, sn: Int) -> Nil {
+  call_doc(s, t, 1000, SetSummary(t, handle, sn, _))
 }
 
 /// Advance a client's reference sequence number without sequencing an op, so
@@ -700,15 +703,11 @@ pub fn initialize_summary(s: Session, t: String, handle: String, sn: Int) {
   call_doc(s, t, 1000, InitializeSummary(t, handle, sn, _))
 }
 
-/// The latest summary. Ordered behind the document's actor for the same reason
-/// as `since`: `SubmitSummary` acks before it calls `store.put_summary`, so a
-/// direct storage read can return the previous summary to a caller that has
-/// already been told the new one was accepted.
+/// The latest summary, straight from storage — same reasoning as `since`. The
+/// summary pointer is the last of `SubmitSummary`'s three writes and the ack
+/// follows all of them, so observing the ack means this read sees it.
 pub fn summary(s: Session, t: String) -> #(String, Int) {
-  case doc_registry.lookup(registry(s), t) {
-    Ok(subject) -> process.call(subject, 1000, GetSummary(t, _))
-    Error(Nil) -> store.get_summary(s.storage, t)
-  }
+  store.get_summary(s.storage, t)
 }
 
 /// How many documents are currently held in memory. Documents are a cache over
@@ -1189,13 +1188,6 @@ fn handle(
         }
       }
     }
-    Since(t, sn, reply) -> {
-      process.send(
-        reply,
-        store.get_ops(storage, t) |> list.filter(fn(o) { o.0 > sn }),
-      )
-      actor.continue(st)
-    }
     Clients(t, reply) -> {
       process.send(reply, dict.keys(doc(storage, t, st).presence))
       actor.continue(st)
@@ -1221,14 +1213,11 @@ fn handle(
         Doc(..d, seq: sequencing.from_checkpoint(sn, sn), summary: #(handle, sn)),
       )
     }
-    SetSummary(t, handle, sn) -> {
+    SetSummary(t, handle, sn, reply) -> {
       store.put_summary(storage, t, handle, sn)
       let d = doc(storage, t, st)
+      process.send(reply, Nil)
       cache(st, Doc(..d, summary: #(handle, sn)))
-    }
-    GetSummary(t, reply) -> {
-      process.send(reply, store.get_summary(storage, t))
-      actor.continue(st)
     }
     UpdateClientRsn(t, client_id, rsn) -> {
       let d = doc(storage, t, st)
