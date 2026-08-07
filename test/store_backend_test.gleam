@@ -6,11 +6,14 @@ import floodgate/shelf_store
 import floodgate/store
 import gleam/bit_array
 import gleam/crypto
+import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
 import gleam/list
 import gleam/option.{Some}
 import gleeunit/should
+import shelf
+import shelf/set
 
 /// A fresh, unique on-disk data directory so each run starts from empty DETS
 /// (shelf persists via WriteThrough, so reused dirs would leak state between
@@ -98,6 +101,64 @@ fn await_restart(
   }
 }
 
+/// Ops and refs are served through bag indexes rather than a full table scan.
+/// A DETS directory written before those indexes existed has no index files, so
+/// opening it must rebuild them — otherwise every pre-existing document would
+/// read back as having no history.
+pub fn shelf_backend_rebuilds_missing_indexes_on_open_test() {
+  let dir = unique_dir()
+  let topic = "document:reindex:doc"
+  let tenant = "reindex"
+
+  // Write the ops and refs tables the way a pre-index floodgate did — no index
+  // files at all — then close them so the reopen below is a genuine cold start.
+  ensure_dir(dir)
+  let ops = open_table(dir, "floodgate_ops", "ops.dets", topic_sn_key())
+  let assert Ok(Nil) = set.insert(into: ops, key: #(topic, 1), value: "first")
+  let assert Ok(Nil) = set.insert(into: ops, key: #(topic, 2), value: "second")
+  let assert Ok(Nil) = set.close(ops)
+
+  let refs = open_table(dir, "floodgate_refs", "refs.dets", string_pair_key())
+  let assert Ok(Nil) =
+    set.insert(into: refs, key: #(tenant, "refs/heads/main"), value: "main-sha")
+  let assert Ok(Nil) = set.close(refs)
+
+  let reopened = shelf_store.new(dir)
+  store.get_ops(reopened, topic)
+  |> should.equal([#(1, "first"), #(2, "second")])
+  store.list_refs(reopened, tenant)
+  |> should.equal([#("refs/heads/main", "main-sha")])
+}
+
+fn open_table(
+  dir: String,
+  name: String,
+  path: String,
+  key: decode.Decoder(k),
+) -> set.PSet(k, String) {
+  let config =
+    shelf.config(name: name, path: path, base_directory: dir)
+    |> shelf.write_mode(mode: shelf.WriteThrough)
+  let assert Ok(table) =
+    set.open_config(config: config, key: key, value: decode.string)
+  table
+}
+
+fn topic_sn_key() -> decode.Decoder(#(String, Int)) {
+  use topic <- decode.field(0, decode.string)
+  use sn <- decode.field(1, decode.int)
+  decode.success(#(topic, sn))
+}
+
+fn string_pair_key() -> decode.Decoder(#(String, String)) {
+  use a <- decode.field(0, decode.string)
+  use b <- decode.field(1, decode.string)
+  decode.success(#(a, b))
+}
+
+@external(erlang, "floodgate_shelf_ffi", "ensure_dir")
+fn ensure_dir(dir: String) -> Nil
+
 pub fn backend_substitution_preserves_runtime_session_and_historian_observations_test() {
   let memory_observation = observe_runtime_contract(memory_store.new())
   let shelf_observation =
@@ -122,6 +183,20 @@ fn assert_backend_contract(
   store.get_ops(backend, topic)
   |> should.equal([#(1, "first"), #(2, "second")])
 
+  // Re-putting a sequence number replaces it rather than accumulating. The
+  // shelf backend indexes ops by topic to avoid scanning the whole table, so
+  // this is what pins the index to the set it indexes.
+  store.put_op(backend, topic, 2, "second-replaced")
+  store.get_ops(backend, topic)
+  |> should.equal([#(1, "first"), #(2, "second-replaced")])
+
+  // And one document's ops never surface in another's.
+  let other = topic <> "-other"
+  store.put_op(backend, other, 1, "other-first")
+  store.get_ops(backend, other) |> should.equal([#(1, "other-first")])
+  store.get_ops(backend, topic)
+  |> should.equal([#(1, "first"), #(2, "second-replaced")])
+
   store.get_summary(backend, topic) |> should.equal(#("", 0))
   store.put_summary(backend, topic, "summary-sha", 2)
   store.get_summary(backend, topic) |> should.equal(#("summary-sha", 2))
@@ -141,6 +216,17 @@ fn assert_backend_contract(
   store.list_refs(backend, tenant)
   |> should.equal([
     #("refs/heads/a", "a-sha"),
+    #("refs/heads/z", "z-sha"),
+  ])
+
+  // Refs are indexed by tenant for the same reason ops are by topic: a losing
+  // `create_ref` must leave no index entry, an overwrite must not duplicate one,
+  // and another tenant's refs must not appear here.
+  store.put_ref(backend, tenant, "refs/heads/a", "a-sha-2")
+  store.put_ref(backend, tenant <> "-other", "refs/heads/elsewhere", "e-sha")
+  store.list_refs(backend, tenant)
+  |> should.equal([
+    #("refs/heads/a", "a-sha-2"),
     #("refs/heads/z", "z-sha"),
   ])
 }
