@@ -25,12 +25,12 @@
 //// it directly as the storage key, and keeping it meant the sequencing logic
 //// moved across unmodified.
 ////
-//// Several read-only operations no longer involve a process at all. `since` and
-//// `summary` always read storage (they never touched the in-memory `Doc`, even
-//// before), and `exists`/`clients`/`roster` are answerable from the registry
-//// plus storage. That matters because `exists` is reachable from unauthenticated
-//// REST paths — routing it through get-or-start would let any `GET` on an
-//// unknown document spawn an actor.
+//// Read-only operations never *start* a document actor. `exists`, `clients` and
+//// `roster` are answerable from the registry plus storage outright; `since`,
+//// `summary` and `sequence_number` consult an actor when one already exists and
+//// fall back to storage when none does. That distinction matters because
+//// `exists` is reachable from unauthenticated REST paths — routing reads through
+//// get-or-start would let any `GET` on an unknown document spawn an actor.
 
 import exception
 import floodgate/doc_registry
