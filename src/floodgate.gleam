@@ -145,6 +145,15 @@ pub fn start_with_backend(
     beryl.config(wire.phoenix_codec())
     |> beryl.with_pubsub(ps)
     |> beryl.with_max_inbound_frame_bytes(max_frame_bytes())
+    // The values beryl already defaults to, made explicit and overridable.
+    // The sweep they drive is what reclaims a socket whose process died without
+    // a clean close, or whose peer stopped answering pings while the TCP
+    // connection stayed open — its stale RSN would otherwise pin the document's
+    // MSN and block summarization for everyone else on it.
+    |> beryl.with_heartbeat(
+      interval_ms: positive_env("FLOODGATE_HEARTBEAT_INTERVAL_MS", 30_000),
+      timeout_ms: positive_env("FLOODGATE_HEARTBEAT_TIMEOUT_MS", 60_000),
+    )
     |> beryl.with_max_connections_per_ip(limit_env(
       "FLOODGATE_MAX_CONNECTIONS_PER_IP",
       256,

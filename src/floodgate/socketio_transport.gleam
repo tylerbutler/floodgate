@@ -8,6 +8,10 @@
 //// rate limit, and — importantly — registering a closer so the coordinator can
 //// actively evict a stale socket instead of leaving a zombie connection whose
 //// frames are silently dropped.
+////
+//// It additionally enforces the Engine.IO `pingTimeout` it advertises, which
+//// beryl_mist has no equivalent of because Phoenix heartbeats are policed
+//// entirely by the coordinator's sweep.
 
 import beryl.{type Channels, type ConnectionPermit}
 import beryl/transport.{type RateLimiter}
@@ -43,6 +47,9 @@ type ConnectionState {
     connection_permit: Option(ConnectionPermit),
     message_limiter: Option(RateLimiter),
     max_frame_bytes: Int,
+    /// Monotonic ms of the last frame received on this socket, for the pong
+    /// deadline below.
+    last_inbound_ms: Int,
   )
 }
 
@@ -195,6 +202,7 @@ fn on_init(
       connection_permit: Some(permit),
       message_limiter: transport.new_message_limiter(channels),
       max_frame_bytes: max_frame_bytes,
+      last_inbound_ms: now_ms(),
     ),
     Some(selector),
   )
@@ -206,7 +214,8 @@ fn on_message(
   connection: WebsocketConnection,
 ) -> mist.Next(ConnectionState, SendRequest) {
   case message {
-    mist.Text(text) ->
+    mist.Text(text) -> {
+      let state = ConnectionState(..state, last_inbound_ms: now_ms())
       case frame_too_large(state.max_frame_bytes, string.byte_size(text)) {
         True -> mist.stop()
         False ->
@@ -215,7 +224,9 @@ fn on_message(
             #(state, True) -> handle_text(state, text, connection)
           }
       }
-    mist.Binary(data) ->
+    }
+    mist.Binary(data) -> {
+      let state = ConnectionState(..state, last_inbound_ms: now_ms())
       case frame_too_large(state.max_frame_bytes, bit_array.byte_size(data)) {
         True -> mist.stop()
         False ->
@@ -227,6 +238,7 @@ fn on_message(
             }
           }
       }
+    }
     mist.Closed | mist.Shutdown -> mist.stop()
     // Coordinator-initiated eviction via the registered closer.
     mist.Custom(Close) -> mist.stop()
@@ -236,11 +248,29 @@ fn on_message(
       |> result.replace(mist.continue(state))
       |> result.unwrap(mist.continue(state))
     }
-    mist.Custom(SendPing) -> {
-      schedule_ping(state.send_subject)
-      send_text(connection, state, socketio.engine_ping())
-    }
+    mist.Custom(SendPing) ->
+      case pong_overdue(state) {
+        True -> mist.stop()
+        False -> {
+          schedule_ping(state.send_subject)
+          send_text(connection, state, socketio.engine_ping())
+        }
+      }
   }
+}
+
+/// Whether the peer has gone silent past the `pingTimeout` the Engine.IO
+/// handshake advertises.
+///
+/// The ping timer previously fired unconditionally forever, so a peer that
+/// stopped answering — a half-open connection, or a browser tab suspended
+/// mid-flight — was only reclaimed by the coordinator's 60 s heartbeat sweep.
+/// Checking here honours the 20 s figure already published in `encode_open`,
+/// and the allowance is `interval + timeout` because the deadline is evaluated
+/// on the interval tick: a pong that arrives just before one tick must not be
+/// judged stale at the next.
+fn pong_overdue(state: ConnectionState) -> Bool {
+  now_ms() - state.last_inbound_ms > ping_interval_ms + ping_timeout_ms
 }
 
 /// Whether an inbound frame breaches the configured ceiling. A cap of 0 (or
@@ -406,3 +436,6 @@ fn generate_socket_id() -> String {
   crypto.strong_random_bytes(16)
   |> bit_array.base16_encode()
 }
+
+@external(erlang, "floodgate_ffi", "now_ms")
+fn now_ms() -> Int
