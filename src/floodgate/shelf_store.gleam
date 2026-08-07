@@ -63,13 +63,19 @@ pub fn new(data_dir: String) -> store.Backend {
   store.Backend(
     // No processes of its own: shelf tables are ETS + DETS, not actors.
     //
-    // Known limitation: the ETS tables are owned by whichever process calls
-    // this function — `main`, via `floodgate.serve` — and the closures below
-    // capture the table handles. If that process died the tables would go with
-    // it and the captured handles would be stale. Fixing that means opening the
-    // tables in a supervised process and resolving them by name at call time,
-    // the same treatment `session` and `memory_store` got; it is a separate
-    // change because the handles, not just the owner, have to become late-bound.
+    // The ETS tables are owned by whichever process calls this function, and the
+    // closures below capture the handles, so they do not survive that process's
+    // death. In the shipped server that is not a live exposure: the owner is the
+    // process running `main`, which the generated entrypoint `spawn_link`s under
+    // a trapping parent that calls `init:stop(1)` — so its death halts the node,
+    // the container restarts it, and the tables are reopened from DETS. Nothing
+    // is lost, because `WriteThrough` has already flushed every write and shelf's
+    // guardian process closes DETS cleanly when the owner dies.
+    //
+    // What is *not* supported is surviving that in place, which would need the
+    // handles themselves to be late-bound (named ETS tables plus a supervised
+    // owner), not just the owner supervised. Worth knowing if floodgate is ever
+    // embedded and this is called from a process that can die independently.
     supervise: fn(builder) { builder },
     open: fn() { Nil },
     put_document: fn(topic) {
