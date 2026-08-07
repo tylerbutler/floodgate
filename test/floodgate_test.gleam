@@ -4,6 +4,7 @@ import floodgate/git
 import floodgate/memory_store
 import floodgate/session
 import floodgate/store
+import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
@@ -116,6 +117,52 @@ pub fn session_create_marks_document_existing_without_audience_client_test() {
   session.clients(s, "document:t:created") |> should.equal([])
   session.join(s, "document:t:created", "c1") |> should.be_true
   session.clients(s, "document:t:created") |> should.equal(["c1"])
+}
+
+pub fn supervised_session_restarts_and_rehydrates_test() {
+  let topic = "document:fluid:supervised-restart"
+  // The backend outlives the session actor, which is what makes a restart
+  // recoverable: `docs` is in-memory only and rebuilt from persisted ops.
+  let backend = memory_store.new()
+  let assert Ok(#(_channels, sess)) =
+    floodgate.start_with_backend("fluid", "test-jwt-secret", backend)
+
+  session.create(sess, topic) |> should.be_false
+  let assert session.Joined(_, _, _, _) =
+    session.join_sequenced(sess, topic, "c1", "{}", 1000)
+  let before = session.sequence_number(sess, topic)
+  before |> should.not_equal(0)
+
+  // Kill it the way a real crash would, and confirm the supervisor brings it
+  // back under the same registered name.
+  let assert Ok(pid) = session.owner(sess)
+  process.kill(pid)
+  let assert Ok(restarted_pid) = await_restart(sess, pid, 100)
+  { restarted_pid == pid } |> should.be_false
+
+  // The handle still resolves — it holds the name, not the dead Subject — and
+  // the sequence state comes back from storage rather than restarting at 0.
+  session.exists(sess, topic) |> should.be_true
+  session.sequence_number(sess, topic) |> should.equal(before)
+}
+
+/// Poll until the session's name resolves to a pid other than `dead`.
+fn await_restart(
+  sess: session.Session,
+  dead: process.Pid,
+  attempts: Int,
+) -> Result(process.Pid, Nil) {
+  case attempts <= 0 {
+    True -> Error(Nil)
+    False ->
+      case session.owner(sess) {
+        Ok(pid) if pid != dead -> Ok(pid)
+        _ -> {
+          process.sleep(10)
+          await_restart(sess, dead, attempts - 1)
+        }
+      }
+  }
 }
 
 pub fn session_create_persists_document_existence_test() {

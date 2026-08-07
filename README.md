@@ -50,6 +50,28 @@ docker compose down -v
 | `FLOODGATE_PUBLIC_URL` | `http://localhost:<port>` | Externally reachable base URL |
 | `FLOODGATE_ALLOWED_ORIGINS` | *(same-origin)* | Comma-separated allow-list, or `*` |
 
+### Limits
+
+`FLOODGATE_ALLOWED_ORIGINS` applies to **both** socket endpoints. Non-browser clients —
+including the official Fluid drivers — send no `Origin` and are admitted under the default
+same-origin policy; the allow-list form is only needed for browser clients served from
+another origin.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLOODGATE_MAX_FRAME_BYTES` | `16777216` (16 MiB) | Inbound frame ceiling. Also what IConnected advertises as `maxMessageSize` and the Engine.IO handshake as `maxPayload` — one value, so the three cannot drift. Oversize frames close the socket. |
+| `FLOODGATE_MAX_CONNECTIONS_PER_IP` | `256` | Concurrent sockets per peer address |
+| `FLOODGATE_MAX_CONNECTIONS` | `4096` | Concurrent sockets node-wide |
+| `FLOODGATE_MESSAGE_RATE` / `_BURST` | `1000` / `2000` | Per-socket inbound frames per second |
+| `FLOODGATE_JOIN_RATE` / `_BURST` | `100` / `200` | Per-socket joins per second |
+
+Set any limit to `0` to disable it. Defaults are deliberately generous — the conformance
+suites open several concurrent sockets from one address and burst ops during sync tests —
+so they bound abuse without shaping normal collaboration. The per-IP limit uses the real
+socket peer address and deliberately ignores `X-Forwarded-For`, which a client can set
+freely; behind a proxy every connection shares the proxy's address, so enforce per-client
+limits there instead.
+
 ## HTTP surface
 
 ```

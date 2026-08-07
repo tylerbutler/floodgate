@@ -13,6 +13,7 @@ import floodgate/document_channel
 import floodgate/git
 import floodgate/initial_summary
 import floodgate/memory_store
+import floodgate/origin
 import floodgate/session
 import floodgate/shelf_store
 import floodgate/socketio_transport
@@ -72,6 +73,46 @@ fn storage_data_dir() -> String {
   getenv("FLOODGATE_DATA_DIR", "priv/floodgate_data")
 }
 
+/// Default maximum inbound WebSocket frame size (16 MiB).
+const default_max_frame_bytes = 16_777_216
+
+/// Maximum inbound WebSocket frame size, overridable via
+/// FLOODGATE_MAX_FRAME_BYTES.
+///
+/// One value feeds all three places the limit is observable — beryl's enforced
+/// `max_inbound_frame_bytes`, the `maxMessageSize` advertised in IConnected, and
+/// the Engine.IO handshake's `maxPayload` — so they cannot drift. They had:
+/// IConnected advertised 16 MiB while beryl enforced its own 1 MiB default and
+/// the handshake advertised 1 MiB, and an oversize frame was dropped by the
+/// transport with no protocol-level error.
+pub fn max_frame_bytes() -> Int {
+  positive_env("FLOODGATE_MAX_FRAME_BYTES", default_max_frame_bytes)
+}
+
+/// Origin policy for both socket endpoints, from FLOODGATE_ALLOWED_ORIGINS.
+fn origin_policy() -> origin.OriginPolicy {
+  origin.from_env(getenv("FLOODGATE_ALLOWED_ORIGINS", ""))
+}
+
+/// Read a positive integer from the environment, falling back to `default` when
+/// unset, unparseable, or non-positive.
+fn positive_env(name: String, default: Int) -> Int {
+  case int.parse(getenv(name, "")) {
+    Ok(value) if value > 0 -> value
+    _ -> default
+  }
+}
+
+/// Read a limit from the environment. beryl treats 0 as "unlimited" for the
+/// connection and rate limits, so an explicit 0 must be preserved rather than
+/// replaced by the default.
+fn limit_env(name: String, default: Int) -> Int {
+  case int.parse(getenv(name, "")) {
+    Ok(value) if value >= 0 -> value
+    _ -> default
+  }
+}
+
 pub fn start(
   configured_tenant: String,
   jwt_secret: String,
@@ -93,16 +134,46 @@ pub fn start_with_backend(
   // Phoenix framing is the coordinator default so `levee-driver` sockets on
   // the stock beryl transport need no per-connection codec; the Socket.IO
   // transport overrides it per socket with the dewdrop/Routerlicious codec.
-  let config = beryl.config(wire.phoenix_codec()) |> beryl.with_pubsub(ps)
+  //
+  // The limits below must be applied before `beryl_supervisor.config`, which
+  // reads them to decide whether to start the connection-limiter child.
+  // Defaults are deliberately generous: the conformance suites open several
+  // concurrent sockets from one address and burst ops during sync tests, so
+  // these bound abuse without shaping normal collaboration. Set any to 0 to
+  // disable that limit.
+  let config =
+    beryl.config(wire.phoenix_codec())
+    |> beryl.with_pubsub(ps)
+    |> beryl.with_max_inbound_frame_bytes(max_frame_bytes())
+    |> beryl.with_max_connections_per_ip(limit_env(
+      "FLOODGATE_MAX_CONNECTIONS_PER_IP",
+      256,
+    ))
+    |> beryl.with_max_connections(limit_env("FLOODGATE_MAX_CONNECTIONS", 4096))
+    |> beryl.with_message_rate(
+      per_second: limit_env("FLOODGATE_MESSAGE_RATE", 1000),
+      burst: limit_env("FLOODGATE_MESSAGE_BURST", 2000),
+    )
+    |> beryl.with_join_rate(
+      per_second: limit_env("FLOODGATE_JOIN_RATE", 100),
+      burst: limit_env("FLOODGATE_JOIN_BURST", 200),
+    )
   let supervised = beryl_supervisor.config(config)
+  // The session actor owns the sequence state for every document, so it has to
+  // be supervised — started outside the tree, a crash left every `process.call`
+  // from every channel timing out with nothing to restart it, i.e. permanent
+  // service death. Its name is allocated before the tree starts so the channel
+  // below can be registered with a handle that stays valid across restarts.
+  let session_name = session.new_name()
+  let sess = session.from_name(session_name, storage)
   case
     static_supervisor.new(static_supervisor.OneForOne)
     |> static_supervisor.add(beryl_supervisor.start(supervised))
+    |> static_supervisor.add(session.child_spec(session_name, storage))
     |> static_supervisor.start()
   {
     Ok(_) -> {
       let channels = beryl_supervisor.channels(supervised)
-      let sess = session.start_with_backend(storage)
       let _ =
         beryl.register(
           channels,
@@ -127,14 +198,12 @@ const phoenix_socket_path = "/socket/websocket"
 /// takes a comma-separated allow-list, or `*` to disable origin checking.
 fn phoenix_transport_config() -> beryl_mist.TransportConfig(Nil) {
   let config = beryl_mist.default_config(phoenix_socket_path)
-  case getenv("FLOODGATE_ALLOWED_ORIGINS", "") {
-    "" -> config
-    "*" -> beryl_mist.with_allow_all_origins(config)
-    origins ->
-      beryl_mist.with_allowed_origins(
-        config,
-        string.split(origins, ",") |> list.map(string.trim),
-      )
+  // beryl_mist's own default is already SameOrigin, so that case needs no call.
+  case origin_policy() {
+    origin.SameOrigin -> config
+    origin.AllowAll -> beryl_mist.with_allow_all_origins(config)
+    origin.AllowList(origins) ->
+      beryl_mist.with_allowed_origins(config, origins)
   }
 }
 
@@ -173,7 +242,7 @@ pub fn serve_with_backend(
         Error(_) -> Error(Nil)
         Ok(#(channels, sess)) -> {
           let assert Ok(_) =
-            socketio_transport.handler(channels, fn(req) {
+            socketio_transport.handler(channels, origin_policy(), fn(req) {
               beryl_mist.upgrade(
                 req,
                 channels,

@@ -241,6 +241,7 @@ fn connect_core(
           summary_handle,
           summary_sequence_number,
           current_sequence_number,
+          beryl.max_inbound_frame_bytes(channels),
         ),
         DocAssigns(
           client_id: cid,
@@ -508,18 +509,23 @@ fn connected_response(
   summary_handle: String,
   summary_sequence_number: Int,
   current_sequence_number: Int,
+  max_message_size: Int,
 ) -> json.Json {
   json.object([
     #("claims", claims_json(claims)),
     #("clientId", json.string(client_id)),
     #("existing", json.bool(existing)),
-    #("maxMessageSize", json.int(16 * 1024 * 1024)),
+    // Sourced from beryl's configured frame ceiling rather than hardcoded, so
+    // what we advertise is what the transports actually enforce. This used to
+    // claim 16 MiB while beryl's default enforced 1 MiB and the Engine.IO
+    // handshake advertised 1 MiB — three numbers, one of them a fiction.
+    #("maxMessageSize", json.int(max_message_size)),
     #("mode", json.string(mode)),
     #(
       "serviceConfiguration",
       json.object([
         #("blockSize", json.int(64 * 1024)),
-        #("maxMessageSize", json.int(16 * 1024 * 1024)),
+        #("maxMessageSize", json.int(max_message_size)),
       ]),
     ),
     #("initialClients", initial_clients_json(roster)),

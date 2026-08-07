@@ -1,13 +1,24 @@
 //// Mist transport for the Engine.IO/Socket.IO framing expected by the
 //// official Routerlicious driver.
+////
+//// This is floodgate's own transport rather than beryl_mist's, so the guards
+//// beryl_mist applies to the Phoenix endpoint have to be applied here too or the
+//// two endpoints diverge. It now mirrors beryl_mist on four counts: the origin
+//// (CSWSH) policy, the per-IP/node connection ceiling, the per-socket message
+//// rate limit, and — importantly — registering a closer so the coordinator can
+//// actively evict a stale socket instead of leaving a zombie connection whose
+//// frames are silently dropped.
 
-import beryl.{type Channels}
-import beryl/transport
+import beryl.{type Channels, type ConnectionPermit}
+import beryl/transport.{type RateLimiter}
 import beryl/wire/codec.{type Inbound, Event, Heartbeat, Join}
 import dewdrop/events
+import floodgate/origin
 import floodgate/server_codec
 import floodgate/socketio
 import gleam/bit_array
+import gleam/bool
+import gleam/bytes_tree
 import gleam/crypto
 import gleam/dynamic
 import gleam/dynamic/decode
@@ -23,14 +34,15 @@ const ping_interval_ms = 25_000
 
 const ping_timeout_ms = 20_000
 
-const max_payload = 1_000_000
-
 type ConnectionState {
   ConnectionState(
     socket_id: String,
     channels: Channels,
     send_subject: Subject(SendRequest),
     topic: String,
+    connection_permit: Option(ConnectionPermit),
+    message_limiter: Option(RateLimiter),
+    max_frame_bytes: Int,
   )
 }
 
@@ -38,16 +50,25 @@ type SendRequest {
   SendText(String)
   SendBinary(BitArray)
   SendPing
+  Close
 }
 
 /// Build a combined `/socket.io/` WebSocket and HTTP request handler.
+///
+/// The frame ceiling is read from the beryl config via
+/// `beryl.max_inbound_frame_bytes`, which is the single authority for all three
+/// places the limit is observable: enforced here per frame (beryl only *exposes*
+/// the value — enforcement is each transport's job), advertised in the Engine.IO
+/// handshake as `maxPayload`, and advertised by the channel as IConnected's
+/// `maxMessageSize`.
 pub fn handler(
   channels: Channels,
+  origin_policy: origin.OriginPolicy,
   http_fallback: fn(Request(Connection)) -> Response(ResponseData),
 ) -> fn(Request(Connection)) -> Response(ResponseData) {
   fn(request) {
     case is_socketio_websocket_request(request) {
-      True -> upgrade(request, channels)
+      True -> upgrade(request, channels, origin_policy)
       False -> http_fallback(request)
     }
   }
@@ -63,24 +84,68 @@ fn is_socketio_websocket_request(request: Request(Connection)) -> Bool {
 fn upgrade(
   request: Request(Connection),
   channels: Channels,
+  origin_policy: origin.OriginPolicy,
 ) -> Response(ResponseData) {
-  mist.websocket(
-    request: request,
-    handler: on_message,
-    on_init: fn(connection) { on_init(connection, channels) },
-    on_close: on_close,
+  // Reject cross-site browser upgrades before the handshake. Non-browser
+  // clients — the official Fluid drivers and the conformance suites — send no
+  // `Origin` and stay admitted under the default policy.
+  use <- bool.lazy_guard(
+    when: !origin.allowed(
+      origin_policy,
+      origin: request.get_header(request, "origin"),
+      host: request.get_header(request, "host"),
+    ),
+    return: fn() { empty_response(403) },
   )
+
+  case beryl.acquire_connection_slot(channels, request_ip(request)) {
+    Error(Nil) -> empty_response(429)
+    Ok(permit) ->
+      // The permit is bound to the connection process in `on_init` so the
+      // limiter's monitor reclaims it on abnormal death, and released in
+      // `on_close`. A handshake that never reaches `on_init` would leak the
+      // slot; that window is the same one beryl_mist has, and the request has
+      // already been screened as a websocket upgrade by this point.
+      mist.websocket(
+        request: request,
+        handler: on_message,
+        on_init: fn(connection) { on_init(connection, channels, permit) },
+        on_close: on_close,
+      )
+  }
+}
+
+fn empty_response(status: Int) -> Response(ResponseData) {
+  response.new(status)
+  |> response.set_body(mist.Bytes(bytes_tree.new()))
+}
+
+/// The real socket peer address. Deliberately not read from `X-Forwarded-For`:
+/// a client sets that freely and could otherwise spoof its way past the per-IP
+/// ceiling. Behind a trusted proxy every connection shares the proxy address,
+/// so enforce per-client limits at the proxy instead.
+fn request_ip(request: Request(Connection)) -> String {
+  case mist.get_connection_info(request.body) {
+    Ok(info) -> mist.ip_address_to_string(info.ip_address)
+    Error(Nil) -> "unknown"
+  }
 }
 
 fn on_init(
   connection: WebsocketConnection,
   channels: Channels,
+  permit: ConnectionPermit,
 ) -> #(ConnectionState, Option(process.Selector(SendRequest))) {
+  let max_frame_bytes = beryl.max_inbound_frame_bytes(channels)
   let socket_id = generate_socket_id()
   let send_subject = process.new_subject()
   let selector =
     process.new_selector()
     |> process.select(send_subject)
+
+  // Bind before anything can fail, so the slot is reclaimed even if this
+  // process dies without running `on_close`.
+  beryl.bind_connection_slot(permit)
 
   let send_text = fn(text: String) -> Result(Nil, Nil) {
     process.send(send_subject, SendText(text))
@@ -100,6 +165,15 @@ fn on_init(
     assigns: dynamic.nil(),
   )
 
+  // Without this the coordinator can drop its own state for a stale socket but
+  // cannot close the underlying connection, leaving this process alive and
+  // pinging into the void — and its stale RSN pinning the document's MSN.
+  transport.register_closer(
+    channels: channels,
+    socket_id: socket_id,
+    close: fn() { process.send(send_subject, Close) },
+  )
+
   let _ =
     mist.send_text_frame(
       connection,
@@ -107,12 +181,23 @@ fn on_init(
         socket_id,
         ping_interval_ms,
         ping_timeout_ms,
-        max_payload,
+        max_frame_bytes,
       ),
     )
   schedule_ping(send_subject)
 
-  #(ConnectionState(socket_id, channels, send_subject, ""), Some(selector))
+  #(
+    ConnectionState(
+      socket_id: socket_id,
+      channels: channels,
+      send_subject: send_subject,
+      topic: "",
+      connection_permit: Some(permit),
+      message_limiter: transport.new_message_limiter(channels),
+      max_frame_bytes: max_frame_bytes,
+    ),
+    Some(selector),
+  )
 }
 
 fn on_message(
@@ -121,12 +206,30 @@ fn on_message(
   connection: WebsocketConnection,
 ) -> mist.Next(ConnectionState, SendRequest) {
   case message {
-    mist.Text(text) -> handle_text(state, text, connection)
-    mist.Binary(data) -> {
-      transport.route_binary(state.channels, state.socket_id, data)
-      mist.continue(state)
-    }
+    mist.Text(text) ->
+      case frame_too_large(state.max_frame_bytes, string.byte_size(text)) {
+        True -> mist.stop()
+        False ->
+          case take_token(state) {
+            #(state, False) -> mist.continue(state)
+            #(state, True) -> handle_text(state, text, connection)
+          }
+      }
+    mist.Binary(data) ->
+      case frame_too_large(state.max_frame_bytes, bit_array.byte_size(data)) {
+        True -> mist.stop()
+        False ->
+          case take_token(state) {
+            #(state, False) -> mist.continue(state)
+            #(state, True) -> {
+              transport.route_binary(state.channels, state.socket_id, data)
+              mist.continue(state)
+            }
+          }
+      }
     mist.Closed | mist.Shutdown -> mist.stop()
+    // Coordinator-initiated eviction via the registered closer.
+    mist.Custom(Close) -> mist.stop()
     mist.Custom(SendText(text)) -> send_text(connection, state, text)
     mist.Custom(SendBinary(data)) -> {
       mist.send_binary_frame(connection, data)
@@ -136,6 +239,28 @@ fn on_message(
     mist.Custom(SendPing) -> {
       schedule_ping(state.send_subject)
       send_text(connection, state, socketio.engine_ping())
+    }
+  }
+}
+
+/// Whether an inbound frame breaches the configured ceiling. A cap of 0 (or
+/// less) disables the check, matching beryl's convention. Mirrors beryl_mist so
+/// both endpoints reject at the same size and in the same way — a close rather
+/// than a protocol error, since at frame level there is no reliable client or
+/// topic context to address a nack to, and WebSocket close is the native signal.
+fn frame_too_large(max_bytes: Int, actual_bytes: Int) -> Bool {
+  max_bytes > 0 && actual_bytes > max_bytes
+}
+
+/// Take a token from this socket's inbound message budget. Over-budget frames
+/// are dropped rather than closing the socket, matching how the coordinator
+/// treats frames from a socket it has already stopped tracking.
+fn take_token(state: ConnectionState) -> #(ConnectionState, Bool) {
+  case state.message_limiter {
+    None -> #(state, True)
+    Some(limiter) -> {
+      let #(limiter, allowed) = transport.take_token(limiter)
+      #(ConnectionState(..state, message_limiter: Some(limiter)), allowed)
     }
   }
 }
@@ -266,6 +391,10 @@ fn send_text(
 
 fn on_close(state: ConnectionState) -> Nil {
   transport.socket_disconnected(state.channels, state.socket_id)
+  case state.connection_permit {
+    Some(permit) -> beryl.release_connection_slot(permit)
+    None -> Nil
+  }
 }
 
 fn schedule_ping(subject: Subject(SendRequest)) -> Nil {

@@ -11,10 +11,25 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam/otp/supervision
 import spillway/sequencing
 
+/// A handle onto the session actor.
+///
+/// This holds the actor's registered *name*, not its `Subject`, so a supervised
+/// restart is transparent to every holder: `process.named_subject` re-resolves to
+/// whatever process currently owns the name. Capturing the Subject instead —
+/// which is what this did before — meant a restarted actor was unreachable by
+/// the already-registered channel, so a crash took the whole service down
+/// permanently rather than for the length of a restart.
 pub opaque type Session {
-  Session(subject: Subject(Msg), storage: store.Backend)
+  Session(name: process.Name(Msg), storage: store.Backend)
+}
+
+/// Resolve the current session actor. Called per request rather than cached, so
+/// the handle survives a restart.
+fn subject(s: Session) -> Subject(Msg) {
+  process.named_subject(s.name)
 }
 
 pub type Msg {
@@ -165,27 +180,74 @@ type State {
   State(docs: Dict(String, Doc))
 }
 
-/// Start a session over a fresh, ephemeral in-memory backend. For a persistent
-/// runtime, construct a `shelf_store` backend and use `start_with_backend`.
+/// Allocate a fresh name for a session actor.
+pub fn new_name() -> process.Name(Msg) {
+  process.new_name("floodgate_session")
+}
+
+/// A handle onto the session actor registered at `name`, which need not be
+/// running yet — this is what lets the handle be built before the supervisor
+/// starts the actor, and stay valid across restarts.
+pub fn from_name(name: process.Name(Msg), storage: store.Backend) -> Session {
+  Session(name, storage)
+}
+
+/// Start the session actor under `name`.
+///
+/// `store.open` is a no-op for both backends — tables and backing actors are
+/// created when the `Backend` value is constructed — so the storage lifecycle
+/// sits outside this actor's crash domain and a restart cannot disturb it.
+pub fn start_named(
+  name: process.Name(Msg),
+  storage: store.Backend,
+) -> Result(actor.Started(Subject(Msg)), actor.StartError) {
+  store.open(storage)
+  actor.new(State(dict.new()))
+  |> actor.on_message(fn(state, message) { handle(storage, state, message) })
+  |> actor.named(name)
+  |> actor.start
+}
+
+/// Supervisable child specification for the session actor.
+///
+/// In-memory state (`docs`) is rebuilt lazily by `doc/2` from persisted ops and
+/// summaries, so a restart recovers each document's sequence state on next
+/// touch. Connected clients' `client_states` do not survive, so their next
+/// `submitOp` is nacked as an unknown client until they rejoin — which is the
+/// same contract levee has when its per-document session restarts.
+pub fn child_spec(
+  name: process.Name(Msg),
+  storage: store.Backend,
+) -> supervision.ChildSpecification(Subject(Msg)) {
+  supervision.worker(fn() { start_named(name, storage) })
+}
+
+/// Start an *unsupervised* session over a fresh, ephemeral in-memory backend.
+/// For tests; a runtime should supervise the actor via `child_spec`.
 pub fn start() -> Session {
   start_with_backend(memory_store.new())
 }
 
+/// Start an *unsupervised* session over the supplied backend. For tests; a
+/// runtime should supervise the actor via `child_spec`.
 pub fn start_with_backend(storage: store.Backend) -> Session {
-  store.open(storage)
-  let assert Ok(s) =
-    actor.new(State(dict.new()))
-    |> actor.on_message(fn(state, message) { handle(storage, state, message) })
-    |> actor.start
-  Session(s.data, storage)
+  let name = new_name()
+  let assert Ok(_) = start_named(name, storage)
+  from_name(name, storage)
 }
 
 pub fn storage(session: Session) -> store.Backend {
   session.storage
 }
 
+/// The pid currently registered under the session's name, if the actor is
+/// running. For supervision tests and diagnostics.
+pub fn owner(s: Session) -> Result(process.Pid, Nil) {
+  process.subject_owner(subject(s))
+}
+
 pub fn create(s: Session, topic: String) -> Bool {
-  process.call(s.subject, 1000, Create(topic, _))
+  process.call(subject(s), 1000, Create(topic, _))
 }
 
 pub fn create_initialized(
@@ -193,11 +255,11 @@ pub fn create_initialized(
   topic: String,
   build: fn() -> Result(Option(#(String, Int)), Nil),
 ) -> CreateInitializedResult {
-  process.call(s.subject, 10_000, CreateInitialized(topic, build, _))
+  process.call(subject(s), 10_000, CreateInitialized(topic, build, _))
 }
 
 pub fn join(s: Session, topic: String, c: String) -> Bool {
-  process.call(s.subject, 1000, Join(topic, c, _))
+  process.call(subject(s), 1000, Join(topic, c, _))
 }
 
 pub fn connect(
@@ -209,7 +271,7 @@ pub fn connect(
   join_data: String,
   timestamp: Int,
 ) -> ConnectionResult {
-  process.call(s.subject, 1000, Connect(
+  process.call(subject(s), 1000, Connect(
     topic,
     client_id,
     mode,
@@ -226,7 +288,7 @@ pub fn join_presence(
   client_id: String,
   mode: String,
 ) -> Bool {
-  process.call(s.subject, 1000, JoinPresence(topic, client_id, mode, _))
+  process.call(subject(s), 1000, JoinPresence(topic, client_id, mode, _))
 }
 
 pub fn join_sequenced(
@@ -236,7 +298,7 @@ pub fn join_sequenced(
   data: String,
   timestamp: Int,
 ) -> JoinResult {
-  process.call(s.subject, 1000, JoinSequenced(
+  process.call(subject(s), 1000, JoinSequenced(
     topic,
     client_id,
     data,
@@ -253,7 +315,7 @@ pub fn submit(
   rsn: Int,
   contents: String,
 ) -> SubmitResult {
-  process.call(s.subject, 1000, Submit(t, c, csn, rsn, contents, _))
+  process.call(subject(s), 1000, Submit(t, c, csn, rsn, contents, _))
 }
 
 pub fn submit_message(
@@ -264,7 +326,7 @@ pub fn submit_message(
   rsn: Int,
   build: fn(Int, Int) -> String,
 ) -> SubmitMessageResult {
-  process.call(s.subject, 1000, SubmitMessage(
+  process.call(subject(s), 1000, SubmitMessage(
     topic,
     client_id,
     csn,
@@ -284,7 +346,7 @@ pub fn submit_summary(
   response_contents: String,
   handle: Option(String),
 ) -> SubmitSummaryResult {
-  process.call(s.subject, 1000, SubmitSummary(
+  process.call(subject(s), 1000, SubmitSummary(
     topic,
     client_id,
     csn,
@@ -304,7 +366,7 @@ pub fn submit_summary_messages(
   rsn: Int,
   build: fn(Int, Int, Int) -> #(String, String, Option(String)),
 ) -> SubmitSummaryMessagesResult {
-  process.call(s.subject, 1000, SubmitSummaryMessages(
+  process.call(subject(s), 1000, SubmitSummaryMessages(
     topic,
     client_id,
     csn,
@@ -315,11 +377,11 @@ pub fn submit_summary_messages(
 }
 
 pub fn leave(s: Session, topic: String, client_id: String) -> Nil {
-  process.send(s.subject, Leave(topic, client_id))
+  process.send(subject(s), Leave(topic, client_id))
 }
 
 pub fn leave_presence(s: Session, topic: String, client_id: String) -> Nil {
-  process.send(s.subject, LeavePresence(topic, client_id))
+  process.send(subject(s), LeavePresence(topic, client_id))
 }
 
 pub fn leave_sequenced(
@@ -328,46 +390,46 @@ pub fn leave_sequenced(
   client_id: String,
   timestamp: Int,
 ) -> LeaveResult {
-  process.call(s.subject, 1000, LeaveSequenced(topic, client_id, timestamp, _))
+  process.call(subject(s), 1000, LeaveSequenced(topic, client_id, timestamp, _))
 }
 
 pub fn since(s: Session, t: String, sn: Int) -> List(#(Int, String)) {
-  process.call(s.subject, 1000, Since(t, sn, _))
+  process.call(subject(s), 1000, Since(t, sn, _))
 }
 
 pub fn clients(s: Session, t: String) -> List(String) {
-  process.call(s.subject, 1000, Clients(t, _))
+  process.call(subject(s), 1000, Clients(t, _))
 }
 
 pub fn roster(s: Session, t: String) -> List(#(String, String)) {
-  process.call(s.subject, 1000, Roster(t, _))
+  process.call(subject(s), 1000, Roster(t, _))
 }
 
 pub fn exists(s: Session, t: String) -> Bool {
-  process.call(s.subject, 1000, Exists(t, _))
+  process.call(subject(s), 1000, Exists(t, _))
 }
 
 pub fn sequence_number(s: Session, t: String) -> Int {
-  process.call(s.subject, 1000, SequenceNumber(t, _))
+  process.call(subject(s), 1000, SequenceNumber(t, _))
 }
 
 pub fn set_summary(s: Session, t: String, handle: String, sn: Int) {
-  process.send(s.subject, SetSummary(t, handle, sn))
+  process.send(subject(s), SetSummary(t, handle, sn))
 }
 
 /// Advance a client's reference sequence number without sequencing an op, so
 /// an idle client still lets the minimum sequence number move. Fire-and-forget,
 /// mirroring levee's `Session.update_client_rsn` cast.
 pub fn update_client_rsn(s: Session, t: String, client_id: String, rsn: Int) {
-  process.send(s.subject, UpdateClientRsn(t, client_id, rsn))
+  process.send(subject(s), UpdateClientRsn(t, client_id, rsn))
 }
 
 pub fn initialize_summary(s: Session, t: String, handle: String, sn: Int) {
-  process.call(s.subject, 1000, InitializeSummary(t, handle, sn, _))
+  process.call(subject(s), 1000, InitializeSummary(t, handle, sn, _))
 }
 
 pub fn summary(s: Session, t: String) -> #(String, Int) {
-  process.call(s.subject, 1000, GetSummary(t, _))
+  process.call(subject(s), 1000, GetSummary(t, _))
 }
 
 fn doc(storage: store.Backend, st: State, t: String) -> Doc {
