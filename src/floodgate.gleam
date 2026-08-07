@@ -844,7 +844,6 @@ fn create_document(
       initial_summary.persist(
         session.storage(sess),
         tenant,
-        doc,
         body,
         now_seconds(),
       )
@@ -852,10 +851,20 @@ fn create_document(
   {
     session.AlreadyExists -> conflict()
     session.InvalidInitialSummary -> bad_request()
-    session.Created ->
+    session.Created -> {
+      // The session has the summary pointer committed; publish the ref that
+      // mirrors it. Deliberately after, not during `initial_summary.persist`, so
+      // a crash can only leave the ref lagging rather than pointing at a summary
+      // the session does not know it accepted.
+      let #(handle, _sn) = session.summary(sess, document_topic)
+      case handle {
+        "" -> Nil
+        _ -> git.publish_summary_ref(session.storage(sess), tenant, doc, handle)
+      }
       create_response(doc, tenant, public_url, enable_discovery(body))
       |> json.to_string
       |> json_response(201)
+    }
   }
 }
 

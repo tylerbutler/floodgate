@@ -887,6 +887,11 @@ fn submit_summary_op(
       summary_message,
       response_message,
     ) -> {
+      // Now that the ops and the session's summary pointer are committed, make
+      // the ref match it. Reading the pointer back rather than reusing the sha
+      // computed above is what makes the ref a projection of the authoritative
+      // value: whatever the session accepted is what gets published.
+      publish_summary_ref(sess, a.topic)
       beryl.broadcast(
         channels,
         a.topic,
@@ -933,6 +938,26 @@ fn summarize_contents_decoder() {
   decode.success(SummarizeContents(handle, message, parents, head))
 }
 
+/// Point `refs/heads/<document_id>` at whatever summary commit the session
+/// currently holds. A no-op when there is none.
+fn publish_summary_ref(sess: Session, topic: String) -> Nil {
+  case topic_ids(topic), session.summary(sess, topic) {
+    Ok(#(tenant, document_id)), #(handle, _sn) if handle != "" ->
+      git.publish_summary_ref(
+        session.storage(sess),
+        tenant,
+        document_id,
+        handle,
+      )
+    _, _ -> Nil
+  }
+}
+
+/// Store the summary's commit object and return its sha.
+///
+/// Deliberately does *not* publish `refs/heads/<document_id>`: that happens in
+/// `submit_summary_op` once the session has committed its own summary pointer, so
+/// the ref can only ever lag, never lead. See `git.publish_summary_ref`.
 fn persist_summary(
   storage: store.Backend,
   topic: String,
@@ -940,7 +965,7 @@ fn persist_summary(
 ) -> Result(String, String) {
   case topic_ids(topic) {
     Error(reason) -> Error(reason)
-    Ok(#(tenant, document_id)) ->
+    Ok(#(tenant, _document_id)) ->
       case git.fetch(storage, tenant, contents.handle) {
         Error(_) -> Error("Summary tree does not exist")
         Ok(_) -> {
@@ -959,18 +984,10 @@ fn persist_summary(
               #("committer", author),
             ])
             |> json.to_string
-          case git.create(storage, tenant, "commits", commit) {
-            Error(_) -> Error("Could not store summary commit")
-            Ok(commit_sha) -> {
-              git.put_ref(
-                storage,
-                tenant,
-                "refs/heads/" <> document_id,
-                commit_sha,
-              )
-              Ok(commit_sha)
-            }
-          }
+          // The commit is content-addressed, so an orphan left by a crash is
+          // garbage rather than a wrong answer.
+          git.create(storage, tenant, "commits", commit)
+          |> result.replace_error("Could not store summary commit")
         }
       }
   }

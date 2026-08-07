@@ -57,9 +57,13 @@ pub fn persists_whole_summary_as_historian_graph_test() {
     |> json.to_string
 
   let assert Ok(Some(#(commit_sha, 7))) =
-    initial_summary.persist(storage, tenant, document_id, body, 1_700_000_000)
-  git.get_ref(storage, tenant, "refs/heads/" <> document_id)
-  |> should.equal(Ok(commit_sha))
+    initial_summary.persist(storage, tenant, body, 1_700_000_000)
+  // `persist` writes objects only. The ref pointing at this commit is published
+  // by the caller once the session's summary pointer is committed, so a crash
+  // can only leave it lagging rather than pointing at a summary the session
+  // never accepted.
+  git.get_ref(storage, tenant, git.summary_ref(document_id))
+  |> should.equal(Error(Nil))
 
   let assert Ok(commit_body) = git.fetch(storage, tenant, commit_sha)
   let assert Ok(commit_response) =
@@ -126,9 +130,13 @@ pub fn persists_fluid_summary_tree_shape_test() {
     |> json.to_string
 
   let assert Ok(Some(#(commit_sha, 3))) =
-    initial_summary.persist(storage, tenant, document_id, body, 1_700_000_000)
-  git.get_ref(storage, tenant, "refs/heads/" <> document_id)
-  |> should.equal(Ok(commit_sha))
+    initial_summary.persist(storage, tenant, body, 1_700_000_000)
+  // `persist` writes objects only. The ref pointing at this commit is published
+  // by the caller once the session's summary pointer is committed, so a crash
+  // can only leave it lagging rather than pointing at a summary the session
+  // never accepted.
+  git.get_ref(storage, tenant, git.summary_ref(document_id))
+  |> should.equal(Error(Nil))
 }
 
 /// A blob's `content` is `unknown` in the Fluid types; levee re-encodes a
@@ -171,17 +179,17 @@ pub fn accepts_non_string_fluid_blob_content_test() {
     |> json.to_string
 
   let assert Ok(Some(_)) =
-    initial_summary.persist(storage, "json-content", "doc", body, 0)
+    initial_summary.persist(storage, "json-content", body, 0)
 }
 
 pub fn accepts_document_create_without_summary_test() {
-  initial_summary.persist(memory_store.new(), "no-summary", "doc", "{}", 0)
+  initial_summary.persist(memory_store.new(), "no-summary", "{}", 0)
   |> should.equal(Ok(None))
 }
 
 pub fn rejects_blob_as_summary_root_test() {
   let body =
     "{\"summary\":{\"type\":\"blob\",\"content\":\"invalid\",\"encoding\":\"utf-8\"}}"
-  initial_summary.persist(memory_store.new(), "invalid-summary", "doc", body, 0)
+  initial_summary.persist(memory_store.new(), "invalid-summary", body, 0)
   |> should.equal(Error(Nil))
 }

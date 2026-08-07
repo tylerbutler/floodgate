@@ -2,6 +2,7 @@
 //// sockets on a `document:*` topic (beryl assigns are per-socket). Analogue of
 //// levee's Elixir Session GenServer: SN assignment + delta catch-up history.
 
+import floodgate/git
 import floodgate/memory_store
 import floodgate/store
 import gleam/dict.{type Dict}
@@ -13,6 +14,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision
+import gleam/string
 import spillway/sequencing
 import spillway/session_logic
 
@@ -556,6 +558,12 @@ fn doc(storage: store.Backend, st: State, t: String) -> Doc {
           }
         })
       let #(handle, ssn) = store.get_summary(storage, t)
+      // Repair the one crash prefix that is not benign. The summary pointer is
+      // written before the ref that mirrors it, so a crash between the two can
+      // leave a document whose summary exists but which `GET /commits?sha=<id>`
+      // cannot resolve — making it unloadable. Restoring a *missing* ref here is
+      // idempotent and only runs on a cache miss.
+      restore_summary_ref(storage, t, handle)
       let checkpoint = case ssn > last_sn {
         True -> ssn
         False -> last_sn
@@ -569,6 +577,22 @@ fn doc(storage: store.Backend, st: State, t: String) -> Doc {
         last_touched_ms: now_ms(),
       )
     }
+  }
+}
+
+/// Put back a summary ref that a crash left unwritten. Never overwrites an
+/// existing one — a ref that merely lags is safe and self-heals on the next
+/// summary, and clients may move refs through the Historian API.
+fn restore_summary_ref(
+  storage: store.Backend,
+  topic: String,
+  handle: String,
+) -> Nil {
+  case handle, string.split(topic, ":") {
+    "", _ -> Nil
+    _, ["document", tenant, document_id] ->
+      git.ensure_summary_ref(storage, tenant, document_id, handle)
+    _, _ -> Nil
   }
 }
 

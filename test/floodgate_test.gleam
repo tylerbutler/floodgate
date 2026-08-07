@@ -146,6 +146,48 @@ pub fn supervised_session_restarts_and_rehydrates_test() {
   session.sequence_number(sess, topic) |> should.equal(before)
 }
 
+/// A summary is five independent DETS writes with no transaction, so a crash can
+/// land between them. They are ordered so that every prefix is safe — objects,
+/// then ops, then the session's summary pointer, then the ref that mirrors it —
+/// which leaves exactly one prefix that is not: a summary pointer with no ref at
+/// all, since `GET /commits?sha=<id>` resolves through that ref and without it the
+/// document cannot be loaded. Rehydration repairs it.
+pub fn missing_summary_ref_is_restored_on_rehydrate_test() {
+  let backend = memory_store.new()
+  let tenant = "ref-repair"
+  let doc = "doc"
+  let topic = "document:" <> tenant <> ":" <> doc
+
+  // The state a crash between `put_summary` and the ref write leaves behind.
+  store.put_obj(backend, tenant, "commit-sha", "{}")
+  store.put_summary(backend, topic, "commit-sha", 5)
+  git.get_ref(backend, tenant, git.summary_ref(doc)) |> should.equal(Error(Nil))
+
+  // Touching the document rehydrates it, which is where the repair runs.
+  let s = session.start_with_backend(backend)
+  session.sequence_number(s, topic) |> should.equal(5)
+  git.get_ref(backend, tenant, git.summary_ref(doc))
+  |> should.equal(Ok("commit-sha"))
+}
+
+/// A ref that merely lags is safe — a client discovering an older snapshot just
+/// replays more ops — and clients may move refs through the Historian API, so the
+/// repair must only fill in a missing ref, never overwrite one.
+pub fn existing_summary_ref_is_left_alone_on_rehydrate_test() {
+  let backend = memory_store.new()
+  let tenant = "ref-keep"
+  let doc = "doc"
+  let topic = "document:" <> tenant <> ":" <> doc
+
+  git.put_ref(backend, tenant, git.summary_ref(doc), "client-chosen-sha")
+  store.put_summary(backend, topic, "commit-sha", 5)
+
+  let s = session.start_with_backend(backend)
+  session.sequence_number(s, topic) |> should.equal(5)
+  git.get_ref(backend, tenant, git.summary_ref(doc))
+  |> should.equal(Ok("client-chosen-sha"))
+}
+
 /// `initialMessages` is served from a per-document op history that used to be
 /// unbounded and extended with `list.append` — a leak that also copied the whole
 /// list on every op. It is now newest-first and capped at 1000, matching levee's

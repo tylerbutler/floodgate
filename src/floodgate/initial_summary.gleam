@@ -38,10 +38,17 @@ type CreatePayload {
 @external(erlang, "floodgate_ffi", "json_encode")
 fn json_encode(value: Dynamic) -> String
 
+/// Store the Historian objects for a create payload's initial summary and return
+/// the commit sha with its sequence number, or `None` when the payload carries no
+/// summary.
+///
+/// Objects only. `refs/heads/<document_id>` is published by the caller once the
+/// session has committed the summary pointer — hence no document id here — so a
+/// crash can only leave the ref lagging, never leading. See
+/// `git.publish_summary_ref`.
 pub fn persist(
   storage: store.Backend,
   tenant: String,
-  document_id: String,
   body: String,
   timestamp: Int,
 ) -> Result(Option(#(String, Int)), Nil) {
@@ -82,7 +89,6 @@ pub fn persist(
             "commits",
             commit,
           ))
-          git.put_ref(storage, tenant, "refs/heads/" <> document_id, commit_sha)
           Ok(Some(#(commit_sha, payload.sequence_number)))
         }
       }
