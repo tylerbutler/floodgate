@@ -63,7 +63,7 @@ pub fn backend_from_name(
 ) -> Result(store.Backend, StorageBackendError) {
   case name {
     "ets" | "shelf" -> Ok(shelf_store.new(storage_data_dir()))
-    "memory" -> Ok(memory_store.new())
+    "memory" -> Ok(memory_store.supervised())
     unsupported -> Error(UnsupportedStorageBackend(unsupported))
   }
 }
@@ -168,6 +168,10 @@ pub fn start_with_backend(
   let sess = session.from_name(session_name, storage)
   case
     static_supervisor.new(static_supervisor.OneForOne)
+    // The backend's own processes come first: the session actor's `store.open`
+    // and its lazy rehydration both call into storage, so storage has to be up
+    // before it.
+    |> store.supervise(storage)
     |> static_supervisor.add(beryl_supervisor.start(supervised))
     |> static_supervisor.add(session.child_spec(session_name, storage))
     |> static_supervisor.start()

@@ -7,10 +7,19 @@
 
 import gleam/int
 import gleam/list
+import gleam/otp/static_supervisor
 import gleam/string
 
 pub type Backend {
   Backend(
+    /// Add whatever processes this backend needs to the runtime's supervision
+    /// tree. Identity for a backend that owns no process.
+    ///
+    /// The field is a builder transform rather than a child specification
+    /// because `ChildSpecification` is parameterized on the child's own subject
+    /// type, which differs per backend; a transform erases that difference
+    /// without giving up the supervisor's type safety at the `add` site.
+    supervise: fn(static_supervisor.Builder) -> static_supervisor.Builder,
     open: fn() -> Nil,
     put_document: fn(String) -> Nil,
     has_document: fn(String) -> Bool,
@@ -25,6 +34,14 @@ pub type Backend {
     get_ref: fn(String, String) -> Result(String, Nil),
     list_refs: fn(String) -> List(#(String, String)),
   )
+}
+
+/// Add the backend's own processes to a supervision tree under construction.
+pub fn supervise(
+  builder: static_supervisor.Builder,
+  backend: Backend,
+) -> static_supervisor.Builder {
+  backend.supervise(builder)
 }
 
 pub fn open(backend: Backend) -> Nil {

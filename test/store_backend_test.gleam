@@ -6,6 +6,7 @@ import floodgate/shelf_store
 import floodgate/store
 import gleam/bit_array
 import gleam/crypto
+import gleam/erlang/process
 import gleam/json
 import gleam/list
 import gleam/option.{Some}
@@ -46,6 +47,55 @@ pub fn actor_memory_backend_satisfies_storage_boundary_test() {
     "document:backend-contract:memory",
     "backend-contract-memory",
   )
+}
+
+/// The memory backend's actor holds every document, op, and ref for the
+/// runtime, so before it was supervised its death left every `store.*` call
+/// timing out forever with nothing to restart it. Its state does not survive —
+/// there is nothing to rehydrate an in-memory store from — but the *service*
+/// does, and the `Backend` closures keep working because they resolve the
+/// actor's name at call time rather than capturing a `Subject`.
+pub fn supervised_memory_backend_restarts_after_a_crash_test() {
+  let name = memory_store.new_name()
+  let backend = memory_store.from_name(name)
+  let assert Ok(#(_channels, _sess)) =
+    floodgate.start_with_backend(
+      "memory-restart",
+      "memory-restart-secret",
+      backend,
+    )
+
+  let topic = "document:memory-restart:doc"
+  store.put_document(backend, topic)
+  store.has_document(backend, topic) |> should.be_true
+
+  let assert Ok(pid) = process.subject_owner(process.named_subject(name))
+  process.kill(pid)
+
+  // The supervisor restarts it under the same name; the same `Backend` value
+  // still reaches it.
+  await_restart(name, pid, 100)
+  store.has_document(backend, topic) |> should.be_false
+  store.put_document(backend, topic)
+  store.has_document(backend, topic) |> should.be_true
+}
+
+fn await_restart(
+  name: process.Name(memory_store.Msg),
+  old: process.Pid,
+  attempts: Int,
+) -> Nil {
+  case attempts <= 0 {
+    True -> panic as "memory store was not restarted"
+    False ->
+      case process.subject_owner(process.named_subject(name)) {
+        Ok(pid) if pid != old -> Nil
+        _ -> {
+          process.sleep(10)
+          await_restart(name, old, attempts - 1)
+        }
+      }
+  }
 }
 
 pub fn backend_substitution_preserves_runtime_session_and_historian_observations_test() {

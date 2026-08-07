@@ -40,6 +40,16 @@ pub fn new(data_dir: String) -> store.Backend {
   let tables = open_tables(data_dir)
 
   store.Backend(
+    // No processes of its own: shelf tables are ETS + DETS, not actors.
+    //
+    // Known limitation: the ETS tables are owned by whichever process calls
+    // this function — `main`, via `floodgate.serve` — and the closures below
+    // capture the table handles. If that process died the tables would go with
+    // it and the captured handles would be stale. Fixing that means opening the
+    // tables in a supervised process and resolving them by name at call time,
+    // the same treatment `session` and `memory_store` got; it is a separate
+    // change because the handles, not just the owner, have to become late-bound.
+    supervise: fn(builder) { builder },
     open: fn() { Nil },
     put_document: fn(topic) {
       let _ = set.insert(into: tables.docs, key: topic, value: True)
