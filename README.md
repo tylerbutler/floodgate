@@ -47,6 +47,7 @@ docker compose down -v
 | `FLOODGATE_TOKEN_MINT_USER_NAME` | `Floodgate Token Mint` | User name in minted tokens |
 | `FLOODGATE_STORAGE_BACKEND` | `shelf` | `shelf`/`ets` (persistent DETS) or `memory` |
 | `FLOODGATE_DATA_DIR` | `priv/floodgate_data` | Shelf DETS directory |
+| `FLOODGATE_DOC_IDLE_MS` | `300000` (5 min) | Drop a document from memory once it has no connected client and has gone this long untouched. It is only a cache: sequence state and summary are rebuilt from storage on the next touch. `0` disables eviction. |
 | `FLOODGATE_PUBLIC_URL` | `http://localhost:<port>` | Externally reachable base URL |
 | `FLOODGATE_ALLOWED_ORIGINS` | *(same-origin)* | Comma-separated allow-list, or `*` |
 
@@ -64,6 +65,8 @@ another origin.
 | `FLOODGATE_MAX_CONNECTIONS` | `4096` | Concurrent sockets node-wide |
 | `FLOODGATE_MESSAGE_RATE` / `_BURST` | `1000` / `2000` | Per-socket inbound frames per second |
 | `FLOODGATE_JOIN_RATE` / `_BURST` | `100` / `200` | Per-socket joins per second |
+| `FLOODGATE_HEARTBEAT_INTERVAL_MS` | `30000` | Suggested client ping cadence; informational only |
+| `FLOODGATE_HEARTBEAT_TIMEOUT_MS` | `60000` | Server-side staleness window. A socket that sends no heartbeat within it is evicted *and* closed, so its stale reference sequence number stops pinning the document's minimum. Must be at least 2 — beryl derives its check interval as half this. |
 
 Set any limit to `0` to disable it. Defaults are deliberately generous — the conformance
 suites open several concurrent sockets from one address and burst ops during sync tests —
