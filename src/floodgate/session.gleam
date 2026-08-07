@@ -1069,8 +1069,10 @@ fn handle(
       let d = doc(storage, t, st)
       case sequencing.assign_sequence_number(d.seq, c, csn, rsn) {
         sequencing.SequenceOk(seq, sn, msn) -> {
-          process.send(reply, Assigned(sn, msn))
+          // Durable before acked, matching `SubmitMessage`. Replying first let
+          // the caller wake and read storage before this write ran.
           store.put_op(storage, t, sn, contents)
+          process.send(reply, Assigned(sn, msn))
           cache(
             st,
             Doc(..d, seq: seq, history: doc_state.remember(d, #(sn, contents))),
@@ -1107,13 +1109,16 @@ fn handle(
           let response_sn = summary_sn + 1
           let seq =
             sequencing.SequenceState(..seq, sequence_number: response_sn)
-          process.send(reply, SummaryAssigned(summary_sn, response_sn, msn))
+          // Durable before acked, matching `SubmitSummaryMessages`. The write
+          // order among these three is itself load-bearing — ops, then the
+          // summary pointer — so the ack goes after all of them, not between.
           store.put_op(storage, t, summary_sn, contents)
           store.put_op(storage, t, response_sn, response_contents)
           case handle {
             Some(handle) -> store.put_summary(storage, t, handle, summary_sn)
             _ -> Nil
           }
+          process.send(reply, SummaryAssigned(summary_sn, response_sn, msn))
           cache(
             st,
             Doc(

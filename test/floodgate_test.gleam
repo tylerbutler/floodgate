@@ -726,3 +726,59 @@ pub fn owner_restart_takes_document_actors_with_it_test() {
 
 @external(erlang, "floodgate_ffi", "now_ms")
 fn now_ms() -> Int
+
+/// Every submit handler must write before it acks.
+///
+/// `Submit` and `SubmitSummary` used to reply first, unlike their
+/// closure-carrying siblings `SubmitMessage` and `SubmitSummaryMessages`. The
+/// caller wakes on the reply, so it could read storage back before the actor's
+/// write had run — and a crash in that window would have acked a sequence number
+/// that was never persisted, leaving it free to be handed to a different op on
+/// rehydration.
+///
+/// Reading the backend *directly* here is the point: going through
+/// `session.since` would queue behind the actor and pass either way.
+///
+/// Of the two tests below, only the summary one reliably *detects* a regression
+/// — verified by reverting the fix. `Submit`'s single write almost always lands
+/// before the caller wakes, so it wins the race even when the order is wrong;
+/// `SubmitSummary`'s three writes are late enough to lose. This one therefore
+/// documents the contract rather than guarding it. Both are deterministic in the
+/// correct order, so neither is flaky.
+pub fn submit_is_durable_before_it_acks_test() {
+  let backend = memory_store.new()
+  let s = session.start_with_backend(backend)
+  let topic = "document:t:durable-ack"
+  session.join(s, topic, "c1") |> should.be_false
+
+  let assert session.Assigned(sn, _) =
+    session.submit(s, topic, "c1", 1, 0, "DURABLE")
+  store.get_ops(backend, topic)
+  |> list.key_find(sn)
+  |> should.equal(Ok("DURABLE"))
+}
+
+pub fn submit_summary_is_durable_before_it_acks_test() {
+  let backend = memory_store.new()
+  let s = session.start_with_backend(backend)
+  let topic = "document:t:durable-summary-ack"
+  session.join(s, topic, "c1") |> should.be_false
+
+  let assert session.SummaryAssigned(summary_sn, response_sn, _) =
+    session.submit_summary(
+      s,
+      topic,
+      "c1",
+      1,
+      0,
+      "summary-op",
+      "summary-ack",
+      Some("handle-1"),
+    )
+  let stored = store.get_ops(backend, topic)
+  stored |> list.key_find(summary_sn) |> should.equal(Ok("summary-op"))
+  stored |> list.key_find(response_sn) |> should.equal(Ok("summary-ack"))
+  // The summary pointer is written last of the three, so observing the ack must
+  // mean it landed too.
+  store.get_summary(backend, topic) |> should.equal(#("handle-1", summary_sn))
+}
