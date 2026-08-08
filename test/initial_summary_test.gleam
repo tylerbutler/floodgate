@@ -129,7 +129,7 @@ pub fn persists_fluid_summary_tree_shape_test() {
     ])
     |> json.to_string
 
-  let assert Ok(Some(#(commit_sha, 3))) =
+  let assert Ok(Some(#(_commit_sha, 3))) =
     initial_summary.persist(storage, tenant, body, 1_700_000_000)
   // `persist` writes objects only. The ref pointing at this commit is published
   // by the caller once the session's summary pointer is committed, so a crash

@@ -226,7 +226,7 @@ pub fn supervised_session_restarts_and_rehydrates_test() {
     floodgate.start_with_backend("fluid", "test-jwt-secret", backend)
 
   session.create(sess, topic) |> should.be_false
-  let assert session.Joined(_, _, _, _) =
+  let session.Joined(_, _, _, _) =
     session.join_sequenced(sess, topic, "c1", "{}", 1000)
   let before = session.sequence_number(sess, topic)
   before |> should.not_equal(0)
@@ -340,7 +340,7 @@ pub fn idle_documents_are_evicted_and_rehydrate_test() {
   let sess = session.start_with_backend(backend)
   setenv("FLOODGATE_DOC_IDLE_MS", "")
 
-  let assert session.Joined(_, _, _, _) =
+  let session.Joined(_, _, _, _) =
     session.join_sequenced(sess, topic, "c1", "{}", 1000)
   let before = session.sequence_number(sess, topic)
   session.cached_documents(sess) |> should.equal(1)
@@ -349,8 +349,7 @@ pub fn idle_documents_are_evicted_and_rehydrate_test() {
   process.sleep(250)
   session.cached_documents(sess) |> should.equal(1)
 
-  let assert session.Left(_, _, _) =
-    session.leave_sequenced(sess, topic, "c1", 2000)
+  let session.Left(_, _, _) = session.leave_sequenced(sess, topic, "c1", 2000)
   process.sleep(250)
   session.cached_documents(sess) |> should.equal(0)
 
@@ -709,7 +708,7 @@ pub fn slow_document_does_not_block_another_test() {
   let assert Ok(_) = session.document_owner(sess, "document:t:slow")
 
   let started = now_ms()
-  let assert session.Joined(_, _, _, _) =
+  let session.Joined(_, _, _, _) =
     session.join_sequenced(sess, "document:t:fast", "c1", "{}", 1000)
   let elapsed = now_ms() - started
 
@@ -733,9 +732,9 @@ pub fn document_crash_does_not_disturb_other_documents_test() {
   let victim = "document:t:crash-victim"
   let bystander = "document:t:crash-bystander"
 
-  let assert session.Joined(_, _, _, _) =
+  let session.Joined(_, _, _, _) =
     session.join_sequenced(sess, victim, "c1", "{}", 1000)
-  let assert session.Joined(_, _, _, _) =
+  let session.Joined(_, _, _, _) =
     session.join_sequenced(sess, bystander, "c2", "{}", 1000)
   let victim_sn = session.sequence_number(sess, victim)
 
@@ -762,7 +761,7 @@ pub fn call_against_a_dead_document_actor_recovers_test() {
   let sess = session.start_with_backend(backend)
   let topic = "document:t:stale-row"
 
-  let assert session.Joined(_, _, _, _) =
+  let session.Joined(_, _, _, _) =
     session.join_sequenced(sess, topic, "c1", "{}", 1000)
   let before = session.sequence_number(sess, topic)
 
@@ -771,7 +770,7 @@ pub fn call_against_a_dead_document_actor_recovers_test() {
   let assert Ok(pid) = session.document_owner(sess, topic)
   process.kill(pid)
 
-  let assert session.Joined(_, _, _, _) =
+  let session.Joined(_, _, _, _) =
     session.join_sequenced(sess, topic, "c2", "{}", 2000)
   session.sequence_number(sess, topic) |> should.equal(before + 1)
 }
@@ -803,7 +802,7 @@ pub fn owner_restart_takes_document_actors_with_it_test() {
   let sess = session.start_with_backend(backend)
   let topic = "document:t:owner-restart"
 
-  let assert session.Joined(_, _, _, _) =
+  let session.Joined(_, _, _, _) =
     session.join_sequenced(sess, topic, "c1", "{}", 1000)
   let before = session.sequence_number(sess, topic)
   let assert Ok(doc_pid) = session.document_owner(sess, topic)
@@ -818,7 +817,7 @@ pub fn owner_restart_takes_document_actors_with_it_test() {
 
   // And the document still works, rebuilt from storage.
   session.sequence_number(sess, topic) |> should.equal(before)
-  let assert session.Joined(_, _, _, _) =
+  let session.Joined(_, _, _, _) =
     session.join_sequenced(sess, topic, "c2", "{}", 2000)
 }
 

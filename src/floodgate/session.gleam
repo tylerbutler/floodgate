@@ -434,8 +434,7 @@ pub fn document_owner(s: Session, topic: String) -> Result(process.Pid, Nil) {
 // mechanical test on the old single-actor code: did the handler continue with a
 // *modified* state?
 //
-// - Mutating handlers use `call_doc`/`send_doc_starting`, which start an actor
-//   if there isn't one.
+// - Mutating handlers use `call_doc`, which starts an actor if there isn't one.
 // - Non-mutating handlers use `send_doc` or answer from storage directly, so
 //   they never bring a document into memory. Reading must not be able to
 //   allocate, or any `GET` on an unknown document would spawn an actor.
@@ -493,12 +492,6 @@ fn send_doc(s: Session, topic: String, message: Msg) -> Nil {
     Ok(subject) -> process.send(subject, message)
     Error(Nil) -> Nil
   }
-}
-
-/// Fire-and-forget, starting the document actor if needed. For messages that
-/// write to storage, which must not be dropped.
-fn send_doc_starting(s: Session, topic: String, message: Msg) -> Nil {
-  process.send(resolve(s, topic), message)
 }
 
 pub fn create(s: Session, topic: String) -> Bool {
