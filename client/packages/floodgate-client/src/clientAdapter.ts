@@ -111,16 +111,35 @@ export function createFloodgateResolvedUrl(
 	};
 }
 
+/**
+ * Resolves the driver policies Floodgate actually supports.
+ *
+ * Only the keys named in {@link FloodgateDriverPolicies} are read. Spreading the
+ * caller's object here would let a widened (non-literal) argument slip past
+ * excess-property checking and set policies Floodgate cannot serve — notably
+ * `enableWholeSummaryUpload`, which routes storage through
+ * `GET|POST|DELETE /repos/:tenantId/git/summaries`. Floodgate's router only
+ * whitelists `blobs|trees|commits|refs`, so those requests 404.
+ */
+export function resolveFloodgateDriverPolicies(
+	policies: FloodgateDriverPolicies = {},
+): Required<FloodgateDriverPolicies> & { enableWholeSummaryUpload: false } {
+	return {
+		enableDiscovery: policies.enableDiscovery ?? false,
+		enableLongPollingDowngrade: policies.enableLongPollingDowngrade ?? false,
+		enableRestLess: policies.enableRestLess ?? true,
+		enableWholeSummaryUpload: false,
+	};
+}
+
 export function createFloodgateDocumentServiceFactory(
 	tokenProvider: ITokenProvider,
 	policies: FloodgateDriverPolicies = {},
 ): RouterliciousDocumentServiceFactory {
-	return new RouterliciousDocumentServiceFactory(tokenProvider, {
-		enableDiscovery: false,
-		enableLongPollingDowngrade: false,
-		enableRestLess: true,
-		...policies,
-	});
+	return new RouterliciousDocumentServiceFactory(
+		tokenProvider,
+		resolveFloodgateDriverPolicies(policies),
+	);
 }
 
 export function createFloodgateClientAdapter(

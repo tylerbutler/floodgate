@@ -5,7 +5,9 @@ import { describe, expect, it } from "vitest";
 import {
 	createFloodgateClientAdapter,
 	createFloodgateResolvedUrl,
+	type FloodgateDriverPolicies,
 	FloodgateUrlResolver,
+	resolveFloodgateDriverPolicies,
 } from "../src/index.js";
 
 const tokenProvider: ITokenProvider = {
@@ -47,6 +49,26 @@ describe("Floodgate client adapter", () => {
 			RouterliciousDocumentServiceFactory,
 		);
 		expect(adapter.createResolvedUrl("doc").id).toBe("doc");
+	});
+
+	it("never enables whole-summary upload, which Floodgate does not serve", () => {
+		// A widened (non-literal) argument sidesteps excess-property checking, so
+		// this is what a caller can actually smuggle in at runtime.
+		const smuggled = { enableDiscovery: true, enableWholeSummaryUpload: true };
+		const widened: FloodgateDriverPolicies = smuggled;
+
+		expect(resolveFloodgateDriverPolicies(widened)).toStrictEqual({
+			enableDiscovery: true,
+			enableLongPollingDowngrade: false,
+			enableRestLess: true,
+			enableWholeSummaryUpload: false,
+		});
+		expect(resolveFloodgateDriverPolicies()).toStrictEqual({
+			enableDiscovery: false,
+			enableLongPollingDowngrade: false,
+			enableRestLess: true,
+			enableWholeSummaryUpload: false,
+		});
 	});
 
 	it("rejects an empty service URL", () => {

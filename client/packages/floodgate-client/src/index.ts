@@ -18,6 +18,7 @@ export {
 	type FloodgateConnectionConfig,
 	type FloodgateDriverPolicies,
 	FloodgateUrlResolver,
+	resolveFloodgateDriverPolicies,
 } from "./clientAdapter.js";
 export {
 	type FloodgateIdentity,
