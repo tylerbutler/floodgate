@@ -38,14 +38,21 @@ docker compose down -v
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `FLOODGATE_JWT_SECRET` | *(required)* | Verifies every REST and socket JWT |
+| `FLOODGATE_JWT_SECRET` | *(required)* | Verifies every REST and socket JWT for the startup tenant (see Multi-tenancy) |
 | `PORT` / `FLOODGATE_PORT` | `3000` | Listen port (`PORT` wins) |
 | `FLOODGATE_BIND` | `localhost` | Listen interface; containers need `0.0.0.0` |
-| `FLOODGATE_TENANT_ID` | `fluid` | The single configured tenant |
+| `FLOODGATE_TENANT_ID` | `fluid` | Id of the tenant seeded at startup from `FLOODGATE_JWT_SECRET` |
+| `FLOODGATE_GITHUB_CLIENT_ID` | *(unset)* | GitHub OAuth App client id. OAuth remains disabled when unset |
+| `FLOODGATE_GITHUB_CLIENT_SECRET` | *(unset)* | GitHub OAuth App client secret |
+| `FLOODGATE_GITHUB_REDIRECT_URI` | `<public-url>/auth/github/callback` | Explicit OAuth callback URI |
+| `FLOODGATE_ADMIN_GITHUB_USERS` | *(unset)* | Comma-separated GitHub usernames permitted to become admins. Unset denies OAuth login |
+| `FLOODGATE_ADMIN_SESSION_TTL_SECONDS` | `604800` | Admin browser session lifetime |
+| `FLOODGATE_ADMIN_STATIC_DIR` | `priv/static/admin` | Built Lustre admin UI directory |
+| `FLOODGATE_ADMIN_KEY` | *(unset)* | Bearer key for the tenant management API (see Multi-tenancy). Unset disables that API entirely |
 | `FLOODGATE_TOKEN_MINT_SECRET` | *(unset)* | Enables the token-mint endpoint |
 | `FLOODGATE_TOKEN_MINT_USER_ID` | `floodgate-token-mint` | User id in minted tokens |
 | `FLOODGATE_TOKEN_MINT_USER_NAME` | `Floodgate Token Mint` | User name in minted tokens |
-| `FLOODGATE_STORAGE_BACKEND` | `shelf` | `shelf`/`ets` (persistent DETS) or `memory` |
+| `FLOODGATE_STORAGE_BACKEND` | `shelf` | `shelf`/`ets` (persistent DETS) or `memory` — also selects where tenants persist |
 | `FLOODGATE_DATA_DIR` | `priv/floodgate_data` | Shelf DETS directory |
 | `FLOODGATE_DOC_IDLE_MS` | `300000` (5 min) | Drop a document from memory once it has no connected client and has gone this long untouched. It is only a cache: sequence state and summary are rebuilt from storage on the next touch. `0` disables eviction. |
 | `FLOODGATE_PUBLIC_URL` | `http://localhost:<port>` | Externally reachable base URL |
@@ -75,11 +82,90 @@ socket peer address and deliberately ignores `X-Forwarded-For`, which a client c
 freely; behind a proxy every connection shares the proxy's address, so enforce per-client
 limits there instead.
 
+## Multi-tenancy
+
+Floodgate supports any number of tenants, each with its own pair of rotating JWT
+secrets — dynamic tenant management, not just the one tenant/secret pair the
+environment configures. Tenants ride the same storage backend selection as
+documents (`FLOODGATE_STORAGE_BACKEND`): `shelf` persists them in DETS
+alongside document data, `memory` keeps them in the same ephemeral store used
+by tests.
+
+### Startup tenant compatibility
+
+`FLOODGATE_TENANT_ID` + `FLOODGATE_JWT_SECRET` still work exactly as before:
+at boot, that tenant is created if it does not already exist, with
+`FLOODGATE_JWT_SECRET` as its first secret slot. If the tenant already exists
+(a restart against persistent shelf storage, or one already created via the
+admin API below), the boot step leaves it untouched — it will not roll back a
+secret the admin API has since rotated. To rotate the startup tenant's own
+secret deliberately, use the admin API rather than editing the env var and
+restarting.
+
+### Two secret slots and rotation
+
+Every tenant has two secret slots. JWT verification tries both; token minting
+always uses slot 1. Regenerating one slot leaves the other valid, so a client
+can be migrated to a freshly rotated secret without an outage.
+
+### Admin UI and authentication
+
+Floodgate serves the same Gleam/Lustre admin SPA as Levee at `/admin`; it does
+not use Phoenix, Elixir, or Mix. The container builds both Floodgate's Erlang
+shipment and the SPA's JavaScript output with the Gleam compiler.
+
+Create a GitHub OAuth App with this callback:
+
+```
+https://your-floodgate.example/auth/github/callback
+```
+
+Set `FLOODGATE_GITHUB_CLIENT_ID`, `FLOODGATE_GITHUB_CLIENT_SECRET`, and
+`FLOODGATE_ADMIN_GITHUB_USERS`. The allow-list is required: an unset or empty
+list denies all new OAuth users, avoiding a first-login-wins bootstrap race.
+Users and opaque sessions persist in the selected storage backend. Sessions
+use an HttpOnly, SameSite=Lax cookie, with Secure enabled for HTTPS. OAuth
+state is expiring and single-use.
+
+For local monorepo development, root `just build-admin` copies the shared SPA
+into both Levee and Floodgate. `server/floodgate/justfile` also has a
+Gleam-only `build-admin` recipe.
+
+### Tenant management API
+
+Tenant management accepts either a valid Floodgate admin session or
+`FLOODGATE_ADMIN_KEY` (`Authorization: Bearer <key>`, compared in constant
+time). The key remains available for automation and headless deployments.
+
+```
+GET    /api/tenants                        List tenants — {"tenants":[{"id","name"}]}, no secrets
+POST   /api/tenants                        Create — body {"name"}, 201 {"tenant":{"id","name","secret1","secret2"}}
+GET    /api/tenants/:id                    Show — {"tenant":{"id","name","secret1","secret2"}}
+DELETE /api/tenants/:id                    Delete — {"message":"Tenant unregistered"}. Does not delete the
+                                            tenant's documents; only the registration/secrets are forgotten.
+POST   /api/tenants/:id/secrets/:slot      Regenerate slot 1 or 2 — {"secret":"<new value>"}
+```
+
+These shapes match what `server/levee_admin`'s Lustre admin UI already expects
+(`server/levee_admin/src/levee_admin/api.gleam`), so the same frontend that
+manages Levee's tenants can call Floodgate's API without any decoder changes.
+
 ## HTTP surface
 
 ```
 GET    /health                             Readiness probe — {"status":"ok"}
+GET    /admin/*                            Shared Lustre admin SPA
+GET    /auth/github                       Begin GitHub OAuth
+GET    /auth/github/callback              Complete GitHub OAuth
+GET    /api/auth/config                   UI auth capabilities
+GET    /api/auth/me                       Current cookie/bearer admin
+POST   /api/auth/logout                   End the admin session
 POST   /api/tenants/:tenant/token-mint     Mint a document token (dev/integration)
+GET    /api/tenants                        List tenants (admin session or key)
+POST   /api/tenants                        Create a tenant (admin session or key)
+GET    /api/tenants/:id                    Show a tenant with its secrets (admin session or key)
+DELETE /api/tenants/:id                    Delete a tenant (admin session or key)
+POST   /api/tenants/:id/secrets/:slot      Regenerate secret slot 1 or 2 (admin session or key)
 
 POST   /documents/:tenant                  Create a document (id from body, or generated)
 POST   /documents/:tenant/:id              Create a document with an explicit id

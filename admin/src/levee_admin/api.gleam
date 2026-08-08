@@ -31,6 +31,14 @@ pub type AuthResponse {
   AuthResponse(user: User, token: String)
 }
 
+pub type AuthConfig {
+  AuthConfig(password_auth: Bool)
+}
+
+pub type LogoutResponse {
+  LogoutResponse(message: String)
+}
+
 pub type ApiError {
   NetworkError(String)
   DecodeError(String)
@@ -86,8 +94,10 @@ fn post_json_with_token(
       |> request.set_header("content-type", "application/json")
 
     let req = case token {
-      Some(t) -> request.set_header(req, "authorization", "Bearer " <> t)
+      Some(t) if t != "" ->
+        request.set_header(req, "authorization", "Bearer " <> t)
       None -> req
+      _ -> req
     }
 
     fetch.send(req)
@@ -115,8 +125,10 @@ fn delete_json(
     let req = request.set_method(req, http.Delete)
 
     let req = case token {
-      Some(t) -> request.set_header(req, "authorization", "Bearer " <> t)
+      Some(t) if t != "" ->
+        request.set_header(req, "authorization", "Bearer " <> t)
       None -> req
+      _ -> req
     }
 
     fetch.send(req)
@@ -143,8 +155,10 @@ fn get_json(
     let assert Ok(req) = request.to(get_origin() <> url)
 
     let req = case token {
-      Some(t) -> request.set_header(req, "authorization", "Bearer " <> t)
+      Some(t) if t != "" ->
+        request.set_header(req, "authorization", "Bearer " <> t)
       None -> req
+      _ -> req
     }
 
     fetch.send(req)
@@ -179,6 +193,21 @@ fn handle_response(
 // ─────────────────────────────────────────────────────────────────────────────
 // Auth API
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Get the backend's supported authentication methods.
+///
+/// Levee predates this endpoint, so callers should keep password auth enabled
+/// if the request fails. Floodgate returns `password_auth: false`.
+pub fn get_auth_config(
+  on_response: fn(Result(AuthConfig, ApiError)) -> msg,
+) -> Effect(msg) {
+  let decoder = {
+    use password_auth <- decode.field("password_auth", decode.bool)
+    decode.success(AuthConfig(password_auth:))
+  }
+
+  get_json(api_base <> "/auth/config", None, decoder, on_response)
+}
 
 /// Register a new user
 pub fn register(
@@ -236,6 +265,25 @@ pub fn get_me(
     api_base <> "/auth/me",
     Some(token),
     user_wrapper_decoder,
+    on_response,
+  )
+}
+
+/// End the current session. An empty token means cookie authentication.
+pub fn logout(
+  token: String,
+  on_response: fn(Result(LogoutResponse, ApiError)) -> msg,
+) -> Effect(msg) {
+  let decoder = {
+    use message <- decode.field("message", decode.string)
+    decode.success(LogoutResponse(message:))
+  }
+
+  post_json_with_token(
+    api_base <> "/auth/logout",
+    json.object([]),
+    Some(token),
+    decoder,
     on_response,
   )
 }

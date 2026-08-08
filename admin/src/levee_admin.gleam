@@ -52,6 +52,7 @@ pub type Model {
     route: Route,
     user: Option(User),
     session_token: Option(String),
+    password_auth: Bool,
     login: login.Model,
     register: register.Model,
     dashboard: dashboard.Model,
@@ -68,9 +69,10 @@ pub type User {
 }
 
 fn init(_flags) -> #(Model, Effect(Msg)) {
-  // Check if we're returning from OAuth with a token in the URL,
-  // or restore a previously saved token from localStorage
-  let #(session_token, oauth_effect) = case get_query_param("token") {
+  // Restore Levee's bearer token when present. Floodgate uses an HttpOnly
+  // session cookie, so with no token we probe `/api/auth/me` without an
+  // Authorization header and let the browser send that cookie.
+  let #(session_token, auth_effect) = case get_query_param("token") {
     Some(token) -> {
       save_token(token)
       #(Some(token), api.get_me(token, MeResponse))
@@ -78,7 +80,7 @@ fn init(_flags) -> #(Model, Effect(Msg)) {
     None ->
       case load_token() {
         Some(token) -> #(Some(token), api.get_me(token, MeResponse))
-        None -> #(None, effect.none())
+        None -> #(None, api.get_me("", MeResponse))
       }
   }
 
@@ -103,6 +105,7 @@ fn init(_flags) -> #(Model, Effect(Msg)) {
       route: initial_route,
       user: None,
       session_token: session_token,
+      password_auth: True,
       login: login.init(),
       register: register.init(),
       dashboard: dashboard.init(),
@@ -113,7 +116,14 @@ fn init(_flags) -> #(Model, Effect(Msg)) {
       document_detail: document_detail.init("", ""),
     )
 
-  #(model, effect.batch([modem.init(on_url_change), oauth_effect]))
+  #(
+    model,
+    effect.batch([
+      modem.init(on_url_change),
+      auth_effect,
+      api.get_auth_config(AuthConfigResponse),
+    ]),
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -134,6 +144,8 @@ pub type Msg {
   LoginResponse(Result(api.AuthResponse, api.ApiError))
   RegisterResponse(Result(api.AuthResponse, api.ApiError))
   MeResponse(Result(api.User, api.ApiError))
+  AuthConfigResponse(Result(api.AuthConfig, api.ApiError))
+  LogoutResponse(Result(api.LogoutResponse, api.ApiError))
   // Tenant API responses
   TenantsResponse(Result(api.TenantList, api.ApiError))
   DashboardTenantsResponse(Result(api.TenantList, api.ApiError))
@@ -167,14 +179,15 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   case msg {
     OnRouteChange(route) -> {
       // Redirect to login if not authenticated and trying to access protected route
-      let route = case model.session_token, route {
-        None, router.Dashboard -> router.Login
-        None, router.Tenants -> router.Login
-        None, router.TenantNew -> router.Login
-        None, router.TenantDetail(_) -> router.Login
-        None, router.DocumentList(_) -> router.Login
-        None, router.DocumentDetail(_, _) -> router.Login
-        _, r -> r
+      let route = case model.session_token, model.password_auth, route {
+        _, False, router.Register -> router.Login
+        None, _, router.Dashboard -> router.Login
+        None, _, router.Tenants -> router.Login
+        None, _, router.TenantNew -> router.Login
+        None, _, router.TenantDetail(_) -> router.Login
+        None, _, router.DocumentList(_) -> router.Login
+        None, _, router.DocumentDetail(_, _) -> router.Login
+        _, _, r -> r
       }
 
       let effect = case route, model.session_token {
@@ -432,21 +445,48 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           email: api_user.email,
           display_name: api_user.display_name,
         )
-      let model = Model(..model, user: Some(user), route: router.Dashboard)
+      let token = option.unwrap(model.session_token, "")
+      let model =
+        Model(
+          ..model,
+          user: Some(user),
+          session_token: Some(token),
+          route: router.Dashboard,
+        )
       let nav_effect = modem.push("/admin/dashboard", None, None)
-      case model.session_token {
-        Some(token) -> {
-          let load_effect = api.list_tenants(token, DashboardTenantsResponse)
-          #(model, effect.batch([nav_effect, load_effect]))
-        }
-        None -> #(model, nav_effect)
-      }
+      let load_effect = api.list_tenants(token, DashboardTenantsResponse)
+      #(model, effect.batch([nav_effect, load_effect]))
     }
 
     MeResponse(Error(_error)) -> {
       // Token was invalid — clear it and stay on login
       clear_token()
       #(Model(..model, session_token: None), effect.none())
+    }
+
+    AuthConfigResponse(Ok(config)) -> {
+      let route = case config.password_auth, model.route {
+        False, router.Register -> router.Login
+        _, route -> route
+      }
+      let nav_effect = case route != model.route {
+        True -> modem.push("/admin/login", None, None)
+        False -> effect.none()
+      }
+      #(
+        Model(..model, password_auth: config.password_auth, route: route),
+        nav_effect,
+      )
+    }
+
+    // Older Levee deployments do not expose this capability endpoint.
+    AuthConfigResponse(Error(_)) -> #(model, effect.none())
+
+    LogoutResponse(_) -> {
+      clear_token()
+      let model =
+        Model(..model, user: None, session_token: None, route: router.Login)
+      #(model, modem.push("/admin/login", None, None))
     }
 
     TenantsResponse(Ok(tenant_list)) -> {
@@ -824,10 +864,10 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     }
 
     Logout -> {
-      clear_token()
-      let model =
-        Model(..model, user: None, session_token: None, route: router.Login)
-      #(model, modem.push("/admin/login", None, None))
+      case model.session_token {
+        Some(token) -> #(model, api.logout(token, LogoutResponse))
+        None -> update(model, LogoutResponse(Error(api.NetworkError(""))))
+      }
     }
   }
 }
@@ -842,9 +882,14 @@ fn view(model: Model) -> Element(Msg) {
 
 fn view_content(model: Model) -> Element(Msg) {
   case model.route {
-    router.Login -> element.map(login.view(model.login), LoginMsg)
+    router.Login ->
+      element.map(login.view(model.login, model.password_auth), LoginMsg)
 
-    router.Register -> element.map(register.view(model.register), RegisterMsg)
+    router.Register ->
+      case model.password_auth {
+        True -> element.map(register.view(model.register), RegisterMsg)
+        False -> element.map(login.view(model.login, False), LoginMsg)
+      }
 
     router.Dashboard ->
       view_authenticated_layout(

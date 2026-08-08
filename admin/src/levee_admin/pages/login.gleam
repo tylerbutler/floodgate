@@ -95,49 +95,56 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 // View
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub fn view(model: Model) -> Element(Msg) {
+pub fn view(model: Model, password_auth: Bool) -> Element(Msg) {
   div([class("auth-page login-page")], [
     div([class("auth-card")], [
       h1([class("auth-title")], [text("Sign In")]),
       view_error(model.error),
-      form([class("auth-form"), event.on_submit(fn(_) { Submit })], [
-        div([class("form-group")], [
-          label([for("email")], [text("Email")]),
-          input([
-            type_("email"),
-            id("email"),
-            placeholder("you@example.com"),
-            value(model.email),
-            event.on_input(UpdateEmail),
-            attribute.required(True),
-          ]),
-        ]),
-        div([class("form-group")], [
-          label([for("password")], [text("Password")]),
-          input([
-            type_("password"),
-            id("password"),
-            placeholder("Your password"),
-            value(model.password),
-            event.on_input(UpdatePassword),
-            attribute.required(True),
-          ]),
-        ]),
-        button(
-          [
-            type_("submit"),
-            class("btn btn-primary"),
-            disabled(model.loading),
-          ],
-          [
-            case model.loading {
-              True -> text("Signing in...")
-              False -> text("Sign In")
-            },
-          ],
-        ),
-      ]),
-      div([class("auth-divider")], [span([], [text("or")])]),
+      case password_auth {
+        True ->
+          form([class("auth-form"), event.on_submit(fn(_) { Submit })], [
+            div([class("form-group")], [
+              label([for("email")], [text("Email")]),
+              input([
+                type_("email"),
+                id("email"),
+                placeholder("you@example.com"),
+                value(model.email),
+                event.on_input(UpdateEmail),
+                attribute.required(True),
+              ]),
+            ]),
+            div([class("form-group")], [
+              label([for("password")], [text("Password")]),
+              input([
+                type_("password"),
+                id("password"),
+                placeholder("Your password"),
+                value(model.password),
+                event.on_input(UpdatePassword),
+                attribute.required(True),
+              ]),
+            ]),
+            button(
+              [
+                type_("submit"),
+                class("btn btn-primary"),
+                disabled(model.loading),
+              ],
+              [
+                case model.loading {
+                  True -> text("Signing in...")
+                  False -> text("Sign In")
+                },
+              ],
+            ),
+          ])
+        False -> element.none()
+      },
+      case password_auth {
+        True -> div([class("auth-divider")], [span([], [text("or")])])
+        False -> element.none()
+      },
       button(
         [
           type_("button"),
@@ -147,10 +154,14 @@ pub fn view(model: Model) -> Element(Msg) {
         ],
         [text("Sign in with GitHub")],
       ),
-      p([class("auth-footer")], [
-        text("Don't have an account? "),
-        a([attribute.href("/admin/register")], [text("Register")]),
-      ]),
+      case password_auth {
+        True ->
+          p([class("auth-footer")], [
+            text("Don't have an account? "),
+            a([attribute.href("/admin/register")], [text("Register")]),
+          ])
+        False -> element.none()
+      },
     ]),
   ])
 }

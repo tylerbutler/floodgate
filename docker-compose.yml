@@ -17,8 +17,8 @@ services:
   floodgate:
     image: floodgate:local
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: server/floodgate/Dockerfile
     ports:
       - "3000:3000"
     environment:
@@ -28,6 +28,13 @@ services:
       # existing Levee integration suites authenticate unchanged.
       - FLOODGATE_JWT_SECRET=dev-tenant-secret-key
       - FLOODGATE_TOKEN_MINT_SECRET=dev-token-mint-secret
+      # Enables the tenant management API (GET/POST /api/tenants, etc.); unset
+      # in a real deployment until you actually want that API reachable.
+      - FLOODGATE_ADMIN_KEY=dev-admin-key
+      # Configure a GitHub OAuth App to enable browser admin login.
+      # - FLOODGATE_GITHUB_CLIENT_ID=
+      # - FLOODGATE_GITHUB_CLIENT_SECRET=
+      # - FLOODGATE_ADMIN_GITHUB_USERS=your-github-login
       - FLOODGATE_PUBLIC_URL=http://localhost:3000
       # Browser clients are served from another origin in the examples.
       - FLOODGATE_ALLOWED_ORIGINS=*

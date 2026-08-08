@@ -8,8 +8,8 @@
 # Unlike ../Dockerfile (Levee), this image needs no Elixir or Mix — Floodgate is
 # a pure Gleam application, shipped as a self-contained Erlang release.
 #
-# Build from the floodgate directory:
-#   docker build -t floodgate:local server/floodgate
+# Build from the repository root:
+#   docker build -f server/floodgate/Dockerfile -t floodgate:local .
 
 # === Stage 1: Build the Erlang shipment ===
 FROM erlang:28-slim AS builder
@@ -30,20 +30,29 @@ RUN ARCH=$(uname -m) && \
     curl -fsSL "https://github.com/gleam-lang/gleam/releases/download/v${GLEAM_VERSION}/gleam-v${GLEAM_VERSION}-${GLEAM_ARCH}.tar.gz" \
     | tar -xzC /usr/local/bin
 
-WORKDIR /build
+WORKDIR /build/floodgate
 
 # Resolve dependencies first so source edits don't invalidate the dep layer.
 # manifest.toml pins the git dependencies (beryl, dewdrop, spillway, signet,
 # silt, windsock), so this layer is reproducible.
-COPY gleam.toml manifest.toml ./
+COPY server/floodgate/gleam.toml server/floodgate/manifest.toml ./
 RUN gleam deps download
 
-COPY src src
-COPY test test
+COPY server/floodgate/src src
+COPY server/floodgate/test test
 
 # Produces build/erlang-shipment: compiled BEAM files for floodgate and every
 # dependency, plus an entrypoint script. No Gleam toolchain needed at runtime.
 RUN gleam export erlang-shipment
+
+# Build the shared Lustre admin UI with Gleam's JavaScript target. This stage
+# uses no Elixir, Mix, Node.js, or frontend framework toolchain.
+WORKDIR /build/levee_admin
+COPY server/levee_admin/gleam.toml server/levee_admin/manifest.toml ./
+RUN gleam deps download
+COPY server/levee_admin/src src
+COPY server/levee_admin/index.html index.html
+RUN gleam build --target javascript
 
 # === Stage 2: Runtime ===
 FROM erlang:28-slim AS runtime
@@ -54,7 +63,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY --from=builder /build/build/erlang-shipment/ ./
+COPY --from=builder /build/floodgate/build/erlang-shipment/ ./
+COPY --from=builder /build/levee_admin/build/dev/javascript/ ./priv/static/admin/
+COPY --from=builder /build/levee_admin/index.html ./priv/static/admin/index.html
 
 # Persistent shelf (DETS) storage. Declared as a volume so document history
 # survives container replacement; set FLOODGATE_STORAGE_BACKEND=memory for
@@ -71,6 +82,9 @@ ENV PORT=3000
 ENV FLOODGATE_BIND=0.0.0.0
 ENV FLOODGATE_TENANT_ID=fluid
 ENV FLOODGATE_STORAGE_BACKEND=shelf
+# The tenant management API (GET/POST /api/tenants, etc.) is opt-in: it stays
+# disabled — every request 401s — until FLOODGATE_ADMIN_KEY is supplied at run
+# time, deliberately with no default here either.
 
 EXPOSE 3000
 

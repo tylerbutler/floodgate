@@ -130,15 +130,11 @@ fn registered_channel(
 pub fn new(
   channels: beryl.Channels,
   sess: Session,
-  configured_tenant: String,
-  secret: String,
   registration: Registration,
 ) -> Channel(DocAssigns, DocInfo) {
-  channel.new(fn(t, p, s) {
-    join(channels, sess, configured_tenant, secret, t, p, s)
-  })
+  channel.new(fn(t, p, s) { join(channels, sess, t, p, s) })
   |> channel.with_handle_in(fn(e, p, s) {
-    handle_in(channels, sess, registration, configured_tenant, secret, e, p, s)
+    handle_in(channels, sess, registration, e, p, s)
   })
   |> channel.with_handle_info(fn(info, s) {
     case info {
@@ -156,8 +152,6 @@ pub fn new(
 fn join(
   channels,
   sess: Session,
-  configured_tenant: String,
-  secret: String,
   topic,
   payload: Dynamic,
   sock: Socket(DocAssigns),
@@ -165,17 +159,7 @@ fn join(
   let cid = socket.id(sock)
   case is_connect_payload(payload) {
     True ->
-      case
-        connect_core(
-          channels,
-          sess,
-          configured_tenant,
-          secret,
-          topic,
-          payload,
-          cid,
-        )
-      {
+      case connect_core(channels, sess, topic, payload, cid) {
         Error(error) -> join_error(error)
         Ok(#(response, assigns)) ->
           JoinOk(
@@ -184,7 +168,7 @@ fn join(
           )
       }
     False ->
-      case authorize_topic_token(configured_tenant, secret, topic, payload) {
+      case authorize_topic_token(session.storage(sess), topic, payload) {
         Error(error) -> join_error(error)
         Ok(_claims) ->
           JoinOk(
@@ -229,13 +213,11 @@ fn connect_error_json(error: ConnectError) -> json.Json {
 fn connect_core(
   channels,
   sess: Session,
-  configured_tenant: String,
-  secret: String,
   topic: String,
   payload: Dynamic,
   cid: String,
 ) -> Result(#(json.Json, DocAssigns), ConnectError) {
-  case authorize(configured_tenant, secret, topic, payload) {
+  case authorize(session.storage(sess), topic, payload) {
     Error(error) -> Error(error)
     Ok(claims) -> {
       let mode = connection_mode(payload)
@@ -491,36 +473,46 @@ fn connection_mode(payload: Dynamic) -> String {
   }
 }
 
-/// Verify the topic names a document under this tenant and that the payload
-/// carries a token granting read access to it. Shared by both join paths; the
-/// Phoenix path stops here because `mode` is not known until connect.
+/// Verify the topic names a registered tenant's document and that the payload
+/// carries a token granting read access to it, trying that tenant's active
+/// secret slots. Shared by both join paths; the Phoenix path stops here
+/// because `mode` is not known until connect.
 fn authorize_topic_token(
-  configured_tenant: String,
-  secret: String,
+  storage: store.Backend,
   topic: String,
   payload: Dynamic,
 ) -> Result(TokenClaims, ConnectError) {
   case string.split(topic, ":") {
-    ["document", tenant, doc] if tenant == configured_tenant ->
-      case
-        auth.verify(
-          field(payload, "token", ""),
-          secret,
-          tenant,
-          doc,
-          now_seconds(),
-        )
-      {
-        Error(_) -> Error(unauthorized(401, "Invalid or expired token"))
-        Ok(claims) ->
+    ["document", tenant, doc] ->
+      case store.get_tenant_secrets(storage, tenant) {
+        Error(Nil) ->
+          Error(ConnectError(
+            reason: "invalid_topic",
+            code: 400,
+            message: "Topic does not name a document in this tenant",
+          ))
+        Ok(#(secret1, secret2)) ->
           case
-            list.contains(
-              types.scopes_to_strings(claims.scopes),
-              connect_document.read_scope(),
+            auth.verify_any(
+              field(payload, "token", ""),
+              [secret1, secret2],
+              tenant,
+              doc,
+              now_seconds(),
             )
           {
-            False -> Error(unauthorized(403, "Token lacks document read scope"))
-            True -> Ok(claims)
+            Error(_) -> Error(unauthorized(401, "Invalid or expired token"))
+            Ok(claims) ->
+              case
+                list.contains(
+                  types.scopes_to_strings(claims.scopes),
+                  connect_document.read_scope(),
+                )
+              {
+                False ->
+                  Error(unauthorized(403, "Token lacks document read scope"))
+                True -> Ok(claims)
+              }
           }
       }
     _ ->
@@ -533,17 +525,11 @@ fn authorize_topic_token(
 }
 
 fn authorize(
-  configured_tenant: String,
-  secret: String,
+  storage: store.Backend,
   topic: String,
   payload: Dynamic,
 ) -> Result(TokenClaims, ConnectError) {
-  use claims <- result.try(authorize_topic_token(
-    configured_tenant,
-    secret,
-    topic,
-    payload,
-  ))
+  use claims <- result.try(authorize_topic_token(storage, topic, payload))
   case decode.run(payload, decode.dict(decode.string, decode.dynamic)) {
     Error(_) ->
       Error(ConnectError(
@@ -638,8 +624,6 @@ fn handle_in(
   channels,
   sess: Session,
   registration: Registration,
-  configured_tenant: String,
-  secret: String,
   event,
   payload: Dynamic,
   sock: Socket(DocAssigns),
@@ -647,15 +631,7 @@ fn handle_in(
   let a = socket.get_assigns(sock)
   case event, a.connected {
     e, False if e == events.connect_document ->
-      connect_phase_two(
-        channels,
-        sess,
-        configured_tenant,
-        secret,
-        payload,
-        sock,
-        a,
-      )
+      connect_phase_two(channels, sess, payload, sock, a)
     // Everything below needs session membership, which only connect
     // establishes. Mirrors levee's `connected` assign guard.
     e, False if e == events.submit_op ->
@@ -714,23 +690,11 @@ fn handle_in(
 fn connect_phase_two(
   channels,
   sess: Session,
-  configured_tenant: String,
-  secret: String,
   payload: Dynamic,
   sock: Socket(DocAssigns),
   a: DocAssigns,
 ) {
-  case
-    connect_core(
-      channels,
-      sess,
-      configured_tenant,
-      secret,
-      a.topic,
-      payload,
-      socket.id(sock),
-    )
-  {
+  case connect_core(channels, sess, a.topic, payload, socket.id(sock)) {
     Ok(#(response, assigns)) ->
       Push(
         events.connect_document_success,

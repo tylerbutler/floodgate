@@ -6,6 +6,7 @@ import floodgate/session
 import floodgate/store
 import gleam/erlang/process
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -91,6 +92,103 @@ pub fn auth_error_response_matches_levee_test() {
   |> should.equal(401)
   floodgate.auth_error_status(auth.BadClaims(jwt.TenantMismatch("a", "b")))
   |> should.equal(401)
+}
+
+/// An unregistered tenant is its own `auth.AuthError` variant (not a token
+/// claims mismatch — no token has been parsed yet), but stays on the same 401
+/// contract as every other rejection.
+pub fn unknown_tenant_error_matches_401_contract_test() {
+  floodgate.auth_error_status(auth.UnknownTenant("ghost-tenant"))
+  |> should.equal(401)
+  floodgate.auth_error_message(auth.UnknownTenant("ghost-tenant"))
+  |> should.equal("Unknown tenant 'ghost-tenant'")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tenant admin API — response shapes must match the Lustre UI's decoders in
+// server/levee_admin/src/levee_admin/api.gleam exactly.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `{id, name}` — `api.gleam`'s `tenant_decoder`. No secrets, ever.
+pub fn tenant_info_json_matches_admin_ui_decoder_shape_test() {
+  floodgate.tenant_info_json(store.TenantInfo(id: "t-1", name: "Acme"))
+  |> json_to_string
+  |> should.equal("{\"id\":\"t-1\",\"name\":\"Acme\"}")
+}
+
+/// `{id, name, secret1, secret2}` — `api.gleam`'s
+/// `tenant_with_secrets_decoder`, used by both create and show.
+pub fn tenant_with_secrets_json_matches_admin_ui_decoder_shape_test() {
+  floodgate.tenant_with_secrets_json(store.TenantWithSecrets(
+    id: "t-1",
+    name: "Acme",
+    secret1: "s1",
+    secret2: "s2",
+  ))
+  |> json_to_string
+  |> should.equal(
+    "{\"id\":\"t-1\",\"name\":\"Acme\",\"secret1\":\"s1\",\"secret2\":\"s2\"}",
+  )
+}
+
+pub fn decode_tenant_name_requires_name_field_test() {
+  floodgate.decode_tenant_name("{\"name\":\"Acme\"}")
+  |> should.equal(Ok("Acme"))
+  floodgate.decode_tenant_name("{}") |> should.equal(Error(Nil))
+  floodgate.decode_tenant_name("not json") |> should.equal(Error(Nil))
+}
+
+/// Only `"1"` and `"2"` are valid slots — matching levee's
+/// `Integer.parse/1` guard, which also rejects `"01"` and out-of-range values.
+pub fn parse_tenant_slot_accepts_only_one_or_two_test() {
+  floodgate.parse_tenant_slot("1") |> should.equal(Ok(store.Slot1))
+  floodgate.parse_tenant_slot("2") |> should.equal(Ok(store.Slot2))
+  floodgate.parse_tenant_slot("3") |> should.equal(Error(Nil))
+  floodgate.parse_tenant_slot("0") |> should.equal(Error(Nil))
+  floodgate.parse_tenant_slot("01") |> should.equal(Error(Nil))
+  floodgate.parse_tenant_slot("") |> should.equal(Error(Nil))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Startup tenant compatibility, through the real `start_with_backend` path —
+// see `tenant_store_test.gleam` for the lower-level `store.ensure_startup_tenant`
+// contract this exercises.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `FLOODGATE_TENANT_ID`/`FLOODGATE_JWT_SECRET` keep authorizing existing
+/// deployments unchanged: the configured tenant is registered with `secret1`
+/// equal to the configured secret, and both secret slots resolve through the
+/// same tenant store the admin API reads and writes.
+pub fn start_with_backend_seeds_the_configured_tenant_test() {
+  let backend = memory_store.new()
+  let assert Ok(_) =
+    floodgate.start_with_backend("fluid", "test-jwt-secret", backend)
+
+  store.tenant_exists(backend, "fluid") |> should.be_true
+  let assert Ok(#(secret1, _secret2)) =
+    store.get_tenant_secrets(backend, "fluid")
+  secret1 |> should.equal("test-jwt-secret")
+}
+
+/// A second `start_with_backend` against the *same* backend — the shape of a
+/// process restart against persistent shelf storage — must not roll back a
+/// secret the admin API already rotated for the seeded tenant.
+pub fn start_with_backend_does_not_reset_a_rotated_startup_secret_test() {
+  let backend = memory_store.new()
+  let assert Ok(_) =
+    floodgate.start_with_backend("fluid", "test-jwt-secret", backend)
+
+  let assert Ok(rotated_secret2) =
+    store.regenerate_tenant_secret(backend, "fluid", store.Slot2)
+
+  let assert Ok(_) =
+    floodgate.start_with_backend("fluid", "test-jwt-secret", backend)
+  store.get_tenant_secrets(backend, "fluid")
+  |> should.equal(Ok(#("test-jwt-secret", rotated_secret2)))
+}
+
+fn json_to_string(value: json.Json) -> String {
+  json.to_string(value)
 }
 
 pub fn standalone_storage_backend_selection_test() {

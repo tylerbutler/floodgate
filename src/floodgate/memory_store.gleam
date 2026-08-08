@@ -3,6 +3,7 @@
 //// This backend is intentionally independent of ETS. It is useful for tests
 //// and embedding, and proves that runtime consumers do not depend on ETS.
 
+import floodgate/admin_auth.{type AdminSession, type AdminUser}
 import floodgate/store
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -18,6 +19,14 @@ type State {
     summaries: Dict(String, #(String, Int)),
     objects: Dict(#(String, String), String),
     refs: Dict(#(String, String), String),
+    /// `tenant id → #(name, secret1, secret2)`, mirroring `shelf_store`'s
+    /// table so the same `store.Backend` contract holds for both.
+    tenants: Dict(String, #(String, String, String)),
+    /// `github id → AdminUser`, mirroring `shelf_store`'s admin_users table.
+    admin_users: Dict(String, AdminUser),
+    /// `session id → AdminSession`, mirroring `shelf_store`'s admin_sessions
+    /// table.
+    admin_sessions: Dict(String, AdminSession),
   )
 }
 
@@ -34,6 +43,20 @@ pub type Msg {
   CreateRef(String, String, String, Subject(Bool))
   GetRef(String, String, Subject(Result(String, Nil)))
   ListRefs(String, Subject(List(#(String, String))))
+  CreateTenant(String, Subject(store.TenantWithSecrets))
+  GetTenant(String, Subject(Result(store.TenantInfo, Nil)))
+  GetTenantSecrets(String, Subject(Result(#(String, String), Nil)))
+  RegenerateTenantSecret(String, store.TenantSlot, Subject(Result(String, Nil)))
+  RegisterTenant(String, String, Subject(Nil))
+  UnregisterTenant(String, Subject(Nil))
+  TenantExists(String, Subject(Bool))
+  ListTenants(Subject(List(store.TenantInfo)))
+  PutAdminUser(AdminUser, Subject(Nil))
+  GetAdminUser(String, Subject(Result(AdminUser, Nil)))
+  AdminUserCount(Subject(Int))
+  PutAdminSession(AdminSession, Subject(Nil))
+  GetAdminSession(String, Subject(Result(AdminSession, Nil)))
+  DeleteAdminSession(String, Subject(Nil))
 }
 
 /// Allocate a fresh name for a memory store actor.
@@ -45,7 +68,16 @@ pub fn new_name() -> process.Name(Msg) {
 pub fn start_named(
   name: process.Name(Msg),
 ) -> Result(actor.Started(Subject(Msg)), actor.StartError) {
-  actor.new(State(dict.new(), dict.new(), dict.new(), dict.new(), dict.new()))
+  actor.new(State(
+    dict.new(),
+    dict.new(),
+    dict.new(),
+    dict.new(),
+    dict.new(),
+    dict.new(),
+    dict.new(),
+    dict.new(),
+  ))
   |> actor.on_message(handle)
   |> actor.named(name)
   |> actor.start
@@ -132,6 +164,40 @@ fn backend(
       process.call(subject(), 1000, GetRef(tenant, ref, _))
     },
     list_refs: fn(tenant) { process.call(subject(), 1000, ListRefs(tenant, _)) },
+    create_tenant: fn(name) {
+      process.call(subject(), 1000, CreateTenant(name, _))
+    },
+    get_tenant: fn(id) { process.call(subject(), 1000, GetTenant(id, _)) },
+    get_tenant_secrets: fn(id) {
+      process.call(subject(), 1000, GetTenantSecrets(id, _))
+    },
+    regenerate_tenant_secret: fn(id, slot) {
+      process.call(subject(), 1000, RegenerateTenantSecret(id, slot, _))
+    },
+    register_tenant: fn(id, secret) {
+      process.call(subject(), 1000, RegisterTenant(id, secret, _))
+    },
+    unregister_tenant: fn(id) {
+      process.call(subject(), 1000, UnregisterTenant(id, _))
+    },
+    tenant_exists: fn(id) { process.call(subject(), 1000, TenantExists(id, _)) },
+    list_tenants: fn() { process.call(subject(), 1000, ListTenants) },
+    put_admin_user: fn(user) {
+      process.call(subject(), 1000, PutAdminUser(user, _))
+    },
+    get_admin_user: fn(id) {
+      process.call(subject(), 1000, GetAdminUser(id, _))
+    },
+    admin_user_count: fn() { process.call(subject(), 1000, AdminUserCount) },
+    put_admin_session: fn(session) {
+      process.call(subject(), 1000, PutAdminSession(session, _))
+    },
+    get_admin_session: fn(id) {
+      process.call(subject(), 1000, GetAdminSession(id, _))
+    },
+    delete_admin_session: fn(id) {
+      process.call(subject(), 1000, DeleteAdminSession(id, _))
+    },
   )
 }
 
@@ -234,6 +300,118 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
         })
       process.send(reply, refs)
       actor.continue(state)
+    }
+    CreateTenant(name, reply) -> {
+      let id = store.generate_tenant_id()
+      let secret1 = store.generate_tenant_secret()
+      let secret2 = store.generate_tenant_secret()
+      process.send(
+        reply,
+        store.TenantWithSecrets(id:, name:, secret1:, secret2:),
+      )
+      actor.continue(
+        State(
+          ..state,
+          tenants: dict.insert(state.tenants, id, #(name, secret1, secret2)),
+        ),
+      )
+    }
+    GetTenant(id, reply) -> {
+      let result = case dict.get(state.tenants, id) {
+        Error(Nil) -> Error(Nil)
+        Ok(#(name, _secret1, _secret2)) -> Ok(store.TenantInfo(id:, name:))
+      }
+      process.send(reply, result)
+      actor.continue(state)
+    }
+    GetTenantSecrets(id, reply) -> {
+      let result = case dict.get(state.tenants, id) {
+        Error(Nil) -> Error(Nil)
+        Ok(#(_name, secret1, secret2)) -> Ok(#(secret1, secret2))
+      }
+      process.send(reply, result)
+      actor.continue(state)
+    }
+    RegenerateTenantSecret(id, slot, reply) -> {
+      case dict.get(state.tenants, id) {
+        Error(Nil) -> {
+          process.send(reply, Error(Nil))
+          actor.continue(state)
+        }
+        Ok(#(name, secret1, secret2)) -> {
+          let new_secret = store.generate_tenant_secret()
+          let updated = case slot {
+            store.Slot1 -> #(name, new_secret, secret2)
+            store.Slot2 -> #(name, secret1, new_secret)
+          }
+          process.send(reply, Ok(new_secret))
+          actor.continue(
+            State(..state, tenants: dict.insert(state.tenants, id, updated)),
+          )
+        }
+      }
+    }
+    RegisterTenant(id, secret, reply) -> {
+      let data = #(id, secret, store.generate_tenant_secret())
+      process.send(reply, Nil)
+      actor.continue(
+        State(..state, tenants: dict.insert(state.tenants, id, data)),
+      )
+    }
+    UnregisterTenant(id, reply) -> {
+      process.send(reply, Nil)
+      actor.continue(State(..state, tenants: dict.delete(state.tenants, id)))
+    }
+    TenantExists(id, reply) -> {
+      process.send(reply, dict.has_key(state.tenants, id))
+      actor.continue(state)
+    }
+    ListTenants(reply) -> {
+      let tenants =
+        state.tenants
+        |> dict.to_list
+        |> list.map(fn(entry) {
+          let #(id, #(name, _secret1, _secret2)) = entry
+          store.TenantInfo(id:, name:)
+        })
+      process.send(reply, tenants)
+      actor.continue(state)
+    }
+    PutAdminUser(user, reply) -> {
+      process.send(reply, Nil)
+      actor.continue(
+        State(
+          ..state,
+          admin_users: dict.insert(state.admin_users, user.id, user),
+        ),
+      )
+    }
+    GetAdminUser(id, reply) -> {
+      process.send(reply, dict.get(state.admin_users, id))
+      actor.continue(state)
+    }
+    AdminUserCount(reply) -> {
+      process.send(reply, dict.size(state.admin_users))
+      actor.continue(state)
+    }
+    PutAdminSession(session, reply) -> {
+      process.send(reply, Nil)
+      actor.continue(
+        State(
+          ..state,
+          admin_sessions: dict.insert(state.admin_sessions, session.id, session),
+        ),
+      )
+    }
+    GetAdminSession(id, reply) -> {
+      process.send(reply, dict.get(state.admin_sessions, id))
+      actor.continue(state)
+    }
+    DeleteAdminSession(id, reply) -> {
+      process.send(reply, Nil)
+      actor.continue(
+        State(..state, admin_sessions: dict.delete(state.admin_sessions, id)),
+      )
     }
   }
 }

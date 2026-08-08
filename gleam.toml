@@ -24,6 +24,9 @@ windsock = { git = "https://github.com/tylerbutler/windsock", ref = "main" }
 mist = ">= 6.0.0 and < 7.0.0"
 gleam_http = ">= 4.3.0 and < 5.0.0"
 shelf = ">= 1.0.1 and < 2.0.0"
+# GitHub OAuth for the admin session — the same library and pinned commit
+# server/levee_oauth/gleam.toml uses for Levee.
+vestibule = { git = "https://github.com/tylerbutler/vestibule.git", ref = "99755424808a59f72dee51e5bc3297b9d0abb547" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

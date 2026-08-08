@@ -21,6 +21,12 @@ pub type AuthError {
   BadFormat
   BadSignature
   BadClaims(jwt.JwtValidationError)
+  /// The tenant named in the request (URL segment or socket topic) is not
+  /// registered. Distinct from `BadClaims(jwt.TenantMismatch(..))`, which is a
+  /// token's own claim disagreeing with the request — this is the request
+  /// itself naming a tenant nothing knows about, so there is no secret to
+  /// verify the token against at all.
+  UnknownTenant(tenant: String)
 }
 
 /// Verify HS256 token + validate connection claims against the topic ids.
@@ -36,6 +42,20 @@ pub fn verify(
     Ok(_) -> Ok(claims)
     Error(e) -> Error(BadClaims(e))
   }
+}
+
+/// Verify HS256 token + validate connection claims, trying each secret in
+/// order. Levee's two-slot rotation: both slots verify, only the first
+/// (`secret1`) mints. Returns the first success; if every secret fails, the
+/// last error is returned.
+pub fn verify_any(
+  token: String,
+  secrets: List(String),
+  tenant: String,
+  doc: String,
+  now: Int,
+) -> Result(TokenClaims, AuthError) {
+  try_secrets(secrets, fn(secret) { verify(token, secret, tenant, doc, now) })
 }
 
 /// Verify a REST write token from either Routerlicious's `Basic` scheme or the
@@ -56,6 +76,19 @@ pub fn verify_write_authorization(
   Ok(claims)
 }
 
+/// `verify_write_authorization`, trying each of a tenant's active secrets.
+pub fn verify_write_authorization_any(
+  authorization: String,
+  secrets: List(String),
+  tenant: String,
+  doc: String,
+  now: Int,
+) -> Result(TokenClaims, AuthError) {
+  try_secrets(secrets, fn(secret) {
+    verify_write_authorization(authorization, secret, tenant, doc, now)
+  })
+}
+
 /// Verify a REST read token from either Routerlicious's `Basic` scheme or the
 /// conventional `Bearer` scheme used by direct API callers.
 pub fn verify_read_authorization(
@@ -72,6 +105,19 @@ pub fn verify_read_authorization(
     |> result.map_error(BadClaims),
   )
   Ok(claims)
+}
+
+/// `verify_read_authorization`, trying each of a tenant's active secrets.
+pub fn verify_read_authorization_any(
+  authorization: String,
+  secrets: List(String),
+  tenant: String,
+  doc: String,
+  now: Int,
+) -> Result(TokenClaims, AuthError) {
+  try_secrets(secrets, fn(secret) {
+    verify_read_authorization(authorization, secret, tenant, doc, now)
+  })
 }
 
 /// Verify write access for a route that carries no document id in its path
@@ -94,6 +140,19 @@ pub fn verify_tenant_write_authorization(
   Ok(claims)
 }
 
+/// `verify_tenant_write_authorization`, trying each of a tenant's active
+/// secrets.
+pub fn verify_tenant_write_authorization_any(
+  authorization: String,
+  secrets: List(String),
+  tenant: String,
+  now: Int,
+) -> Result(TokenClaims, AuthError) {
+  try_secrets(secrets, fn(secret) {
+    verify_tenant_write_authorization(authorization, secret, tenant, now)
+  })
+}
+
 /// Verify read access for tenant-scoped Historian routes, using the document
 /// carried by the storage token itself.
 pub fn verify_storage_read_authorization(
@@ -110,6 +169,19 @@ pub fn verify_storage_read_authorization(
   Ok(claims)
 }
 
+/// `verify_storage_read_authorization`, trying each of a tenant's active
+/// secrets.
+pub fn verify_storage_read_authorization_any(
+  authorization: String,
+  secrets: List(String),
+  tenant: String,
+  now: Int,
+) -> Result(TokenClaims, AuthError) {
+  try_secrets(secrets, fn(secret) {
+    verify_storage_read_authorization(authorization, secret, tenant, now)
+  })
+}
+
 /// Verify summary-write access for tenant-scoped Historian routes.
 pub fn verify_storage_write_authorization(
   authorization: String,
@@ -123,6 +195,19 @@ pub fn verify_storage_write_authorization(
     |> result.map_error(BadClaims),
   )
   Ok(claims)
+}
+
+/// `verify_storage_write_authorization`, trying each of a tenant's active
+/// secrets.
+pub fn verify_storage_write_authorization_any(
+  authorization: String,
+  secrets: List(String),
+  tenant: String,
+  now: Int,
+) -> Result(TokenClaims, AuthError) {
+  try_secrets(secrets, fn(secret) {
+    verify_storage_write_authorization(authorization, secret, tenant, now)
+  })
 }
 
 pub fn extract_token(authorization: String) -> Result(String, AuthError) {
@@ -164,6 +249,25 @@ pub fn verify_token_mint_authorization(
   authorization: String,
   expected_secret: String,
 ) -> Result(Nil, AuthError) {
+  verify_shared_secret(authorization, expected_secret)
+}
+
+/// Verify the bearer credential that authorizes the tenant management API
+/// (`FLOODGATE_ADMIN_KEY`). Same shape as `verify_token_mint_authorization` —
+/// a shared secret compared in constant time — kept as its own function so the
+/// two independent credentials read clearly at each call site and can diverge
+/// later without one masking the other.
+pub fn verify_admin_authorization(
+  authorization: String,
+  expected_key: String,
+) -> Result(Nil, AuthError) {
+  verify_shared_secret(authorization, expected_key)
+}
+
+fn verify_shared_secret(
+  authorization: String,
+  expected_secret: String,
+) -> Result(Nil, AuthError) {
   case string.split(authorization, " ") {
     ["Bearer", token] if token != "" && expected_secret != "" ->
       case
@@ -179,7 +283,9 @@ pub fn verify_token_mint_authorization(
   }
 }
 
-/// Mint a strict HS256 document token for the configured standalone tenant.
+/// Mint a strict HS256 document token for `tenant`, signed with `secret` —
+/// the caller resolves which secret that is (a tenant's primary slot for the
+/// standalone token-mint endpoint).
 pub fn mint_token(
   tenant: String,
   document_id: String,
@@ -315,3 +421,22 @@ fn parse_claims(payload: String) -> Result(TokenClaims, AuthError) {
 
 @external(erlang, "floodgate_ffi", "secure_compare")
 fn secure_compare(left: BitArray, right: BitArray) -> Bool
+
+/// Try each secret in order against `verify`, returning the first success.
+/// If every secret fails (or the list is empty), returns the last attempt's
+/// error — `BadSignature` for an empty list, matching a single empty secret's
+/// behavior in `verify_signature`.
+fn try_secrets(
+  secrets: List(String),
+  verify: fn(String) -> Result(TokenClaims, AuthError),
+) -> Result(TokenClaims, AuthError) {
+  case secrets {
+    [] -> Error(BadSignature)
+    [secret] -> verify(secret)
+    [secret, ..rest] ->
+      case verify(secret) {
+        Ok(claims) -> Ok(claims)
+        Error(_) -> try_secrets(rest, verify)
+      }
+  }
+}

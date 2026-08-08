@@ -8,22 +8,28 @@ import beryl/pubsub
 import beryl/supervisor as beryl_supervisor
 import beryl/wire
 import beryl_mist
+import floodgate/admin_auth
 import floodgate/auth
 import floodgate/document_channel
 import floodgate/git
 import floodgate/initial_summary
 import floodgate/memory_store
+import floodgate/oauth
+import floodgate/oauth_state
 import floodgate/origin
 import floodgate/session
 import floodgate/shelf_store
 import floodgate/socketio_transport
+import floodgate/static
 import floodgate/store
 import gleam/bit_array
 import gleam/bytes_tree
 import gleam/crypto
+import gleam/dict
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/http
+import gleam/http/cookie
 import gleam/http/request
 import gleam/http/response
 import gleam/int
@@ -36,14 +42,35 @@ import gleam/string
 import gleam/uri
 import mist
 import signet/jwt
+import vestibule/auth as vestibule_auth
+import vestibule/error as vestibule_error
 
-type AuthConfig {
+/// Runtime configuration resolved once, in `serve_with_backend`, from every
+/// `FLOODGATE_*`/`GITHUB_*` environment variable the REST surface needs.
+/// `pub` so `admin_authorized`/`session_user`/`handle_successful_auth`/
+/// `find_or_create_admin_user` — the testable decision points that take it —
+/// can be exercised directly from `floodgate_test.gleam` with a fabricated
+/// config, no real HTTP request or running server involved.
+pub type AuthConfig {
   AuthConfig(
-    tenant: String,
-    jwt_secret: String,
+    storage: store.Backend,
     token_mint_secret: option.Option(String),
     token_mint_user_id: String,
     token_mint_user_name: String,
+    admin_key: String,
+    /// GitHub OAuth App credentials/callback for the admin session — see
+    /// `floodgate/oauth.build_config` for how (and when) these are validated.
+    github: oauth.GitHubConfig,
+    /// The CSRF-state actor backing `/auth/github`'s two-phase flow.
+    oauth_state: process.Subject(oauth_state.Msg),
+    /// `FLOODGATE_ADMIN_GITHUB_USERS`, parsed — see
+    /// `admin_auth.github_login_allowed` for the allow-list decision.
+    admin_github_users: option.Option(List(String)),
+    /// Admin session lifetime, from `FLOODGATE_ADMIN_SESSION_TTL_SECONDS`.
+    admin_session_ttl_seconds: Int,
+    /// Directory the shared `levee_admin` Lustre SPA's build output (and its
+    /// `index.html`) is served from — `FLOODGATE_ADMIN_STATIC_DIR`.
+    admin_static_dir: String,
   )
 }
 
@@ -189,6 +216,12 @@ pub fn start_with_backend(
   {
     Ok(_) -> {
       let channels = beryl_supervisor.channels(supervised)
+      // Idempotent: creates the tenant if this is the first boot against
+      // `storage` (or the memory backend, which never has one yet), leaves it
+      // untouched if a previous boot (or the admin API) already registered it.
+      // See `store.ensure_startup_tenant` for why this preserves existing
+      // deployments across a persistent restart.
+      store.ensure_startup_tenant(storage, configured_tenant, jwt_secret)
       // The channel needs the handle `register` returns, to push a targeted
       // signal to one socket via `beryl.send_info` — but `register` takes the
       // channel, so the handle cannot exist at construction. The holder closes
@@ -199,13 +232,7 @@ pub fn start_with_backend(
         beryl.register(
           channels,
           "document:*",
-          document_channel.new(
-            channels,
-            sess,
-            configured_tenant,
-            jwt_secret,
-            registration,
-          ),
+          document_channel.new(channels, sess, registration),
         )
         |> result.map(document_channel.set_registration(registration, _))
       Ok(#(channels, sess))
@@ -253,18 +280,48 @@ pub fn serve_with_backend(
         "" -> None
         secret -> Some(secret)
       }
-      let config =
-        AuthConfig(
-          configured_tenant,
-          jwt_secret,
-          token_mint_secret,
-          getenv("FLOODGATE_TOKEN_MINT_USER_ID", "floodgate-token-mint"),
-          getenv("FLOODGATE_TOKEN_MINT_USER_NAME", "Floodgate Token Mint"),
-        )
       let public_url =
         getenv(
           "FLOODGATE_PUBLIC_URL",
           "http://localhost:" <> int.to_string(port),
+        )
+      // The oauth-state actor is deliberately outside `start_with_backend`'s
+      // supervision tree (see `floodgate/oauth_state`'s module doc): it is
+      // ephemeral, request-scoped CSRF bookkeeping, not storage, and keeping
+      // it separate means adding it never changes `start_with_backend`'s
+      // return shape, which callers (including every existing test) already
+      // destructure positionally.
+      let oauth_state_name = oauth_state.new_name()
+      let assert Ok(_) =
+        static_supervisor.new(static_supervisor.OneForOne)
+        |> static_supervisor.add(oauth_state.child_spec(oauth_state_name))
+        |> static_supervisor.start()
+      let config =
+        AuthConfig(
+          storage,
+          token_mint_secret,
+          getenv("FLOODGATE_TOKEN_MINT_USER_ID", "floodgate-token-mint"),
+          getenv("FLOODGATE_TOKEN_MINT_USER_NAME", "Floodgate Token Mint"),
+          getenv("FLOODGATE_ADMIN_KEY", ""),
+          oauth.GitHubConfig(
+            client_id: getenv("FLOODGATE_GITHUB_CLIENT_ID", ""),
+            client_secret: getenv("FLOODGATE_GITHUB_CLIENT_SECRET", ""),
+            // Falls back to the already-configured public URL rather than
+            // requiring a third, usually-identical variable — see
+            // FLOODGATE_GITHUB_REDIRECT_URI in the README if a deployment
+            // fronts Floodgate at a different host for the OAuth callback.
+            redirect_uri: case getenv("FLOODGATE_GITHUB_REDIRECT_URI", "") {
+              "" -> public_url <> "/auth/github/callback"
+              explicit -> explicit
+            },
+          ),
+          process.named_subject(oauth_state_name),
+          admin_auth.parse_allowlist(getenv("FLOODGATE_ADMIN_GITHUB_USERS", "")),
+          positive_env(
+            "FLOODGATE_ADMIN_SESSION_TTL_SECONDS",
+            admin_auth.default_session_ttl_seconds,
+          ),
+          getenv("FLOODGATE_ADMIN_STATIC_DIR", "priv/static/admin"),
         )
       case start_with_backend(configured_tenant, jwt_secret, storage) {
         Error(_) -> Error(Nil)
@@ -310,8 +367,69 @@ fn rest(
     // container probes (`wget --spider`, most orchestrators) use HEAD.
     method, ["health"] if method == http.Get || method == http.Head ->
       health_body() |> json_response(200)
+    // Static admin UI: the shared `server/levee_admin` Lustre SPA, served
+    // from FLOODGATE_ADMIN_STATIC_DIR — see `floodgate/static` for the
+    // file-serving + SPA-fallback contract.
+    method, ["admin", ..path_parts]
+      if method == http.Get || method == http.Head
+    -> static.serve(config.admin_static_dir, path_parts)
+    // GitHub OAuth for the admin session — see `floodgate/oauth`.
+    http.Get, ["auth", "github"] -> oauth_begin_response(config, req)
+    http.Get, ["auth", "github", "callback"] ->
+      oauth_callback_response(config, public_url, req)
+    // Auth API the admin UI expects (`server/levee_admin/src/levee_admin/api.gleam`):
+    // a capability flag the login page uses to hide its dead password form
+    // under Floodgate, and the session endpoints OAuth callback sessions use.
+    http.Get, ["api", "auth", "config"] -> auth_config_response()
+    http.Get, ["api", "auth", "me"] ->
+      case session_user(req, config) {
+        Error(_) -> session_unauthorized()
+        Ok(user) -> me_response(user)
+      }
+    http.Post, ["api", "auth", "logout"] ->
+      case session_token(req) {
+        Error(_) -> session_unauthorized()
+        Ok(token) ->
+          case store.get_admin_session(config.storage, token) {
+            Error(_) -> session_unauthorized()
+            Ok(_) -> {
+              store.delete_admin_session(config.storage, token)
+              logout_response(public_url)
+            }
+          }
+      }
     http.Post, ["api", "tenants", tenant, "token-mint"] ->
       token_mint_response(config, req, tenant)
+    // Tenant management API: the minimum surface the Lustre admin UI needs
+    // (`server/levee_admin/src/levee_admin/api.gleam`), gated by
+    // FLOODGATE_ADMIN_KEY rather than the session auth levee uses — see
+    // `authorize_admin`.
+    http.Get, ["api", "tenants"] ->
+      case authorize_admin(req, config) {
+        Error(_) -> admin_unauthorized()
+        Ok(_) -> tenants_list_response(storage)
+      }
+    http.Post, ["api", "tenants"] ->
+      case authorize_admin(req, config) {
+        Error(_) -> admin_unauthorized()
+        Ok(_) -> tenant_create_response(storage, read_body(req))
+      }
+    method, ["api", "tenants", id]
+      if method == http.Get || method == http.Delete
+    ->
+      case authorize_admin(req, config) {
+        Error(_) -> admin_unauthorized()
+        Ok(_) ->
+          case method {
+            http.Get -> tenant_show_response(storage, id)
+            _ -> tenant_delete_response(storage, id)
+          }
+      }
+    http.Post, ["api", "tenants", id, "secrets", slot] ->
+      case authorize_admin(req, config) {
+        Error(_) -> admin_unauthorized()
+        Ok(_) -> tenant_regenerate_secret_response(storage, id, slot)
+      }
     http.Post, ["documents", tenant] -> {
       let body = read_body(req)
       case authorize_tenant_write(req, config, tenant) {
@@ -488,14 +606,14 @@ fn token_mint_response(
   tenant: String,
 ) {
   case
-    tenant == config.tenant,
+    store.get_tenant_secrets(config.storage, tenant),
     config.token_mint_secret,
     request.get_header(req, "authorization")
   {
-    False, _, _ -> unauthorized()
+    Error(Nil), _, _ -> unauthorized()
     _, None, _ -> not_found()
     _, _, Error(_) -> unauthorized()
-    True, Some(mint_secret), Ok(authorization) ->
+    Ok(#(secret1, _secret2)), Some(mint_secret), Ok(authorization) ->
       // The mint credential is floodgate's own, with no levee counterpart, so
       // it keeps the opaque rejection rather than levee's auth-plug wording.
       case auth.verify_token_mint_authorization(authorization, mint_secret) {
@@ -519,7 +637,10 @@ fn token_mint_response(
                         "summary:write",
                       ],
                       config.token_mint_user_id,
-                      config.jwt_secret,
+                      // Mint with the primary slot; verification tries both —
+                      // see `authorize_topic_token`/the `authorize_*` REST
+                      // helpers below.
+                      secret1,
                       now_seconds(),
                       expires_in,
                     )
@@ -556,18 +677,25 @@ fn decode_token_mint_request(body: String) -> Result(TokenMintRequest, Nil) {
   json.parse(body, decoder) |> result.replace_error(Nil)
 }
 
-/// The `Authorization` header plus the tenant check both routes share, reported
-/// with levee's distinctions: a wrong tenant is a 403 mismatch, a missing header
-/// is a 401.
-fn authorization_header(
+/// The `Authorization` header plus the tenant lookup every `authorize_*`
+/// function below shares: an unregistered tenant is reported as
+/// `auth.UnknownTenant` (401, same as every other rejection — see
+/// `auth_error_status`), a missing header as `auth.MissingAuthorization`.
+/// Returns both active secret slots alongside the header, so callers can
+/// verify against either — see `auth.verify_any` and its `_any` siblings.
+fn tenant_secrets_and_header(
   req: request.Request(mist.Connection),
-  config: AuthConfig,
+  storage: store.Backend,
   tenant: String,
-) -> Result(String, auth.AuthError) {
-  case tenant == config.tenant, request.get_header(req, "authorization") {
-    False, _ -> Error(auth.BadClaims(jwt.TenantMismatch(config.tenant, tenant)))
+) -> Result(#(String, List(String)), auth.AuthError) {
+  case
+    store.get_tenant_secrets(storage, tenant),
+    request.get_header(req, "authorization")
+  {
+    Error(Nil), _ -> Error(auth.UnknownTenant(tenant))
     _, Error(_) -> Error(auth.MissingAuthorization)
-    True, Ok(authorization) -> Ok(authorization)
+    Ok(#(secret1, secret2)), Ok(authorization) ->
+      Ok(#(authorization, [secret1, secret2]))
   }
 }
 
@@ -578,10 +706,14 @@ fn authorize_tenant_write(
   config: AuthConfig,
   tenant: String,
 ) {
-  use authorization <- result.try(authorization_header(req, config, tenant))
-  auth.verify_tenant_write_authorization(
+  use #(authorization, secrets) <- result.try(tenant_secrets_and_header(
+    req,
+    config.storage,
+    tenant,
+  ))
+  auth.verify_tenant_write_authorization_any(
     authorization,
-    config.jwt_secret,
+    secrets,
     tenant,
     now_seconds(),
   )
@@ -593,18 +725,18 @@ fn authorize_write(
   tenant: String,
   doc: String,
 ) {
-  case tenant == config.tenant, request.get_header(req, "authorization") {
-    False, _ -> Error(auth.BadClaims(jwt.TenantMismatch(config.tenant, tenant)))
-    _, Error(_) -> Error(auth.MissingAuthorization)
-    True, Ok(authorization) ->
-      auth.verify_write_authorization(
-        authorization,
-        config.jwt_secret,
-        tenant,
-        doc,
-        now_seconds(),
-      )
-  }
+  use #(authorization, secrets) <- result.try(tenant_secrets_and_header(
+    req,
+    config.storage,
+    tenant,
+  ))
+  auth.verify_write_authorization_any(
+    authorization,
+    secrets,
+    tenant,
+    doc,
+    now_seconds(),
+  )
 }
 
 fn authorize_read(
@@ -613,18 +745,18 @@ fn authorize_read(
   tenant: String,
   doc: String,
 ) {
-  case tenant == config.tenant, request.get_header(req, "authorization") {
-    False, _ -> Error(auth.BadClaims(jwt.TenantMismatch(config.tenant, tenant)))
-    _, Error(_) -> Error(auth.MissingAuthorization)
-    True, Ok(authorization) ->
-      auth.verify_read_authorization(
-        authorization,
-        config.jwt_secret,
-        tenant,
-        doc,
-        now_seconds(),
-      )
-  }
+  use #(authorization, secrets) <- result.try(tenant_secrets_and_header(
+    req,
+    config.storage,
+    tenant,
+  ))
+  auth.verify_read_authorization_any(
+    authorization,
+    secrets,
+    tenant,
+    doc,
+    now_seconds(),
+  )
 }
 
 fn authorize_storage_read(
@@ -632,17 +764,17 @@ fn authorize_storage_read(
   config: AuthConfig,
   tenant: String,
 ) {
-  case tenant == config.tenant, request.get_header(req, "authorization") {
-    False, _ -> Error(auth.BadClaims(jwt.TenantMismatch(config.tenant, tenant)))
-    _, Error(_) -> Error(auth.MissingAuthorization)
-    True, Ok(authorization) ->
-      auth.verify_storage_read_authorization(
-        authorization,
-        config.jwt_secret,
-        tenant,
-        now_seconds(),
-      )
-  }
+  use #(authorization, secrets) <- result.try(tenant_secrets_and_header(
+    req,
+    config.storage,
+    tenant,
+  ))
+  auth.verify_storage_read_authorization_any(
+    authorization,
+    secrets,
+    tenant,
+    now_seconds(),
+  )
 }
 
 fn authorize_storage_write(
@@ -650,17 +782,17 @@ fn authorize_storage_write(
   config: AuthConfig,
   tenant: String,
 ) {
-  case tenant == config.tenant, request.get_header(req, "authorization") {
-    False, _ -> Error(auth.BadClaims(jwt.TenantMismatch(config.tenant, tenant)))
-    _, Error(_) -> Error(auth.MissingAuthorization)
-    True, Ok(authorization) ->
-      auth.verify_storage_write_authorization(
-        authorization,
-        config.jwt_secret,
-        tenant,
-        now_seconds(),
-      )
-  }
+  use #(authorization, secrets) <- result.try(tenant_secrets_and_header(
+    req,
+    config.storage,
+    tenant,
+  ))
+  auth.verify_storage_write_authorization_any(
+    authorization,
+    secrets,
+    tenant,
+    now_seconds(),
+  )
 }
 
 fn commits_response(
@@ -951,6 +1083,7 @@ pub fn auth_error_message(error: auth.AuthError) -> String {
       "Invalid Authorization header format. Expected: Bearer <token>"
     auth.BadSignature -> "Invalid token signature"
     auth.BadClaims(e) -> jwt.format_error(e)
+    auth.UnknownTenant(tenant) -> "Unknown tenant '" <> tenant <> "'"
   }
 }
 
@@ -982,6 +1115,552 @@ fn conflict() {
   json.object([#("error", json.string("conflict"))])
   |> json.to_string
   |> json_response(409)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tenant management API
+//
+// The minimum surface the Lustre admin UI's `levee_admin/api.gleam` needs:
+// GET/POST /api/tenants, GET/DELETE /api/tenants/:id,
+// POST /api/tenants/:id/secrets/:slot. Response shapes match what its
+// decoders expect exactly (`tenant_decoder`, `tenant_with_secrets_decoder`,
+// `tenant_list_decoder`, `regenerate_response_decoder`,
+// `delete_response_decoder`) — including that `GET /api/tenants/:id` returns
+// both secrets, same as levee's `TenantAdminController.show/2`, while the list
+// endpoint never does.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Bearer + constant-time comparison against FLOODGATE_ADMIN_KEY, mirroring
+/// levee's `Plugs.AdminAuth`. An unset or empty admin key rejects every
+/// request, so the tenant management API is opt-in rather than exposed by
+/// default on existing deployments.
+fn authorize_admin(
+  req: request.Request(mist.Connection),
+  config: AuthConfig,
+) -> Result(Nil, Nil) {
+  case
+    admin_credentials_authorized(
+      request.get_header(req, "authorization"),
+      list.key_find(request.get_cookies(req), admin_session_cookie_name),
+      config.admin_key,
+      config.storage,
+      now_seconds(),
+    )
+  {
+    True -> Ok(Nil)
+    False -> Error(Nil)
+  }
+}
+
+/// Authorize either the automation key, a bearer admin session, or the
+/// HttpOnly admin-session cookie. Explicit credentials and clock keep this
+/// decision directly testable without a live HTTP server.
+pub fn admin_credentials_authorized(
+  authorization: Result(String, Nil),
+  session_cookie: Result(String, Nil),
+  admin_key: String,
+  storage: store.Backend,
+  now: Int,
+) -> Bool {
+  let header_authorized = case authorization {
+    Error(_) -> False
+    Ok(value) ->
+      case admin_key {
+        "" -> admin_session_header_authorized(value, storage, now)
+        key ->
+          case auth.verify_admin_authorization(value, key) {
+            Ok(_) -> True
+            Error(_) -> admin_session_header_authorized(value, storage, now)
+          }
+      }
+  }
+  case header_authorized, session_cookie {
+    True, _ -> True
+    False, Ok(token) -> admin_session_token_authorized(token, storage, now)
+    False, Error(_) -> False
+  }
+}
+
+fn admin_session_header_authorized(
+  authorization: String,
+  storage: store.Backend,
+  now: Int,
+) -> Bool {
+  case auth.extract_token(authorization) {
+    Error(_) -> False
+    Ok(token) -> admin_session_token_authorized(token, storage, now)
+  }
+}
+
+fn admin_session_token_authorized(
+  token: String,
+  storage: store.Backend,
+  now: Int,
+) -> Bool {
+  case store.get_admin_session(storage, token) {
+    Error(_) -> False
+    Ok(session) ->
+      admin_auth.session_valid(session, now)
+      && { store.get_admin_user(storage, session.user_id) |> result.is_ok }
+  }
+}
+
+/// Shape of every admin API error, matching levee's
+/// `%{error: %{code:, message:}}`.
+fn admin_error(code: String, message: String, status: Int) {
+  json.object([
+    #(
+      "error",
+      json.object([
+        #("code", json.string(code)),
+        #("message", json.string(message)),
+      ]),
+    ),
+  ])
+  |> json.to_string
+  |> json_response(status)
+}
+
+fn admin_unauthorized() {
+  admin_error("unauthorized", "Invalid admin key", 401)
+}
+
+fn admin_not_found() {
+  admin_error("not_found", "Tenant not found", 404)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin auth API — the session/OAuth surface the Lustre admin UI expects
+// (`server/levee_admin/src/levee_admin/api.gleam`): GET /api/auth/config,
+// GET /api/auth/me, POST /api/auth/logout, plus the GitHub OAuth entry and
+// callback the login page's "Sign in with GitHub" button navigates to. See
+// `floodgate/oauth`, `floodgate/oauth_state`, and `floodgate/admin_auth` for
+// the OAuth exchange, CSRF-state, and user/session/allow-list logic this
+// composes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The admin session cookie's name. Floodgate keeps this credential HttpOnly;
+/// the shared SPA probes `/api/auth/me` and uses same-origin cookies when no
+/// Levee bearer token exists.
+const admin_session_cookie_name = "floodgate_admin_session"
+
+/// `Result(user, Nil)` for a request carrying either a valid authorization
+/// header (what the admin UI actually sends — see its `api.gleam`) or the
+/// admin session cookie. The header takes precedence when both are present.
+pub fn session_user(
+  req: request.Request(mist.Connection),
+  config: AuthConfig,
+) -> Result(admin_auth.AdminUser, Nil) {
+  use token <- result.try(session_token(req))
+  use session <- result.try(
+    store.get_admin_session(config.storage, token) |> result.replace_error(Nil),
+  )
+  case admin_auth.session_valid(session, now_seconds()) {
+    False -> Error(Nil)
+    True -> store.get_admin_user(config.storage, session.user_id)
+  }
+}
+
+/// Extract the admin session id from a request: the authorization header
+/// first, falling back to the admin session cookie.
+fn session_token(req: request.Request(mist.Connection)) -> Result(String, Nil) {
+  case request.get_header(req, "authorization") {
+    Ok(authorization) ->
+      auth.extract_token(authorization) |> result.replace_error(Nil)
+    Error(_) ->
+      list.key_find(request.get_cookies(req), admin_session_cookie_name)
+  }
+}
+
+fn session_unauthorized() {
+  admin_error("unauthorized", "Invalid or expired session", 401)
+}
+
+fn me_response(user: admin_auth.AdminUser) {
+  json.object([#("user", admin_user_json(user))])
+  |> json.to_string
+  |> json_response(200)
+}
+
+/// Matches the admin UI's `user_decoder` (`id`, `email`, `display_name`,
+/// `created_at`) exactly, plus `github_username`/`is_admin` for callers that
+/// want them — extra JSON fields are simply ignored by that decoder.
+/// Floodgate has no non-admin role (see `admin_auth.AdminUser`'s doc
+/// comment), so `is_admin` is always `true`.
+fn admin_user_json(user: admin_auth.AdminUser) -> json.Json {
+  json.object([
+    #("id", json.string(user.id)),
+    #("email", json.string(user.email)),
+    #("display_name", json.string(user.display_name)),
+    #("github_username", json.string(user.github_username)),
+    #("is_admin", json.bool(True)),
+    #("created_at", json.int(user.created_at)),
+  ])
+}
+
+fn logout_response(public_url: String) {
+  json.object([#("message", json.string("logged out"))])
+  |> json.to_string
+  |> json_response(200)
+  |> clear_admin_session_cookie(public_url)
+}
+
+/// Floodgate never implements password registration/login (no use for it —
+/// GitHub OAuth is the only sign-in path), so this is a constant rather than
+/// a real capability check. The admin UI's login page reads it to hide its
+/// password form and "Register" link and present GitHub OAuth only, while
+/// leaving Levee's own login page — which reports `true` — unchanged.
+fn auth_config_response() {
+  json.object([#("password_auth", json.bool(False))])
+  |> json.to_string
+  |> json_response(200)
+}
+
+fn oauth_begin_response(
+  config: AuthConfig,
+  req: request.Request(mist.Connection),
+) {
+  let _ = req
+  case oauth.begin_auth(config.github, config.oauth_state, now_seconds()) {
+    Ok(url) -> redirect_response(url)
+    Error(oauth.ConfigMissing(_variable)) -> {
+      oauth_error_response(
+        500,
+        "oauth_not_configured",
+        "OAuth is not configured",
+      )
+    }
+    Error(_err) -> {
+      oauth_error_response(500, "oauth_error", "Failed to start authentication")
+    }
+  }
+}
+
+fn oauth_callback_response(
+  config: AuthConfig,
+  public_url: String,
+  req: request.Request(mist.Connection),
+) {
+  let query = uri.parse_query(req.query |> option_unwrap) |> result_unwrap_list
+  case list.key_find(query, "state") {
+    Error(_) ->
+      oauth_error_response(
+        401,
+        "state_invalid",
+        "Authentication failed, please try again",
+      )
+    Ok(state) -> {
+      let params = dict.from_list(query)
+      case
+        oauth.complete_auth(
+          config.github,
+          config.oauth_state,
+          params,
+          state,
+          now_seconds(),
+        )
+      {
+        Ok(auth_result) ->
+          handle_successful_auth(config, public_url, auth_result)
+        Error(oauth.StateInvalid) ->
+          oauth_error_response(
+            401,
+            "state_invalid",
+            "Authentication failed, please try again",
+          )
+        Error(oauth.ConfigMissing(_variable)) -> {
+          oauth_error_response(
+            500,
+            "oauth_not_configured",
+            "OAuth is not configured",
+          )
+        }
+        Error(oauth.VestibuleError(vestibule_error.UserInfoFailed(_))) ->
+          oauth_error_response(
+            502,
+            "provider_error",
+            "Could not fetch profile from provider",
+          )
+        Error(oauth.VestibuleError(vestibule_error.ProviderError(
+          code,
+          description,
+          _uri,
+        ))) -> {
+          let message = case description {
+            "" -> code
+            _ -> description
+          }
+          oauth_error_response(401, "oauth_failed", message)
+        }
+        Error(oauth.VestibuleError(_err)) -> {
+          oauth_error_response(
+            401,
+            "auth_failed",
+            "Authentication failed, please try again",
+          )
+        }
+      }
+    }
+  }
+}
+
+/// Find-or-create the admin user for a successful GitHub login, apply the
+/// allow-list decision (`admin_auth.github_login_allowed`), and —
+/// if allowed — create a session and redirect to `/admin`. Denied logins
+/// redirect back to `/admin` with an error indicator rather than creating any
+/// session or user record. Public (and taking the resolved `Auth` value
+/// rather than doing the exchange itself) so the find-or-create/allow-list
+/// composition is directly testable without a real OAuth round trip.
+pub fn handle_successful_auth(
+  config: AuthConfig,
+  public_url: String,
+  auth_result: vestibule_auth.Auth,
+) {
+  let github_id = auth_result.uid
+  let info = auth_result.info
+  let github_username = option.unwrap(info.nickname, "")
+  let display_name = case info.name {
+    Some(name) -> name
+    None -> github_username
+  }
+  let email = option.unwrap(info.email, "")
+  let now = now_seconds()
+  case
+    find_or_create_admin_user(
+      config,
+      github_id,
+      github_username,
+      display_name,
+      email,
+      now,
+    )
+  {
+    Error(Nil) -> redirect_response(admin_url_with_error("not_authorized"))
+    Ok(user) -> {
+      let session =
+        admin_auth.new_admin_session(
+          user.id,
+          now,
+          config.admin_session_ttl_seconds,
+        )
+      store.put_admin_session(config.storage, session)
+      redirect_response("/admin")
+      |> set_admin_session_cookie(public_url, session, config)
+    }
+  }
+}
+
+/// Look up (or, if allowed, create) the `AdminUser` for a GitHub identity —
+/// the composition of `store.get_admin_user`/`put_admin_user` and
+/// `admin_auth.github_login_allowed`/`new_admin_user` the OAuth callback
+/// needs. `Error(Nil)` means the identity is not — and, with no admin yet and
+/// no allow-list, cannot become — an admin.
+pub fn find_or_create_admin_user(
+  config: AuthConfig,
+  github_id: String,
+  github_username: String,
+  display_name: String,
+  email: String,
+  now: Int,
+) -> Result(admin_auth.AdminUser, Nil) {
+  case store.get_admin_user(config.storage, github_id) {
+    Ok(user) -> Ok(user)
+    Error(Nil) -> {
+      case
+        admin_auth.github_login_allowed(
+          github_username,
+          config.admin_github_users,
+          False,
+          store.admin_user_count(config.storage) > 0,
+        )
+      {
+        False -> Error(Nil)
+        True -> {
+          let user =
+            admin_auth.new_admin_user(
+              github_id,
+              github_username,
+              display_name,
+              email,
+              now,
+            )
+          store.put_admin_user(config.storage, user)
+          Ok(user)
+        }
+      }
+    }
+  }
+}
+
+fn oauth_error_response(status: Int, code: String, message: String) {
+  admin_error(code, message, status)
+}
+
+/// A relative, fixed `/admin`-only redirect target — deliberately never a
+/// request- or cookie-supplied URL (see the module doc). Avoids the open-
+/// redirect class of bug entirely, rather than needing to validate one.
+fn admin_url_with_error(code: String) -> String {
+  "/admin?error=" <> code
+}
+
+fn redirect_response(location: String) {
+  response.new(302)
+  |> response.set_header("location", location)
+  |> response.set_body(mist.Bytes(bytes_tree.new()))
+}
+
+/// The response's scheme, from `public_url` — determines whether the admin
+/// session cookie gets the `Secure` attribute (see `cookie.defaults`).
+fn public_url_scheme(public_url: String) -> http.Scheme {
+  case uri.parse(public_url) {
+    Ok(uri.Uri(scheme: Some("https"), ..)) -> http.Https
+    _ -> http.Http
+  }
+}
+
+/// Set the admin session cookie on a response: HttpOnly, SameSite=Lax always;
+/// Secure when `public_url` is HTTPS; Path=/ (it authorizes both
+/// `/api/auth/*` and `/api/tenants/*`); Max-Age matching the session's
+/// remaining lifetime, so the browser expires it in step with the server.
+fn set_admin_session_cookie(
+  resp,
+  public_url: String,
+  session: admin_auth.AdminSession,
+  config: AuthConfig,
+) {
+  let attrs =
+    cookie.Attributes(
+      ..cookie.defaults(public_url_scheme(public_url)),
+      max_age: Some(config.admin_session_ttl_seconds),
+    )
+  response.set_cookie(resp, admin_session_cookie_name, session.id, attrs)
+}
+
+fn clear_admin_session_cookie(resp, public_url: String) {
+  response.expire_cookie(
+    resp,
+    admin_session_cookie_name,
+    cookie.defaults(public_url_scheme(public_url)),
+  )
+}
+
+/// `{id, name}` — the list-endpoint shape, matching `api.gleam`'s
+/// `tenant_decoder`. Never carries secrets.
+pub fn tenant_info_json(tenant: store.TenantInfo) -> json.Json {
+  json.object([
+    #("id", json.string(tenant.id)),
+    #("name", json.string(tenant.name)),
+  ])
+}
+
+/// `{id, name, secret1, secret2}` — the create/show shape, matching
+/// `api.gleam`'s `tenant_with_secrets_decoder`.
+pub fn tenant_with_secrets_json(tenant: store.TenantWithSecrets) -> json.Json {
+  json.object([
+    #("id", json.string(tenant.id)),
+    #("name", json.string(tenant.name)),
+    #("secret1", json.string(tenant.secret1)),
+    #("secret2", json.string(tenant.secret2)),
+  ])
+}
+
+fn tenants_list_response(storage: store.Backend) {
+  json.object([
+    #(
+      "tenants",
+      json.preprocessed_array(list.map(
+        store.list_tenants(storage),
+        tenant_info_json,
+      )),
+    ),
+  ])
+  |> json.to_string
+  |> json_response(200)
+}
+
+/// The `{"name": "..."}` request body `POST /api/tenants` sends.
+pub fn decode_tenant_name(body: String) -> Result(String, Nil) {
+  json.parse(body, decode.field("name", decode.string, decode.success))
+  |> result.replace_error(Nil)
+}
+
+fn tenant_create_response(storage: store.Backend, body: String) {
+  case decode_tenant_name(body) {
+    Error(_) -> admin_error("missing_fields", "Required: name", 422)
+    Ok(name) ->
+      json.object([
+        #(
+          "tenant",
+          tenant_with_secrets_json(store.create_tenant(storage, name)),
+        ),
+      ])
+      |> json.to_string
+      |> json_response(201)
+  }
+}
+
+fn tenant_show_response(storage: store.Backend, id: String) {
+  case store.get_tenant(storage, id), store.get_tenant_secrets(storage, id) {
+    Ok(info), Ok(#(secret1, secret2)) ->
+      json.object([
+        #(
+          "tenant",
+          tenant_with_secrets_json(store.TenantWithSecrets(
+            id: info.id,
+            name: info.name,
+            secret1: secret1,
+            secret2: secret2,
+          )),
+        ),
+      ])
+      |> json.to_string
+      |> json_response(200)
+    _, _ -> admin_not_found()
+  }
+}
+
+fn tenant_delete_response(storage: store.Backend, id: String) {
+  case store.tenant_exists(storage, id) {
+    False -> admin_not_found()
+    True -> {
+      // Deliberately narrow — see `store.unregister_tenant`: this does not
+      // cascade to the tenant's documents, matching levee's
+      // `unregister_tenant/1`.
+      store.unregister_tenant(storage, id)
+      json.object([#("message", json.string("Tenant unregistered"))])
+      |> json.to_string
+      |> json_response(200)
+    }
+  }
+}
+
+/// Parse a `POST /api/tenants/:id/secrets/:slot` path segment. Only `"1"` and
+/// `"2"` are valid — anything else, including `"01"` or `"3"`, is rejected the
+/// same way levee's `Integer.parse/1` guard rejects them.
+pub fn parse_tenant_slot(slot: String) -> Result(store.TenantSlot, Nil) {
+  case slot {
+    "1" -> Ok(store.Slot1)
+    "2" -> Ok(store.Slot2)
+    _ -> Error(Nil)
+  }
+}
+
+fn tenant_regenerate_secret_response(
+  storage: store.Backend,
+  id: String,
+  slot: String,
+) {
+  case parse_tenant_slot(slot) {
+    Error(_) -> admin_error("invalid_slot", "Slot must be 1 or 2", 400)
+    Ok(slot) ->
+      case store.regenerate_tenant_secret(storage, id, slot) {
+        Error(_) -> admin_not_found()
+        Ok(secret) ->
+          json.object([#("secret", json.string(secret))])
+          |> json.to_string
+          |> json_response(200)
+      }
+  }
 }
 
 fn json_response(body: String, status: Int) {

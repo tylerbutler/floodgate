@@ -16,6 +16,7 @@
 //// swapped to `public` after opening — see `floodgate_shelf_ffi:make_table_public`,
 //// the analogue of levee's `storage_ffi_helpers:make_table_public`.
 
+import floodgate/admin_auth.{AdminSession, AdminUser}
 import floodgate/store
 import gleam/dynamic/decode
 import gleam/list
@@ -37,6 +38,17 @@ type Tables {
     refs: PSet(#(String, String), String),
     /// `tenant → ref`, the same index for `list_refs`.
     refs_index: PBag(String, String),
+    /// `tenant id → #(name, secret1, secret2)`. Small (one row per tenant),
+    /// so — unlike ops/refs — a full-table scan for `list_tenants` needs no
+    /// index.
+    tenants: PSet(String, #(String, String, String)),
+    /// `github id → #(github_username, display_name, email, created_at)` —
+    /// the admin UI's OAuth-backed user accounts. Keyed directly by GitHub's
+    /// own numeric user id, so — like `tenants` — no reverse index is needed.
+    admin_users: PSet(String, #(String, String, String, Int)),
+    /// `session id → #(user_id, created_at, expires_at)` — the admin UI's
+    /// opaque bearer/cookie sessions.
+    admin_sessions: PSet(String, #(String, Int, Int)),
   )
 }
 
@@ -144,6 +156,108 @@ pub fn new(data_dir: String) -> store.Backend {
         |> result.replace_error(Nil)
       })
     },
+    create_tenant: fn(name) {
+      let id = store.generate_tenant_id()
+      let secret1 = store.generate_tenant_secret()
+      let secret2 = store.generate_tenant_secret()
+      let _ =
+        set.insert(into: tables.tenants, key: id, value: #(
+          name,
+          secret1,
+          secret2,
+        ))
+      store.TenantWithSecrets(id:, name:, secret1:, secret2:)
+    },
+    get_tenant: fn(id) {
+      set.lookup(from: tables.tenants, key: id)
+      |> result.map(fn(data) { store.TenantInfo(id:, name: data.0) })
+      |> result.replace_error(Nil)
+    },
+    get_tenant_secrets: fn(id) {
+      set.lookup(from: tables.tenants, key: id)
+      |> result.map(fn(data) { #(data.1, data.2) })
+      |> result.replace_error(Nil)
+    },
+    regenerate_tenant_secret: fn(id, slot) {
+      case set.lookup(from: tables.tenants, key: id) {
+        Error(_) -> Error(Nil)
+        Ok(#(name, secret1, secret2)) -> {
+          let new_secret = store.generate_tenant_secret()
+          let updated = case slot {
+            store.Slot1 -> #(name, new_secret, secret2)
+            store.Slot2 -> #(name, secret1, new_secret)
+          }
+          let _ = set.insert(into: tables.tenants, key: id, value: updated)
+          Ok(new_secret)
+        }
+      }
+    },
+    register_tenant: fn(id, secret) {
+      let _ =
+        set.insert(into: tables.tenants, key: id, value: #(
+          id,
+          secret,
+          store.generate_tenant_secret(),
+        ))
+      Nil
+    },
+    unregister_tenant: fn(id) {
+      let _ = set.delete_key(from: tables.tenants, key: id)
+      Nil
+    },
+    tenant_exists: fn(id) {
+      set.member(of: tables.tenants, key: id) |> result.unwrap(False)
+    },
+    list_tenants: fn() {
+      set.to_list(from: tables.tenants)
+      |> result.unwrap([])
+      |> list.map(fn(entry) {
+        let #(id, data) = entry
+        store.TenantInfo(id:, name: data.0)
+      })
+    },
+    put_admin_user: fn(user) {
+      let _ =
+        set.insert(into: tables.admin_users, key: user.id, value: #(
+          user.github_username,
+          user.display_name,
+          user.email,
+          user.created_at,
+        ))
+      Nil
+    },
+    get_admin_user: fn(id) {
+      set.lookup(from: tables.admin_users, key: id)
+      |> result.map(fn(data) {
+        let #(github_username, display_name, email, created_at) = data
+        AdminUser(id:, github_username:, display_name:, email:, created_at:)
+      })
+      |> result.replace_error(Nil)
+    },
+    admin_user_count: fn() {
+      set.to_list(from: tables.admin_users) |> result.unwrap([]) |> list.length
+    },
+    put_admin_session: fn(session) {
+      let _ =
+        set.insert(into: tables.admin_sessions, key: session.id, value: #(
+          session.user_id,
+          session.created_at,
+          session.expires_at,
+        ))
+      Nil
+    },
+    get_admin_session: fn(id) {
+      set.lookup(from: tables.admin_sessions, key: id)
+      |> result.map(fn(data) {
+        let #(user_id, created_at, expires_at) = data
+        AdminSession(id:, user_id:, created_at:, expires_at:)
+      })
+      |> result.replace_error(Nil)
+    },
+    delete_admin_session: fn(id) {
+      let _ = set.delete_key(from: tables.admin_sessions, key: id)
+      Nil
+    },
   )
 }
 
@@ -197,6 +311,27 @@ fn open_tables(data_dir: String) -> Tables {
       "refs_index.dets",
       decode.string,
       decode.string,
+    ),
+    tenants: open(
+      data_dir,
+      "floodgate_tenants",
+      "tenants.dets",
+      decode.string,
+      tenant_value(),
+    ),
+    admin_users: open(
+      data_dir,
+      "floodgate_admin_users",
+      "admin_users.dets",
+      decode.string,
+      admin_user_value(),
+    ),
+    admin_sessions: open(
+      data_dir,
+      "floodgate_admin_sessions",
+      "admin_sessions.dets",
+      decode.string,
+      admin_session_value(),
     ),
   )
 }
@@ -279,6 +414,28 @@ fn handle_sn_value() -> decode.Decoder(#(String, Int)) {
   use handle <- decode.field(0, decode.string)
   use sn <- decode.field(1, decode.int)
   decode.success(#(handle, sn))
+}
+
+fn tenant_value() -> decode.Decoder(#(String, String, String)) {
+  use name <- decode.field(0, decode.string)
+  use secret1 <- decode.field(1, decode.string)
+  use secret2 <- decode.field(2, decode.string)
+  decode.success(#(name, secret1, secret2))
+}
+
+fn admin_user_value() -> decode.Decoder(#(String, String, String, Int)) {
+  use github_username <- decode.field(0, decode.string)
+  use display_name <- decode.field(1, decode.string)
+  use email <- decode.field(2, decode.string)
+  use created_at <- decode.field(3, decode.int)
+  decode.success(#(github_username, display_name, email, created_at))
+}
+
+fn admin_session_value() -> decode.Decoder(#(String, Int, Int)) {
+  use user_id <- decode.field(0, decode.string)
+  use created_at <- decode.field(1, decode.int)
+  use expires_at <- decode.field(2, decode.int)
+  decode.success(#(user_id, created_at, expires_at))
 }
 
 @external(erlang, "floodgate_shelf_ffi", "ensure_dir")

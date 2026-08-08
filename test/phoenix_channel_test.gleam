@@ -10,6 +10,7 @@ import floodgate/auth
 import floodgate/document_channel
 import floodgate/memory_store
 import floodgate/session
+import floodgate/store
 import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -467,4 +468,163 @@ pub fn client_payload_echoes_the_clients_own_record_test() {
 pub fn supplied_client_json_absent_when_not_sent_test() {
   let assert Ok(payload) = json.parse("{\"mode\":\"write\"}", decode.dynamic)
   document_channel.supplied_client_json(payload) |> should.equal(None)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dynamic multi-tenancy — a tenant registered *after* the runtime has already
+// started, with its own server-generated secrets, joins and connects exactly
+// like the tenant seeded from FLOODGATE_TENANT_ID/FLOODGATE_JWT_SECRET. No
+// restart is needed: `document_channel.authorize_topic_token` resolves the
+// topic's tenant against `session.storage(sess)` on every join, so a tenant
+// created between two requests is visible on the very next one.
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn join_frame(topic: String, token: String) -> String {
+  "[\"1\",\"1\",\""
+  <> topic
+  <> "\",\"phx_join\",{\"token\":\""
+  <> token
+  <> "\"}]"
+}
+
+fn event_frame(topic: String, event: String, payload: String) -> String {
+  "[\"1\",\"2\",\"" <> topic <> "\",\"" <> event <> "\"," <> payload <> "]"
+}
+
+fn tenant_scoped_connect_payload(
+  tenant_id: String,
+  doc: String,
+  token: String,
+  mode: String,
+) -> String {
+  "{\"tenantId\":\""
+  <> tenant_id
+  <> "\",\"id\":\""
+  <> doc
+  <> "\",\"token\":\""
+  <> token
+  <> "\",\"mode\":\""
+  <> mode
+  <> "\",\"client\":{},\"versions\":[\"^0.4.0\"]}"
+}
+
+pub fn phoenix_join_accepts_dynamically_registered_tenant_test() {
+  let doc = "phx-dynamic-tenant"
+  let assert Ok(#(channels, sess)) =
+    floodgate.start_with_backend(tenant, secret, memory_store.new())
+  let acme = store.create_tenant(session.storage(sess), "Acme Co")
+  let topic = "document:" <> acme.id <> ":" <> doc
+  let token =
+    auth.mint_token(
+      acme.id,
+      doc,
+      ["doc:read", "doc:write"],
+      "user-1",
+      acme.secret1,
+      now(),
+      3600,
+    )
+  let sent = attach(channels, "s-dyn")
+
+  route(channels, "s-dyn", join_frame(topic, token))
+  let assert Ok(join_reply) = process.receive(sent, 1000)
+  join_reply |> string.contains("\"status\":\"ok\"") |> should.be_true
+
+  route(
+    channels,
+    "s-dyn",
+    event_frame(
+      topic,
+      "connect_document",
+      tenant_scoped_connect_payload(acme.id, doc, token, "write"),
+    ),
+  )
+  let assert Ok(push) = process.receive(sent, 1000)
+  push |> string.contains("connect_document_success") |> should.be_true
+}
+
+/// A token that authenticates fine for the tenant it was minted for is
+/// rejected outright against a *different*, also-registered tenant, because
+/// verification is scoped to the secrets of the tenant named in the topic —
+/// never the token's own claimed tenant.
+pub fn phoenix_join_rejects_cross_tenant_token_test() {
+  let doc = "phx-cross-tenant"
+  let assert Ok(#(channels, sess)) =
+    floodgate.start_with_backend(tenant, secret, memory_store.new())
+  let storage = session.storage(sess)
+  let acme = store.create_tenant(storage, "Acme Co")
+  let widgets = store.create_tenant(storage, "Widgets Inc")
+  let token =
+    auth.mint_token(
+      acme.id,
+      doc,
+      ["doc:read", "doc:write"],
+      "user-1",
+      acme.secret1,
+      now(),
+      3600,
+    )
+  let sent = attach(channels, "s-xtenant")
+
+  route(
+    channels,
+    "s-xtenant",
+    join_frame("document:" <> widgets.id <> ":" <> doc, token),
+  )
+
+  let assert Ok(reply) = process.receive(sent, 1000)
+  reply |> string.contains("\"status\":\"error\"") |> should.be_true
+  reply |> string.contains("unauthorized") |> should.be_true
+}
+
+/// Both secret slots verify; rotating one leaves the other's tokens valid and
+/// invalidates only tokens signed with the slot that changed.
+pub fn phoenix_join_honours_secret_rotation_test() {
+  let doc = "phx-rotation"
+  let assert Ok(#(channels, sess)) =
+    floodgate.start_with_backend(tenant, secret, memory_store.new())
+  let storage = session.storage(sess)
+  let rotating = store.create_tenant(storage, "Rotating Co")
+  let topic = "document:" <> rotating.id <> ":" <> doc
+  let old_secret1 = rotating.secret1
+
+  let token_secret2 =
+    auth.mint_token(
+      rotating.id,
+      doc,
+      ["doc:read"],
+      "user-1",
+      rotating.secret2,
+      now(),
+      3600,
+    )
+  let sent_before = attach(channels, "s-rot-before")
+  route(channels, "s-rot-before", join_frame(topic, token_secret2))
+  let assert Ok(reply_before) = process.receive(sent_before, 1000)
+  reply_before |> string.contains("\"status\":\"ok\"") |> should.be_true
+
+  let assert Ok(_) =
+    store.regenerate_tenant_secret(storage, rotating.id, store.Slot1)
+
+  // The old secret1 no longer verifies anything.
+  let stale_token =
+    auth.mint_token(
+      rotating.id,
+      doc,
+      ["doc:read"],
+      "user-1",
+      old_secret1,
+      now(),
+      3600,
+    )
+  let sent_stale = attach(channels, "s-rot-stale")
+  route(channels, "s-rot-stale", join_frame(topic, stale_token))
+  let assert Ok(reply_stale) = process.receive(sent_stale, 1000)
+  reply_stale |> string.contains("\"status\":\"error\"") |> should.be_true
+
+  // secret2 was never touched by the rotation, so it still verifies.
+  let sent_after = attach(channels, "s-rot-after")
+  route(channels, "s-rot-after", join_frame(topic, token_secret2))
+  let assert Ok(reply_after) = process.receive(sent_after, 1000)
+  reply_after |> string.contains("\"status\":\"ok\"") |> should.be_true
 }
