@@ -56,6 +56,10 @@ pub type Backend {
     get_ops: fn(String) -> List(#(Int, String)),
     put_summary: fn(String, String, Int) -> Nil,
     get_summary: fn(String) -> #(String, Int),
+    /// Git objects are keyed by **topic**, not tenant: an object belongs to the
+    /// document whose summary tree reaches it, which is what lets a document's
+    /// storage be self-contained. The document id comes from the caller's token
+    /// claims — see `auth.verify_storage_*_authorization`.
     put_obj: fn(String, String, String) -> Nil,
     get_obj: fn(String, String) -> Result(String, Nil),
     put_ref: fn(String, String, String) -> Nil,
@@ -97,6 +101,17 @@ pub fn open(backend: Backend) -> Nil {
   backend.open()
 }
 
+/// The prefix every document topic carries. Also the Phoenix channel topic
+/// prefix, which is why the two cannot drift.
+pub const topic_prefix = "document:"
+
+/// The storage key for a document. Everything document-scoped — the marker,
+/// ops, the summary pointer, and git objects — is keyed by this, so it is the
+/// single place the `{tenant, document}` pair becomes one identifier.
+pub fn topic(tenant: String, document_id: String) -> String {
+  topic_prefix <> tenant <> ":" <> document_id
+}
+
 pub fn put_document(backend: Backend, topic: String) -> Nil {
   backend.put_document(topic)
 }
@@ -135,19 +150,19 @@ pub fn get_summary(backend: Backend, topic: String) -> #(String, Int) {
 
 pub fn put_obj(
   backend: Backend,
-  tenant: String,
+  topic: String,
   sha: String,
   data: String,
 ) -> Nil {
-  backend.put_obj(tenant, sha, data)
+  backend.put_obj(topic, sha, data)
 }
 
 pub fn get_obj(
   backend: Backend,
-  tenant: String,
+  topic: String,
   sha: String,
 ) -> Result(String, Nil) {
-  backend.get_obj(tenant, sha)
+  backend.get_obj(topic, sha)
 }
 
 pub fn put_ref(

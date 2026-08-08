@@ -637,10 +637,15 @@ pub fn git_create_fetch_roundtrip_test() {
   let storage = memory_store.new()
   store.open(storage)
   let body = "{\"content\":\"aGk=\",\"encoding\":\"base64\"}"
-  let assert Ok(sha) = git.create(storage, "t", "blobs", body)
+  let topic = store.topic("t", "doc")
+  let assert Ok(sha) = git.create(storage, topic, "blobs", body)
   sha |> should.equal("32f95c0d1244a78b2be1bab8de17906fabb2c4a8")
-  git.fetch(storage, "t", sha) |> should.equal(Ok(body))
-  git.fetch(storage, "t", "nope") |> should.equal(Error(Nil))
+  git.fetch(storage, topic, sha) |> should.equal(Ok(body))
+  git.fetch(storage, topic, "nope") |> should.equal(Error(Nil))
+  // Objects are document-scoped: the same tenant, a different document, does
+  // not see it. This is what makes a document's storage self-contained.
+  git.fetch(storage, store.topic("t", "other"), sha)
+  |> should.equal(Error(Nil))
 }
 
 pub fn git_ref_roundtrip_test() {
@@ -659,21 +664,21 @@ pub fn git_ref_roundtrip_test() {
 pub fn git_commit_history_follows_first_parent_test() {
   let storage = memory_store.new()
   store.open(storage)
+  let topic = store.topic("history", "doc")
   let first_body =
     "{\"tree\":\"tree-1\",\"parents\":[],\"message\":\"first\",\"author\":{}}"
-  let assert Ok(first_sha) =
-    git.create(storage, "history", "commits", first_body)
+  let assert Ok(first_sha) = git.create(storage, topic, "commits", first_body)
   let second_body =
     "{\"tree\":\"tree-2\",\"parents\":[\""
     <> first_sha
     <> "\"],\"message\":\"second\",\"author\":{}}"
-  let assert Ok(second_sha) =
-    git.create(storage, "history", "commits", second_body)
+  let assert Ok(second_sha) = git.create(storage, topic, "commits", second_body)
 
   git.commit_history_response(
     storage,
     "http://localhost",
     "history",
+    topic,
     second_sha,
     2,
   )

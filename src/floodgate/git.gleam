@@ -12,24 +12,32 @@ import silt/object
 import silt/rest
 
 /// Store an object's raw body, returning its content-addressed id.
+///
+/// Objects are stored per **document**, not per tenant: a blob belongs to the
+/// document whose summary tree reaches it. Callers on the tenant-scoped
+/// Historian routes take `document_id` from their token claims, which is the
+/// only place the association is recorded. The cost is that two documents in a
+/// tenant uploading identical bytes store them twice; the gain is that a
+/// document's storage is self-contained.
 pub fn create(
   storage: store.Backend,
-  tenant: String,
+  topic: String,
   kind: String,
   body: String,
 ) -> Result(String, Nil) {
   use sha <- result.try(object.object_id(kind, body))
-  store.put_obj(storage, tenant, sha, body)
+  store.put_obj(storage, topic, sha, body)
   Ok(sha)
 }
 
-/// Fetch an object's raw body by SHA.
+/// Fetch an object's raw body by SHA, within a document. An object written
+/// under a different document is not visible here — see `create`.
 pub fn fetch(
   storage: store.Backend,
-  tenant: String,
+  topic: String,
   sha: String,
 ) -> Result(String, Nil) {
-  store.get_obj(storage, tenant, sha)
+  store.get_obj(storage, topic, sha)
 }
 
 pub fn put_ref(
@@ -115,6 +123,7 @@ pub fn object_response(
   storage: store.Backend,
   base_url: String,
   tenant: String,
+  topic: String,
   kind: String,
   sha: String,
   body: String,
@@ -127,7 +136,7 @@ pub fn object_response(
     sha,
     body,
     recursive,
-    fetcher(storage, tenant),
+    fetcher(storage, topic),
   )
 }
 
@@ -144,6 +153,7 @@ pub fn commit_history_response(
   storage: store.Backend,
   base_url: String,
   tenant: String,
+  topic: String,
   sha: String,
   count: Int,
 ) -> List(json.Json) {
@@ -152,7 +162,7 @@ pub fn commit_history_response(
     tenant,
     sha,
     count,
-    fetcher(storage, tenant),
+    fetcher(storage, topic),
   )
 }
 
@@ -165,9 +175,10 @@ pub fn ref_response(
   rest.ref_response(base_url, tenant, ref, sha)
 }
 
-/// A `silt.Fetch` closing over this stack's store and tenant, so `silt` can
+/// A `silt.Fetch` closing over this stack's store and document, so `silt` can
 /// walk child objects (recursive trees, commit history) without owning
-/// persistence.
-fn fetcher(storage: store.Backend, tenant: String) -> rest.Fetch {
-  fn(sha) { store.get_obj(storage, tenant, sha) }
+/// persistence. The walk stays inside one document, which is exactly the set of
+/// objects that document's storage holds.
+fn fetcher(storage: store.Backend, topic: String) -> rest.Fetch {
+  fn(sha) { store.get_obj(storage, topic, sha) }
 }

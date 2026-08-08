@@ -20,6 +20,7 @@ import dewdrop/events
 import floodgate/origin
 import floodgate/server_codec
 import floodgate/socketio
+import floodgate/store
 import gleam/bit_array
 import gleam/bool
 import gleam/bytes_tree
@@ -398,7 +399,7 @@ fn topic_from_connect(payload: dynamic.Dynamic) -> String {
   case tenant, document_id {
     "", _ -> ""
     _, "" -> ""
-    _, _ -> "document:" <> tenant <> ":" <> document_id
+    _, _ -> store.topic(tenant, document_id)
   }
 }
 

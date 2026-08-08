@@ -1,11 +1,24 @@
 -module(floodgate_shelf_ffi).
--export([ensure_dir/1, make_table_public/1]).
+-export([ensure_dir/1, file_exists/1, log_open_failure/2, make_table_public/1]).
 
 %% Ensure a directory exists (mkdir -p semantics). filelib:ensure_dir/1 creates
 %% all parent directories of the given path, so join a sentinel child to make
 %% the whole `Dir` chain exist.
 ensure_dir(Dir) ->
   ok = filelib:ensure_dir(filename:join(Dir, "shelf")),
+  nil.
+
+%% Whether a document's DETS file is already on disk. Used to answer "does this
+%% document exist" without opening it — see floodgate/doc_store:exists, which is
+%% reachable from unauthenticated REST paths.
+file_exists(Path) ->
+  filelib:is_regular(Path).
+
+%% A document table that could not be opened means reads miss and writes are
+%% dropped for that one document, which is silent otherwise. Hex-encoded paths
+%% cannot escape the data directory, so this is a disk-level problem.
+log_open_failure(Topic, Path) ->
+  logger:warning("floodgate: could not open document table for ~ts at ~ts", [Topic, Path]),
   nil.
 
 %% Replace a shelf PSet's protected ETS table with a public one so Floodgate can

@@ -314,21 +314,37 @@ export async function createBlobTreeCommit(
 	tenantId: string,
 	contentStr: string,
 	messageStr: string,
+	documentId = "",
 ): Promise<string> {
-	return (await createBlobTreeCommitGraph(tenantId, contentStr, messageStr))
-		.commitSha;
+	return (
+		await createBlobTreeCommitGraph(
+			tenantId,
+			contentStr,
+			messageStr,
+			documentId,
+		)
+	).commitSha;
 }
 
+/**
+ * The Historian routes are tenant-scoped URLs, but objects belong to the
+ * document named in the caller's token — so `documentId` must be the document
+ * these objects are for, exactly as the official driver's storage service uses
+ * its own document's token for every call. Objects written under one document
+ * are not visible to another.
+ */
 export async function createBlobTreeCommitGraph(
 	tenantId: string,
 	contentStr: string,
 	messageStr: string,
+	documentId = "",
 ): Promise<{ blobSha: string; treeSha: string; commitSha: string }> {
 	// Create blob from content string
 	const content = Buffer.from(contentStr).toString("base64");
 	const blobResponse = await floodgateFetch(`/repos/${tenantId}/git/blobs`, {
 		method: "POST",
 		body: { content, encoding: "base64" },
+		documentId,
 		scopes: ["doc:read", "summary:write"],
 	});
 	if (blobResponse.status !== 201) {
@@ -344,6 +360,7 @@ export async function createBlobTreeCommitGraph(
 		body: {
 			tree: [{ path: "file.txt", sha: blobSha, mode: "100644", type: "blob" }],
 		},
+		documentId,
 		scopes: ["doc:read", "summary:write"],
 	});
 	if (treeResponse.status !== 201) {
@@ -368,6 +385,7 @@ export async function createBlobTreeCommitGraph(
 					date: new Date().toISOString(),
 				},
 			},
+			documentId,
 			scopes: ["doc:read", "summary:write"],
 		},
 	);

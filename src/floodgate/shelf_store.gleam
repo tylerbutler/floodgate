@@ -15,11 +15,18 @@
 //// writes from session actors and REST handler processes, so each table is
 //// swapped to `public` after opening — see `floodgate_shelf_ffi:make_table_public`,
 //// the analogue of levee's `storage_ffi_helpers:make_table_public`.
+////
+//// Only data that is *not* document-scoped lives in the shared tables below.
+//// A document's own marker, ops, summary pointer, and git objects live in one
+//// DETS file per document — see `floodgate/doc_store` for why, and for the
+//// ownership and lifetime rules that come with it.
 
 import floodgate/admin_auth.{AdminSession, AdminUser}
+import floodgate/doc_store.{type DocStore}
 import floodgate/store
 import gleam/dynamic/decode
 import gleam/list
+import gleam/otp/static_supervisor
 import gleam/result
 import shelf
 import shelf/bag.{type PBag}
@@ -27,13 +34,9 @@ import shelf/set.{type PSet}
 
 type Tables {
   Tables(
-    docs: PSet(String, Bool),
-    ops: PSet(#(String, Int), String),
-    /// `topic → sn`, so a document's ops can be found without scanning every
-    /// document's. See `new` for why this is a separate index rather than the
-    /// ops table itself being keyed by topic.
-    ops_index: PBag(String, Int),
-    summaries: PSet(String, #(String, Int)),
+    /// `#(topic, sha) → body`, the pre-per-document objects table. Retained
+    /// read-only as a fallback so blobs written before the split stay
+    /// readable; nothing writes to it any more. See `new`.
     objects: PSet(#(String, String), String),
     refs: PSet(#(String, String), String),
     /// `tenant → ref`, the same index for `list_refs`.
@@ -52,80 +55,82 @@ type Tables {
   )
 }
 
-/// Build a shelf-backed storage backend rooted at `data_dir`. DETS files are
-/// created under that directory (created if missing).
+/// A shelf-backed backend rooted at `data_dir`, with the per-document store
+/// started eagerly and unsupervised. For tests and embedding; a runtime should
+/// use `supervised`. Mirrors `memory_store.new`/`memory_store.supervised`.
+pub fn new(data_dir: String) -> store.Backend {
+  backend(data_dir, doc_store.started(data_dir), fn(builder) { builder })
+}
+
+/// A shelf-backed backend whose per-document store is started by the runtime's
+/// supervision tree. `store.supervise` must be applied to the tree before
+/// anything calls into the backend — `serve_with_backend` does this first, for
+/// exactly this reason.
+pub fn supervised(data_dir: String) -> store.Backend {
+  let docs = doc_store.new(data_dir)
+  backend(data_dir, docs, fn(builder) { doc_store.supervise(builder, docs) })
+}
+
+/// Build the storage boundary over the shared tables plus `docs`.
 ///
-/// `get_ops` and `list_refs` used to `set.to_list` the entire table and filter,
-/// so a single document's catch-up cost was proportional to every op in the
-/// server — paid on every reconnect and every delta request. DETS has no
-/// `ordered_set` and shelf has no partial-key match, so each is now served from
-/// a bag table keyed by topic/tenant.
+/// Shared tables hold only what is not document-scoped. `list_refs` used to
+/// `set.to_list` the whole refs table and filter, so one tenant's cost was
+/// proportional to every ref on the server; DETS has no `ordered_set` and shelf
+/// has no partial-key match, so it is served from a bag keyed by tenant.
 ///
 /// The bag is an *index*, not the store: keeping the set as the authority
-/// preserves `put_op`'s overwrite-by-`(topic, sn)` semantics, which a bag cannot
-/// (it dedupes only exact duplicates, so re-putting an sn with different
-/// contents would leave two entries where `memory_store`'s dict leaves one).
-/// Re-putting the same key is a no-op in the bag, so the index cannot drift from
-/// the set even under overwrite.
-pub fn new(data_dir: String) -> store.Backend {
+/// preserves `put_ref`'s overwrite-by-`(tenant, ref)` semantics, which a bag
+/// cannot (it dedupes only exact duplicates, so re-putting a ref with a
+/// different sha would leave two entries where `memory_store`'s dict leaves
+/// one). Re-putting the same key is a no-op in the bag, so the index cannot
+/// drift from the set even under overwrite.
+fn backend(
+  data_dir: String,
+  docs: DocStore,
+  supervise: fn(static_supervisor.Builder) -> static_supervisor.Builder,
+) -> store.Backend {
   ensure_dir(data_dir)
   let tables = open_tables(data_dir)
   backfill_indexes(tables)
 
   store.Backend(
-    // No processes of its own: shelf tables are ETS + DETS, not actors.
+    // The shared tables' ETS handles are owned by whichever process calls this
+    // function, and the closures below capture them, so they do not survive that
+    // process's death. In the shipped server that is not a live exposure: the
+    // owner is the process running `main`, which the generated entrypoint
+    // `spawn_link`s under a trapping parent that calls `init:stop(1)` — so its
+    // death halts the node, the container restarts it, and the tables are
+    // reopened from DETS. Nothing is lost, because `WriteThrough` has already
+    // flushed every write and shelf's guardian process closes DETS cleanly when
+    // the owner dies.
     //
-    // The ETS tables are owned by whichever process calls this function, and the
-    // closures below capture the handles, so they do not survive that process's
-    // death. In the shipped server that is not a live exposure: the owner is the
-    // process running `main`, which the generated entrypoint `spawn_link`s under
-    // a trapping parent that calls `init:stop(1)` — so its death halts the node,
-    // the container restarts it, and the tables are reopened from DETS. Nothing
-    // is lost, because `WriteThrough` has already flushed every write and shelf's
-    // guardian process closes DETS cleanly when the owner dies.
-    //
-    // What is *not* supported is surviving that in place, which would need the
-    // handles themselves to be late-bound (named ETS tables plus a supervised
-    // owner), not just the owner supervised. Worth knowing if floodgate is ever
-    // embedded and this is called from a process that can die independently.
-    supervise: fn(builder) { builder },
+    // Per-document tables are *not* like this: they are owned by `doc_store`'s
+    // supervised actor and resolved by name at call time, so they do survive in
+    // place. See `floodgate/doc_store`.
+    supervise: supervise,
     open: fn() { Nil },
-    put_document: fn(topic) {
-      let _ = set.insert(into: tables.docs, key: topic, value: True)
-      Nil
-    },
-    has_document: fn(topic) {
-      set.member(of: tables.docs, key: topic) |> result.unwrap(False)
-    },
+    put_document: fn(topic) { doc_store.put_marker(docs, topic) },
+    has_document: fn(topic) { doc_store.exists(docs, topic) },
     put_op: fn(topic, sn, contents) {
-      let _ = set.insert(into: tables.ops, key: #(topic, sn), value: contents)
-      let _ = bag.insert(into: tables.ops_index, key: topic, value: sn)
-      Nil
+      doc_store.put_op(docs, topic, sn, contents)
     },
-    get_ops: fn(topic) {
-      bag.lookup(from: tables.ops_index, key: topic)
-      |> result.unwrap([])
-      |> list.filter_map(fn(sn) {
-        set.lookup(from: tables.ops, key: #(topic, sn))
-        |> result.map(fn(contents) { #(sn, contents) })
-        |> result.replace_error(Nil)
-      })
-    },
+    get_ops: fn(topic) { doc_store.get_ops(docs, topic) },
     put_summary: fn(topic, handle, sn) {
-      let _ =
-        set.insert(into: tables.summaries, key: topic, value: #(handle, sn))
-      Nil
+      doc_store.put_summary(docs, topic, handle, sn)
     },
-    get_summary: fn(topic) {
-      set.lookup(from: tables.summaries, key: topic) |> result.unwrap(#("", 0))
-    },
-    put_obj: fn(tenant, sha, data) {
-      let _ = set.insert(into: tables.objects, key: #(tenant, sha), value: data)
-      Nil
-    },
-    get_obj: fn(tenant, sha) {
-      set.lookup(from: tables.objects, key: #(tenant, sha))
-      |> result.replace_error(Nil)
+    get_summary: fn(topic) { doc_store.get_summary(docs, topic) },
+    put_obj: fn(topic, sha, data) { doc_store.put_obj(docs, topic, sha, data) },
+    // Objects moved into the per-document file. The shared table is still
+    // consulted on a miss so blobs written before the split stay readable
+    // without a migration that would have to walk each ref's commit → tree →
+    // blob graph to work out which document every sha belonged to.
+    get_obj: fn(topic, sha) {
+      case doc_store.get_obj(docs, topic, sha) {
+        Ok(data) -> Ok(data)
+        Error(Nil) ->
+          set.lookup(from: tables.objects, key: #(topic, sha))
+          |> result.replace_error(Nil)
+      }
     },
     put_ref: fn(tenant, ref, sha) {
       let _ = set.insert(into: tables.refs, key: #(tenant, ref), value: sha)
@@ -263,34 +268,6 @@ pub fn new(data_dir: String) -> store.Backend {
 
 fn open_tables(data_dir: String) -> Tables {
   Tables(
-    docs: open(
-      data_dir,
-      "floodgate_docs",
-      "docs.dets",
-      decode.string,
-      decode.bool,
-    ),
-    ops: open(
-      data_dir,
-      "floodgate_ops",
-      "ops.dets",
-      topic_sn_key(),
-      decode.string,
-    ),
-    ops_index: open_bag(
-      data_dir,
-      "floodgate_ops_index",
-      "ops_index.dets",
-      decode.string,
-      decode.int,
-    ),
-    summaries: open(
-      data_dir,
-      "floodgate_summaries",
-      "summaries.dets",
-      decode.string,
-      handle_sn_value(),
-    ),
     objects: open(
       data_dir,
       "floodgate_objects",
@@ -350,27 +327,15 @@ fn open(
   make_table_public(table)
 }
 
-/// Populate the index tables from the tables they index, when they are empty and
-/// those are not.
+/// Populate the ref index from the refs table, when it is empty and refs are
+/// not.
 ///
-/// This is the upgrade path: a DETS directory written before the indexes existed
-/// has ops and refs but no index files, and without this every pre-existing
-/// document would read back as having no history at all. It is the one-time
-/// version of exactly the scan the indexes remove from the hot path, so it is
-/// paid once at startup rather than on every reconnect. On a fresh install both
-/// sides are empty and it does nothing.
+/// This is the upgrade path: a DETS directory written before the index existed
+/// has refs but no index file, and without this every pre-existing tenant would
+/// list no refs at all. It is the one-time version of exactly the scan the index
+/// removes from the hot path, so it is paid once at startup rather than on every
+/// request. On a fresh install both sides are empty and it does nothing.
 fn backfill_indexes(tables: Tables) -> Nil {
-  case bag.size(of: tables.ops_index) {
-    Ok(0) ->
-      set.to_list(from: tables.ops)
-      |> result.unwrap([])
-      |> list.each(fn(entry) {
-        let #(#(topic, sn), _contents) = entry
-        let _ = bag.insert(into: tables.ops_index, key: topic, value: sn)
-        Nil
-      })
-    _ -> Nil
-  }
   case bag.size(of: tables.refs_index) {
     Ok(0) ->
       set.to_list(from: tables.refs)
@@ -398,22 +363,10 @@ fn open_bag(
   make_bag_public(table)
 }
 
-fn topic_sn_key() -> decode.Decoder(#(String, Int)) {
-  use topic <- decode.field(0, decode.string)
-  use sn <- decode.field(1, decode.int)
-  decode.success(#(topic, sn))
-}
-
 fn string_pair_key() -> decode.Decoder(#(String, String)) {
   use a <- decode.field(0, decode.string)
   use b <- decode.field(1, decode.string)
   decode.success(#(a, b))
-}
-
-fn handle_sn_value() -> decode.Decoder(#(String, Int)) {
-  use handle <- decode.field(0, decode.string)
-  use sn <- decode.field(1, decode.int)
-  decode.success(#(handle, sn))
 }
 
 fn tenant_value() -> decode.Decoder(#(String, String, String)) {

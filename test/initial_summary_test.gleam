@@ -57,7 +57,12 @@ pub fn persists_whole_summary_as_historian_graph_test() {
     |> json.to_string
 
   let assert Ok(Some(#(commit_sha, 7))) =
-    initial_summary.persist(storage, tenant, body, 1_700_000_000)
+    initial_summary.persist(
+      storage,
+      store.topic(tenant, document_id),
+      body,
+      1_700_000_000,
+    )
   // `persist` writes objects only. The ref pointing at this commit is published
   // by the caller once the session's summary pointer is committed, so a crash
   // can only leave it lagging rather than pointing at a summary the session
@@ -65,7 +70,8 @@ pub fn persists_whole_summary_as_historian_graph_test() {
   git.get_ref(storage, tenant, git.summary_ref(document_id))
   |> should.equal(Error(Nil))
 
-  let assert Ok(commit_body) = git.fetch(storage, tenant, commit_sha)
+  let assert Ok(commit_body) =
+    git.fetch(storage, store.topic(tenant, document_id), commit_sha)
   let assert Ok(commit_response) =
     git.commit_details_response(
       "http://localhost",
@@ -130,7 +136,12 @@ pub fn persists_fluid_summary_tree_shape_test() {
     |> json.to_string
 
   let assert Ok(Some(#(_commit_sha, 3))) =
-    initial_summary.persist(storage, tenant, body, 1_700_000_000)
+    initial_summary.persist(
+      storage,
+      store.topic(tenant, document_id),
+      body,
+      1_700_000_000,
+    )
   // `persist` writes objects only. The ref pointing at this commit is published
   // by the caller once the session's summary pointer is committed, so a crash
   // can only leave it lagging rather than pointing at a summary the session

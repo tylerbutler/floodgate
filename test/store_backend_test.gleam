@@ -1,4 +1,5 @@
 import floodgate
+import floodgate/doc_store
 import floodgate/git
 import floodgate/memory_store
 import floodgate/session
@@ -101,34 +102,167 @@ fn await_restart(
   }
 }
 
-/// Ops and refs are served through bag indexes rather than a full table scan.
-/// A DETS directory written before those indexes existed has no index files, so
-/// opening it must rebuild them — otherwise every pre-existing document would
-/// read back as having no history.
-pub fn shelf_backend_rebuilds_missing_indexes_on_open_test() {
+/// Refs are served through a bag index rather than a full table scan. A DETS
+/// directory written before that index existed has no index file, so opening it
+/// must rebuild it — otherwise every pre-existing tenant would list no refs.
+///
+/// Ops used to be indexed the same way and are covered here no longer: they
+/// live in their document's own file now, where finding one document's ops
+/// needs no index. See `floodgate/doc_store`.
+pub fn shelf_backend_rebuilds_missing_ref_index_on_open_test() {
   let dir = unique_dir()
-  let topic = "document:reindex:doc"
   let tenant = "reindex"
 
-  // Write the ops and refs tables the way a pre-index floodgate did — no index
-  // files at all — then close them so the reopen below is a genuine cold start.
+  // Write the refs table the way a pre-index floodgate did — no index file at
+  // all — then close it so the reopen below is a genuine cold start.
   ensure_dir(dir)
-  let ops = open_table(dir, "floodgate_ops", "ops.dets", topic_sn_key())
-  let assert Ok(Nil) = set.insert(into: ops, key: #(topic, 1), value: "first")
-  let assert Ok(Nil) = set.insert(into: ops, key: #(topic, 2), value: "second")
-  let assert Ok(Nil) = set.close(ops)
-
   let refs = open_table(dir, "floodgate_refs", "refs.dets", string_pair_key())
   let assert Ok(Nil) =
     set.insert(into: refs, key: #(tenant, "refs/heads/main"), value: "main-sha")
   let assert Ok(Nil) = set.close(refs)
 
   let reopened = shelf_store.new(dir)
-  store.get_ops(reopened, topic)
-  |> should.equal([#(1, "first"), #(2, "second")])
   store.list_refs(reopened, tenant)
   |> should.equal([#("refs/heads/main", "main-sha")])
 }
+
+/// Reading a document that was never written must not bring it into existence.
+///
+/// Opening a shelf table creates its DETS file, so without the read/write split
+/// in `doc_store.open` a `get_ops` — reachable from unauthenticated REST paths
+/// via `session.exists` — would create a file, make `has_document` true, and let
+/// an unauthenticated caller litter the data directory.
+pub fn shelf_backend_reads_do_not_create_documents_test() {
+  let backend = shelf_store.new(unique_dir())
+  let topic = "document:cold/tenant:never-written"
+
+  store.get_ops(backend, topic) |> should.equal([])
+  store.get_summary(backend, topic) |> should.equal(#("", 0))
+  store.get_obj(backend, topic, "some-sha") |> should.equal(Error(Nil))
+  store.has_document(backend, topic) |> should.be_false
+
+  // A write is what creates it.
+  store.put_document(backend, topic)
+  store.has_document(backend, topic) |> should.be_true
+}
+
+/// Document ids are client-supplied and unbounded. Hex-encoding the path
+/// components means traversal, separators, unicode, and length are all handled
+/// by one code path rather than a sanitising conditional.
+pub fn shelf_backend_stores_hostile_document_ids_test() {
+  let backend = shelf_store.new(unique_dir())
+  let hostile = [
+    "../../escape",
+    "with/slash",
+    "with:colon:parts",
+    "ünïcødé-🌊",
+    "",
+  ]
+
+  list.each(hostile, fn(document_id) {
+    let topic = store.topic("hostile", document_id)
+    store.put_op(backend, topic, 1, "body-" <> document_id)
+    store.get_ops(backend, topic)
+    |> should.equal([#(1, "body-" <> document_id)])
+  })
+
+  // Each landed in its own file rather than colliding into one.
+  list.each(hostile, fn(document_id) {
+    store.get_ops(backend, store.topic("hostile", document_id))
+    |> list.length
+    |> should.equal(1)
+  })
+}
+
+/// Evicting a document's table must be invisible: it is a cache drop, not a
+/// delete, because `WriteThrough` already put every write on disk.
+///
+/// Driven through the open-file cap rather than the idle timer so it is
+/// deterministic — with room for one table, opening a second evicts the first,
+/// and reading the first back has to reopen it. This is the close-then-reopen
+/// path ADR-005 recorded as untestable ("the closure interface has no
+/// `close()`"), which per-document tables finally make reachable.
+pub fn doc_store_reopens_evicted_documents_test() {
+  setenv("FLOODGATE_MAX_OPEN_DOCUMENTS", "1")
+  let docs = doc_store.started(unique_dir())
+  setenv("FLOODGATE_MAX_OPEN_DOCUMENTS", "")
+
+  let first = store.topic("evict", "first")
+  let second = store.topic("evict", "second")
+
+  doc_store.put_op(docs, first, 1, "first-body")
+  doc_store.put_summary(docs, first, "first-summary", 1)
+  doc_store.put_obj(docs, first, "first-sha", "first-object")
+  doc_store.open_count(docs) |> should.equal(1)
+
+  // Opening the second document is what pushes the first out.
+  doc_store.put_op(docs, second, 1, "second-body")
+  doc_store.open_count(docs) |> should.equal(1)
+
+  // So this can only be answered by reopening the closed file.
+  doc_store.get_ops(docs, first) |> should.equal([#(1, "first-body")])
+  doc_store.get_summary(docs, first) |> should.equal(#("first-summary", 1))
+  doc_store.get_obj(docs, first, "first-sha")
+  |> should.equal(Ok("first-object"))
+  doc_store.exists(docs, first) |> should.be_true
+
+  // And it went both ways — the second survived being evicted in turn.
+  doc_store.get_ops(docs, second) |> should.equal([#(1, "second-body")])
+}
+
+/// A document survives the process that wrote it.
+///
+/// Simulates a restart honestly: the idle sweep closes every file first, so the
+/// second store opens the same directory cold and can only answer from DETS.
+/// This is the cross-restart durability ADR-005 listed as untestable.
+pub fn doc_store_reads_back_documents_after_a_restart_test() {
+  let dir = unique_dir()
+  setenv("FLOODGATE_DOC_IDLE_MS", "100")
+  let before = doc_store.started(dir)
+  setenv("FLOODGATE_DOC_IDLE_MS", "")
+
+  let topic = store.topic("restart", "doc")
+  doc_store.put_marker(before, topic)
+  doc_store.put_op(before, topic, 1, "survives")
+  doc_store.put_summary(before, topic, "summary-sha", 1)
+  doc_store.put_obj(before, topic, "obj-sha", "object-body")
+
+  // Let the sweep close the file, so nothing is left open for the next store.
+  process.sleep(300)
+  doc_store.open_count(before) |> should.equal(0)
+
+  let after = doc_store.started(dir)
+  doc_store.exists(after, topic) |> should.be_true
+  doc_store.get_ops(after, topic) |> should.equal([#(1, "survives")])
+  doc_store.get_summary(after, topic) |> should.equal(#("summary-sha", 1))
+  doc_store.get_obj(after, topic, "obj-sha") |> should.equal(Ok("object-body"))
+
+  // And a document that was never written is still absent.
+  doc_store.exists(after, store.topic("restart", "other")) |> should.be_false
+}
+
+/// The idle sweep closes tables nobody has touched. Same guarantee as above,
+/// reached through the timer rather than the cap.
+pub fn doc_store_evicts_idle_documents_test() {
+  setenv("FLOODGATE_DOC_IDLE_MS", "100")
+  let docs = doc_store.started(unique_dir())
+  setenv("FLOODGATE_DOC_IDLE_MS", "")
+
+  let topic = store.topic("idle", "doc")
+  doc_store.put_op(docs, topic, 1, "body")
+  doc_store.open_count(docs) |> should.equal(1)
+
+  // Two full windows: the sweep runs at half the window, so one window is not
+  // enough to guarantee it has fired.
+  process.sleep(300)
+  doc_store.open_count(docs) |> should.equal(0)
+
+  doc_store.get_ops(docs, topic) |> should.equal([#(1, "body")])
+  doc_store.open_count(docs) |> should.equal(1)
+}
+
+@external(erlang, "floodgate_ffi", "setenv")
+fn setenv(name: String, value: String) -> Nil
 
 fn open_table(
   dir: String,
@@ -142,12 +276,6 @@ fn open_table(
   let assert Ok(table) =
     set.open_config(config: config, key: key, value: decode.string)
   table
-}
-
-fn topic_sn_key() -> decode.Decoder(#(String, Int)) {
-  use topic <- decode.field(0, decode.string)
-  use sn <- decode.field(1, decode.int)
-  decode.success(#(topic, sn))
 }
 
 fn string_pair_key() -> decode.Decoder(#(String, String)) {
@@ -201,10 +329,14 @@ fn assert_backend_contract(
   store.put_summary(backend, topic, "summary-sha", 2)
   store.get_summary(backend, topic) |> should.equal(#("summary-sha", 2))
 
-  store.get_obj(backend, tenant, "missing") |> should.equal(Error(Nil))
-  store.put_obj(backend, tenant, "object-sha", "object-body")
-  store.get_obj(backend, tenant, "object-sha")
+  // Objects are keyed by topic, not tenant, so they land in the document's own
+  // storage and another document in the same tenant cannot see them.
+  store.get_obj(backend, topic, "missing") |> should.equal(Error(Nil))
+  store.put_obj(backend, topic, "object-sha", "object-body")
+  store.get_obj(backend, topic, "object-sha")
   |> should.equal(Ok("object-body"))
+  store.get_obj(backend, topic <> "-other", "object-sha")
+  |> should.equal(Error(Nil))
 
   store.create_ref(backend, tenant, "refs/heads/z", "z-sha")
   |> should.be_true
@@ -284,12 +416,13 @@ fn observe_runtime_contract(backend: store.Backend) -> RuntimeObservation {
     |> json.to_string
 
   let blob_body = "{\"content\":\"d2lyZQ==\",\"encoding\":\"base64\"}"
-  let assert Ok(blob_sha) = git.create(backend, tenant, "blobs", blob_body)
+  let assert Ok(blob_sha) = git.create(backend, topic, "blobs", blob_body)
   let assert Ok(blob_json) =
     git.object_response(
       backend,
       "http://floodgate.test",
       tenant,
+      topic,
       "blobs",
       blob_sha,
       blob_body,

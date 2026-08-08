@@ -89,7 +89,7 @@ pub fn backend_from_name(
   name: String,
 ) -> Result(store.Backend, StorageBackendError) {
   case name {
-    "ets" | "shelf" -> Ok(shelf_store.new(storage_data_dir()))
+    "ets" | "shelf" -> Ok(shelf_store.supervised(storage_data_dir()))
     "memory" -> Ok(memory_store.supervised())
     unsupported -> Error(UnsupportedStorageBackend(unsupported))
   }
@@ -147,7 +147,7 @@ pub fn start(
   start_with_backend(
     configured_tenant,
     jwt_secret,
-    shelf_store.new(storage_data_dir()),
+    shelf_store.supervised(storage_data_dir()),
   )
 }
 
@@ -263,7 +263,7 @@ fn phoenix_transport_config() -> beryl_mist.TransportConfig(Nil) {
 }
 
 pub fn serve(port: Int) -> Result(Nil, Nil) {
-  serve_with_backend(port, shelf_store.new(storage_data_dir()))
+  serve_with_backend(port, shelf_store.supervised(storage_data_dir()))
 }
 
 /// Serve the complete REST and socket surface with the supplied backend.
@@ -510,9 +510,13 @@ fn rest(
     -> {
       case authorize_storage_write(req, config, tenant) {
         Error(e) -> auth_error_response(e)
-        Ok(_) -> {
+        // The Historian routes are tenant-scoped, but objects are stored per
+        // document — the document comes from the token the caller already had
+        // to present. See `git.create`.
+        Ok(claims) -> {
+          let document_topic = topic(tenant, claims.document_id)
           let body = read_body(req)
-          case git.create(storage, tenant, kind, body) {
+          case git.create(storage, document_topic, kind, body) {
             Error(_) -> bad_request()
             // Levee's GitController returns `{sha, url}` for a created blob but
             // the *whole* object for a created tree or commit — same shape its
@@ -539,7 +543,7 @@ fn rest(
                   |> json.to_string
                   |> json_response(201)
                 _ ->
-                  case git.fetch(storage, tenant, sha) {
+                  case git.fetch(storage, document_topic, sha) {
                     Error(_) -> bad_request()
                     Ok(data) ->
                       case
@@ -547,6 +551,7 @@ fn rest(
                           storage,
                           public_url,
                           tenant,
+                          document_topic,
                           kind,
                           sha,
                           data,
@@ -566,32 +571,40 @@ fn rest(
     http.Get, ["repos", tenant, "git", kind, sha]
       if kind == "blobs" || kind == "trees" || kind == "commits"
     -> {
-      case
-        authorize_storage_read(req, config, tenant),
-        git.fetch(storage, tenant, sha)
-      {
-        Error(e), _ -> auth_error_response(e)
-        _, Error(_) -> not_found()
-        Ok(_), Ok(data) -> {
-          let query =
-            uri.parse_query(req.query |> option_unwrap) |> result_unwrap_list
-          let recursive = case list.key_find(query, "recursive") {
-            Ok("1") -> True
-            _ -> False
-          }
-          case
-            git.object_response(
-              storage,
-              public_url,
-              tenant,
-              kind,
-              sha,
-              data,
-              recursive,
-            )
-          {
-            Ok(object) -> object |> json.to_string |> json_response(200)
-            Error(_) -> bad_request()
+      // Authorize *before* touching storage. The fetch used to be evaluated as
+      // part of the case subject, so an unauthenticated request still did the
+      // read; now the document is only opened once the caller has proved which
+      // document its token is for.
+      case authorize_storage_read(req, config, tenant) {
+        Error(e) -> auth_error_response(e)
+        Ok(claims) -> {
+          let document_topic = topic(tenant, claims.document_id)
+          case git.fetch(storage, document_topic, sha) {
+            Error(_) -> not_found()
+            Ok(data) -> {
+              let query =
+                uri.parse_query(req.query |> option_unwrap)
+                |> result_unwrap_list
+              let recursive = case list.key_find(query, "recursive") {
+                Ok("1") -> True
+                _ -> False
+              }
+              case
+                git.object_response(
+                  storage,
+                  public_url,
+                  tenant,
+                  document_topic,
+                  kind,
+                  sha,
+                  data,
+                  recursive,
+                )
+              {
+                Ok(object) -> object |> json.to_string |> json_response(200)
+                Error(_) -> bad_request()
+              }
+            }
           }
         }
       }
@@ -804,7 +817,7 @@ fn commits_response(
 ) {
   case authorize_storage_read(req, config, tenant) {
     Error(e) -> auth_error_response(e)
-    Ok(_) -> {
+    Ok(claims) -> {
       let query =
         uri.parse_query(req.query |> option_unwrap) |> result_unwrap_list
       let count = case list.key_find(query, "count") {
@@ -824,7 +837,16 @@ fn commits_response(
             Ok(ref_sha) -> ref_sha
             Error(_) -> requested
           }
-          git.commit_history_response(storage, public_url, tenant, sha, count)
+          // The ref lookup above stays tenant-scoped — refs are shared — but
+          // the commit objects it points at live in the token's document.
+          git.commit_history_response(
+            storage,
+            public_url,
+            tenant,
+            topic(tenant, claims.document_id),
+            sha,
+            count,
+          )
           |> json.preprocessed_array
           |> json.to_string
           |> json_response(200)
@@ -977,7 +999,7 @@ fn create_document(
     session.create_initialized(sess, document_topic, fn() {
       initial_summary.persist(
         session.storage(sess),
-        tenant,
+        document_topic,
         body,
         now_seconds(),
       )
@@ -1675,7 +1697,7 @@ fn generate_document_id() -> String {
 }
 
 fn topic(tenant: String, doc: String) -> String {
-  "document:" <> tenant <> ":" <> doc
+  store.topic(tenant, doc)
 }
 
 @external(erlang, "floodgate_ffi", "now_seconds")
@@ -1764,7 +1786,7 @@ fn result_unwrap_list(
   }
 }
 
-pub const topic_prefix = "document:"
+pub const topic_prefix = store.topic_prefix
 
 /// Default listen port when neither `PORT` nor `FLOODGATE_PORT` is set.
 pub const default_port = 3000

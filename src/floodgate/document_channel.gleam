@@ -929,33 +929,32 @@ fn persist_summary(
   topic: String,
   contents: SummarizeContents,
 ) -> Result(String, String) {
-  case topic_ids(topic) {
-    Error(reason) -> Error(reason)
-    Ok(#(tenant, _document_id)) ->
-      case git.fetch(storage, tenant, contents.handle) {
-        Error(_) -> Error("Summary tree does not exist")
-        Ok(_) -> {
-          let author =
-            json.object([
-              #("name", json.string("Floodgate")),
-              #("email", json.string("server@floodgate.local")),
-              #("date", json.string(int.to_string(now_seconds()))),
-            ])
-          let commit =
-            json.object([
-              #("tree", json.string(contents.handle)),
-              #("parents", json.array(contents.parents, json.string)),
-              #("message", json.string(contents.message)),
-              #("author", author),
-              #("committer", author),
-            ])
-            |> json.to_string
-          // The commit is content-addressed, so an orphan left by a crash is
-          // garbage rather than a wrong answer.
-          git.create(storage, tenant, "commits", commit)
-          |> result.replace_error("Could not store summary commit")
-        }
-      }
+  // Objects are keyed by topic, so the tenant/document split `topic_ids` used to
+  // do here is no longer needed: a malformed topic simply misses, which is the
+  // same "tree does not exist" answer it produced before.
+  case git.fetch(storage, topic, contents.handle) {
+    Error(_) -> Error("Summary tree does not exist")
+    Ok(_) -> {
+      let author =
+        json.object([
+          #("name", json.string("Floodgate")),
+          #("email", json.string("server@floodgate.local")),
+          #("date", json.string(int.to_string(now_seconds()))),
+        ])
+      let commit =
+        json.object([
+          #("tree", json.string(contents.handle)),
+          #("parents", json.array(contents.parents, json.string)),
+          #("message", json.string(contents.message)),
+          #("author", author),
+          #("committer", author),
+        ])
+        |> json.to_string
+      // The commit is content-addressed, so an orphan left by a crash is
+      // garbage rather than a wrong answer.
+      git.create(storage, topic, "commits", commit)
+      |> result.replace_error("Could not store summary commit")
+    }
   }
 }
 

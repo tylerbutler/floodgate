@@ -75,7 +75,7 @@ fn owner_subject(s: Session) -> Subject(OwnerMsg) {
   process.named_subject(s.name)
 }
 
-fn registry(s: Session) -> doc_registry.Registry(Msg) {
+fn registry(s: Session) -> doc_registry.Registry(Subject(Msg)) {
   doc_registry.from_name(s.name)
 }
 
@@ -173,7 +173,7 @@ pub opaque type OwnerMsg {
 /// What a document actor needs to run: its topic, the shared storage backend,
 /// the registry it must remove itself from on shutdown, and the idle window.
 type DocArgument =
-  #(String, store.Backend, doc_registry.Registry(Msg), Int)
+  #(String, store.Backend, doc_registry.Registry(Subject(Msg)), Int)
 
 type DocFactory =
   process.Name(factory_supervisor.Message(DocArgument, Subject(Msg)))
@@ -717,7 +717,7 @@ pub fn cached_documents(s: Session) -> Int {
 
 type OwnerState {
   OwnerState(
-    registry: doc_registry.Registry(Msg),
+    registry: doc_registry.Registry(Subject(Msg)),
     storage: store.Backend,
     factory: DocFactory,
     idle_ms: Int,
@@ -860,7 +860,7 @@ fn cache(state: DocState, d: Doc) -> actor.Next(DocState, Msg) {
 fn handle(
   topic: String,
   storage: store.Backend,
-  registry: doc_registry.Registry(Msg),
+  registry: doc_registry.Registry(Subject(Msg)),
   idle_ms: Int,
   st: DocState,
   m: Msg,

@@ -43,12 +43,14 @@ fn json_encode(value: Dynamic) -> String
 /// summary.
 ///
 /// Objects only. `refs/heads/<document_id>` is published by the caller once the
-/// session has committed the summary pointer — hence no document id here — so a
-/// crash can only leave the ref lagging, never leading. See
-/// `git.publish_summary_ref`.
+/// session has committed the summary pointer, so a crash can only leave the ref
+/// lagging, never leading. See `git.publish_summary_ref`.
+///
+/// Scoped by `topic` rather than tenant because objects belong to a document —
+/// see `git.create`. Nothing in here needs the tenant on its own.
 pub fn persist(
   storage: store.Backend,
-  tenant: String,
+  topic: String,
   body: String,
   timestamp: Int,
 ) -> Result(Option(#(String, Int)), Nil) {
@@ -64,7 +66,7 @@ pub fn persist(
         Some(SummaryTree(entries)) -> {
           use tree_sha <- result.try(persist_root_tree(
             storage,
-            tenant,
+            topic,
             entries,
             payload,
           ))
@@ -85,7 +87,7 @@ pub fn persist(
             |> json.to_string
           use commit_sha <- result.try(git.create(
             storage,
-            tenant,
+            topic,
             "commits",
             commit,
           ))
@@ -109,37 +111,37 @@ pub fn persist(
 ///     the root tree and the summary's own `.protocol` is stored beside them.
 fn persist_root_tree(
   storage: store.Backend,
-  tenant: String,
+  topic: String,
   entries: List(SummaryEntry),
   payload: CreatePayload,
 ) -> Result(String, Nil) {
   case find_entry(entries, ".app") {
     Some(SummaryTree(app_entries)) -> {
       use app_tree_entries <- result.try(
-        list.try_map(app_entries, persist_entry(storage, tenant, _)),
+        list.try_map(app_entries, persist_entry(storage, topic, _)),
       )
       use protocol_entries <- result.try(case find_entry(entries, ".protocol") {
         Some(SummaryTree(_) as protocol) -> {
-          use sha <- result.try(persist_value(storage, tenant, protocol))
+          use sha <- result.try(persist_value(storage, topic, protocol))
           Ok([tree_entry(".protocol", "tree", sha)])
         }
         _ -> Ok([])
       })
       persist_tree_entries(
         storage,
-        tenant,
+        topic,
         list.append(app_tree_entries, protocol_entries),
       )
     }
     _ -> {
-      use app_tree_sha <- result.try(persist_tree(storage, tenant, entries))
+      use app_tree_sha <- result.try(persist_tree(storage, topic, entries))
       use protocol_tree_sha <- result.try(persist_protocol(
         storage,
-        tenant,
+        topic,
         payload.sequence_number,
         payload.values,
       ))
-      persist_tree_entries(storage, tenant, [
+      persist_tree_entries(storage, topic, [
         tree_entry(".app", "tree", app_tree_sha),
         tree_entry(".protocol", "tree", protocol_tree_sha),
       ])
@@ -159,18 +161,18 @@ fn find_entry(
 
 fn persist_tree(
   storage: store.Backend,
-  tenant: String,
+  topic: String,
   entries: List(SummaryEntry),
 ) -> Result(String, Nil) {
   use stored_entries <- result.try(
-    list.try_map(entries, persist_entry(storage, tenant, _)),
+    list.try_map(entries, persist_entry(storage, topic, _)),
   )
-  persist_tree_entries(storage, tenant, stored_entries)
+  persist_tree_entries(storage, topic, stored_entries)
 }
 
 fn persist_protocol(
   storage: store.Backend,
-  tenant: String,
+  topic: String,
   sequence_number: Int,
   values: Dynamic,
 ) -> Result(String, Nil) {
@@ -182,25 +184,25 @@ fn persist_protocol(
     |> json.to_string
   use attributes_sha <- result.try(persist_value(
     storage,
-    tenant,
+    topic,
     SummaryBlob(attributes, "utf-8"),
   ))
   use quorum_values_sha <- result.try(persist_value(
     storage,
-    tenant,
+    topic,
     SummaryBlob(json_encode(values), "utf-8"),
   ))
   use quorum_members_sha <- result.try(persist_value(
     storage,
-    tenant,
+    topic,
     SummaryBlob("[]", "utf-8"),
   ))
   use quorum_proposals_sha <- result.try(persist_value(
     storage,
-    tenant,
+    topic,
     SummaryBlob("[]", "utf-8"),
   ))
-  persist_tree_entries(storage, tenant, [
+  persist_tree_entries(storage, topic, [
     tree_entry("attributes", "blob", attributes_sha),
     tree_entry("quorumMembers", "blob", quorum_members_sha),
     tree_entry("quorumProposals", "blob", quorum_proposals_sha),
@@ -210,12 +212,12 @@ fn persist_protocol(
 
 fn persist_tree_entries(
   storage: store.Backend,
-  tenant: String,
+  topic: String,
   stored_entries: List(json.Json),
 ) -> Result(String, Nil) {
   json.object([#("tree", json.preprocessed_array(stored_entries))])
   |> json.to_string
-  |> git.create(storage, tenant, "trees", _)
+  |> git.create(storage, topic, "trees", _)
 }
 
 fn tree_entry(path: String, kind: String, sha: String) -> json.Json {
@@ -230,13 +232,13 @@ fn tree_entry(path: String, kind: String, sha: String) -> json.Json {
 
 fn persist_entry(
   storage: store.Backend,
-  tenant: String,
+  topic: String,
   entry: SummaryEntry,
 ) -> Result(json.Json, Nil) {
   use sha <- result.try(case entry.value, entry.id {
-    Some(value), None -> persist_value(storage, tenant, value)
+    Some(value), None -> persist_value(storage, topic, value)
     None, Some(id) -> {
-      use _ <- result.try(git.fetch(storage, tenant, id))
+      use _ <- result.try(git.fetch(storage, topic, id))
       Ok(id)
     }
     _, _ -> Error(Nil)
@@ -254,18 +256,18 @@ fn persist_entry(
 
 fn persist_value(
   storage: store.Backend,
-  tenant: String,
+  topic: String,
   value: SummaryValue,
 ) -> Result(String, Nil) {
   case value {
-    SummaryTree(entries) -> persist_tree(storage, tenant, entries)
+    SummaryTree(entries) -> persist_tree(storage, topic, entries)
     SummaryBlob(content, encoding) ->
       json.object([
         #("content", json.string(content)),
         #("encoding", json.string(encoding)),
       ])
       |> json.to_string
-      |> git.create(storage, tenant, "blobs", _)
+      |> git.create(storage, topic, "blobs", _)
   }
 }
 

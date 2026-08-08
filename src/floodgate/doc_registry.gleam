@@ -22,13 +22,17 @@
 ////   writer for its own key, and the owner's monitor is an idempotent backstop
 ////   that re-checks the stored subject before deleting.
 ////
-//// Generic in the stored message type so `floodgate/doc_actor` can delete its
-//// own row without this module having to name it — that would be a cycle.
+//// Generic in the stored value so a document actor can delete its own row
+//// without this module having to name its message type — that would be a cycle
+//// — and so `floodgate/doc_store` can reuse the same table for `topic → open
+//// shelf table`, which has the identical shape: resolved in the calling
+//// process, written only by one supervised owner, and gone when that owner
+//// dies.
 
 import gleam/erlang/atom.{type Atom}
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process
 
-pub opaque type Registry(msg) {
+pub opaque type Registry(value) {
   Registry(table: Atom)
 }
 
@@ -38,41 +42,39 @@ pub opaque type Registry(msg) {
 /// `process.new_name`, so the table name costs nothing new, stays the same
 /// across an owner restart, and differs between independently started sessions
 /// — which the test suite relies on, since it starts many on one node.
-pub fn from_name(name: process.Name(owner_msg)) -> Registry(msg) {
+pub fn from_name(name: process.Name(owner_msg)) -> Registry(value) {
   Registry(table_name(name))
 }
 
 /// Create the table if it is not already there. Called by the owner as it
 /// starts; idempotent so an owner restart can recreate it.
-pub fn open(registry: Registry(msg)) -> Nil {
+///
+/// An owner that died took the table with it, so the recreated table is empty —
+/// which is what makes stored values safe to cache here even when they are only
+/// valid for the owner's lifetime, as `doc_store`'s ETS table handles are.
+pub fn open(registry: Registry(value)) -> Nil {
   new(registry.table)
 }
 
-pub fn insert(
-  registry: Registry(msg),
-  topic: String,
-  subject: Subject(msg),
-) -> Nil {
-  do_insert(registry.table, topic, subject)
+pub fn insert(registry: Registry(value), topic: String, value: value) -> Nil {
+  do_insert(registry.table, topic, value)
 }
 
-/// Resolve a document actor. A miss means "no actor", not "no document" — the
-/// document may be entirely cold, in which case callers that only read answer
-/// from storage instead of starting one.
-pub fn lookup(
-  registry: Registry(msg),
-  topic: String,
-) -> Result(Subject(msg), Nil) {
+/// Resolve a document's stored value. A miss means "nothing registered", not
+/// "no document" — the document may be entirely cold, in which case callers
+/// that only read answer from storage instead of starting an actor, and
+/// `doc_store` opens the file.
+pub fn lookup(registry: Registry(value), topic: String) -> Result(value, Nil) {
   do_lookup(registry.table, topic)
 }
 
-pub fn delete(registry: Registry(msg), topic: String) -> Nil {
+pub fn delete(registry: Registry(value), topic: String) -> Nil {
   do_delete(registry.table, topic)
 }
 
-/// How many documents currently have an actor. Read straight from ETS, so this
+/// How many documents currently have a row. Read straight from ETS, so this
 /// costs no process call.
-pub fn size(registry: Registry(msg)) -> Int {
+pub fn size(registry: Registry(value)) -> Int {
   do_size(registry.table)
 }
 
@@ -83,10 +85,10 @@ fn table_name(name: process.Name(owner_msg)) -> Atom
 fn new(table: Atom) -> Nil
 
 @external(erlang, "floodgate_registry_ffi", "insert")
-fn do_insert(table: Atom, topic: String, subject: Subject(msg)) -> Nil
+fn do_insert(table: Atom, topic: String, value: value) -> Nil
 
 @external(erlang, "floodgate_registry_ffi", "lookup")
-fn do_lookup(table: Atom, topic: String) -> Result(Subject(msg), Nil)
+fn do_lookup(table: Atom, topic: String) -> Result(value, Nil)
 
 @external(erlang, "floodgate_registry_ffi", "delete")
 fn do_delete(table: Atom, topic: String) -> Nil

@@ -606,6 +606,7 @@ describe.runIf(floodgateAvailable && !isLeveeProxyTarget)(
 				FLOODGATE_TENANT_ID,
 				"summary content",
 				"Summary fixture",
+				documentId,
 			);
 			const service =
 				await createFloodgateServiceFactory().createDocumentService(
@@ -648,11 +649,15 @@ describe.runIf(floodgateAvailable && !isLeveeProxyTarget)(
 				});
 				expect(ackHandle).not.toBe(graph.treeSha);
 
+				// The server wrote this commit under the document being summarized, so
+				// reading it needs that document's token — as the official driver's
+				// storage service always has.
 				const commitResponse = await floodgateFetch(
 					FLOODGATE_REST_ENDPOINTS.gitCommit(
 						FLOODGATE_TENANT_ID,
 						ackHandle ?? "",
 					),
+					{ documentId },
 				);
 				expect(commitResponse.status).toBe(200);
 				const commit = await commitResponse.json();
@@ -707,6 +712,7 @@ describe.runIf(floodgateAvailable && !isLeveeProxyTarget)(
 				FLOODGATE_TENANT_ID,
 				"summary context",
 				"Summary context fixture",
+				documentId,
 			);
 			const service =
 				await createFloodgateServiceFactory().createDocumentService(
@@ -1197,6 +1203,7 @@ describe.runIf(floodgateAvailable)(
 					FLOODGATE_TENANT_ID,
 					content,
 					"Floodgate official storage load",
+					documentId,
 				);
 				const commitResponse = await floodgateFetch(
 					FLOODGATE_REST_ENDPOINTS.gitCreateCommit(FLOODGATE_TENANT_ID),
@@ -1212,6 +1219,7 @@ describe.runIf(floodgateAvailable)(
 								date: new Date().toISOString(),
 							},
 						},
+						documentId,
 						scopes: ["doc:read", "summary:write"],
 					},
 				);

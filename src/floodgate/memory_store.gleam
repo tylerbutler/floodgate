@@ -17,6 +17,8 @@ type State {
     documents: Dict(String, Bool),
     ops: Dict(#(String, Int), String),
     summaries: Dict(String, #(String, Int)),
+    /// `#(topic, sha) → body`. Keyed by document topic, not tenant — objects
+    /// belong to a document. See `store.Backend.put_obj`.
     objects: Dict(#(String, String), String),
     refs: Dict(#(String, String), String),
     /// `tenant id → #(name, secret1, secret2)`, mirroring `shelf_store`'s
@@ -148,11 +150,11 @@ fn backend(
     get_summary: fn(topic) {
       process.call(subject(), 1000, GetSummary(topic, _))
     },
-    put_obj: fn(tenant, sha, data) {
-      process.call(subject(), 1000, PutObject(tenant, sha, data, _))
+    put_obj: fn(topic, sha, data) {
+      process.call(subject(), 1000, PutObject(topic, sha, data, _))
     },
-    get_obj: fn(tenant, sha) {
-      process.call(subject(), 1000, GetObject(tenant, sha, _))
+    get_obj: fn(topic, sha) {
+      process.call(subject(), 1000, GetObject(topic, sha, _))
     },
     put_ref: fn(tenant, ref, sha) {
       process.call(subject(), 1000, PutRef(tenant, ref, sha, _))
@@ -249,17 +251,14 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
       )
       actor.continue(state)
     }
-    PutObject(tenant, sha, data, reply) -> {
+    PutObject(topic, sha, data, reply) -> {
       process.send(reply, Nil)
       actor.continue(
-        State(
-          ..state,
-          objects: dict.insert(state.objects, #(tenant, sha), data),
-        ),
+        State(..state, objects: dict.insert(state.objects, #(topic, sha), data)),
       )
     }
-    GetObject(tenant, sha, reply) -> {
-      process.send(reply, dict.get(state.objects, #(tenant, sha)))
+    GetObject(topic, sha, reply) -> {
+      process.send(reply, dict.get(state.objects, #(topic, sha)))
       actor.continue(state)
     }
     PutRef(tenant, ref, sha, reply) -> {

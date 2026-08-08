@@ -53,8 +53,9 @@ docker compose down -v
 | `FLOODGATE_TOKEN_MINT_USER_ID` | `floodgate-token-mint` | User id in minted tokens |
 | `FLOODGATE_TOKEN_MINT_USER_NAME` | `Floodgate Token Mint` | User name in minted tokens |
 | `FLOODGATE_STORAGE_BACKEND` | `shelf` | `shelf`/`ets` (persistent DETS) or `memory` — also selects where tenants persist |
-| `FLOODGATE_DATA_DIR` | `priv/floodgate_data` | Shelf DETS directory |
-| `FLOODGATE_DOC_IDLE_MS` | `300000` (5 min) | Drop a document from memory once it has no connected client and has gone this long untouched. It is only a cache: sequence state and summary are rebuilt from storage on the next touch. `0` disables eviction. |
+| `FLOODGATE_DATA_DIR` | `priv/floodgate_data` | Shelf DETS directory. One file per document under `documents/t<hex tenant>/d<hex document id>.dets`, plus shared files for refs, tenants, and admin data |
+| `FLOODGATE_DOC_IDLE_MS` | `300000` (5 min) | Drop a document from memory once it has no connected client and has gone this long untouched — **both** its sequence state and its open DETS file. Only ever a cache drop: writes are already on disk, and everything is rebuilt from storage on the next touch. `0` disables eviction. |
+| `FLOODGATE_MAX_OPEN_DOCUMENTS` | `1024` | Document files open at once. At the cap, the least recently used is closed to make room, so a burst of opens cannot exhaust file descriptors before the idle sweep runs. `0` disables the cap. |
 | `FLOODGATE_PUBLIC_URL` | `http://localhost:<port>` | Externally reachable base URL |
 | `FLOODGATE_ALLOWED_ORIGINS` | *(same-origin)* | Comma-separated allow-list, or `*` |
 
