@@ -320,6 +320,46 @@ pub fn untargeted_signal_still_reaches_every_peer_test() {
   to_second |> string.contains("hello") |> should.be_true
 }
 
+pub fn recovered_membership_is_broadcast_before_the_new_join_test() {
+  let doc = "phx-membership-recovery"
+  let topic = store.topic(tenant, doc)
+  let token = token_for(doc, ["doc:read", "doc:write"])
+  let assert Ok(#(channels, sess)) =
+    floodgate.start_with_backend(tenant, secret, memory_store.new())
+
+  let old = attach(channels, "s-old")
+  let fresh = attach(channels, "s-fresh")
+  connect(channels, doc, token, "s-old")
+  drain(old)
+  drain(fresh)
+
+  let assert Ok(pid) = session.document_owner(sess, topic)
+  process.kill(pid)
+
+  route(channels, "s-fresh", phoenix_join(doc, token))
+  let assert Ok(_join_reply) = process.receive(fresh, 1000)
+  route(
+    channels,
+    "s-fresh",
+    phoenix_event(doc, "connect_document", connect_payload(doc, token, "write")),
+  )
+
+  let assert Ok(recovery) = process.receive(old, 1000)
+  recovery |> string.contains("leave") |> should.be_true
+  recovery |> string.contains("s-old") |> should.be_true
+
+  let assert Ok(new_join) = process.receive(old, 1000)
+  new_join |> string.contains("join") |> should.be_true
+  new_join |> string.contains("s-fresh") |> should.be_true
+
+  let assert Ok(connected) = process.receive(fresh, 1000)
+  connected |> string.contains("connect_document_success") |> should.be_true
+  connected |> string.contains("leave") |> should.be_true
+  // `broadcast_from` excludes the fresh socket because the same operations are
+  // already in its atomic connect snapshot.
+  process.receive(fresh, 200) |> should.equal(Error(Nil))
+}
+
 /// Attach a frame-capturing socket to an existing runtime, so several clients
 /// can share one coordinator and one document.
 fn attach(
@@ -372,7 +412,7 @@ fn drain(sent: process.Subject(String)) -> Nil {
 pub fn noop_advances_minimum_sequence_number_test() {
   let topic = "document:fluid:noop-msn"
   let sess = session.start_with_backend(memory_store.new())
-  let assert session.Connected(_, _, _, _, _, _, Some(_)) =
+  let assert session.Connected(_, _, _, _, _, _, [], Some(_)) =
     session.connect(sess, topic, "c1", "write", "{}", "{}", 0)
 
   let assert session.MessageAssigned(_, msn_before, _) =

@@ -11,7 +11,10 @@
 import floodgate/git
 import floodgate/store
 import gleam/dict.{type Dict}
+import gleam/dynamic/decode
+import gleam/json
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/string
 import spillway/sequencing
 import spillway/session_logic
@@ -59,12 +62,64 @@ pub fn initial_messages(history: List(#(Int, String))) -> List(#(Int, String)) {
   list.reverse(history)
 }
 
+/// Write clients whose durable join has no later durable leave.
+///
+/// This must scan the complete op stream rather than `Doc.history`, which is
+/// deliberately capped. Application ops are ignored; only Floodgate-authored
+/// membership messages affect the active set.
+pub fn unmatched_clients(ops: List(#(Int, String))) -> List(String) {
+  list.fold(ops, dict.new(), fn(active, op) {
+    case membership_change(op.1) {
+      Some(#(True, client_id)) -> dict.insert(active, client_id, Nil)
+      Some(#(False, client_id)) -> dict.delete(active, client_id)
+      None -> active
+    }
+  })
+  |> dict.keys
+  |> list.sort(string.compare)
+}
+
+fn membership_change(message: String) -> Option(#(Bool, String)) {
+  case
+    json.parse(message, decode.field("type", decode.string, decode.success))
+  {
+    Ok("join") ->
+      case
+        json.parse(message, decode.field("data", decode.string, decode.success))
+      {
+        Ok(data) ->
+          case
+            json.parse(
+              data,
+              decode.field("clientId", decode.string, decode.success),
+            )
+          {
+            Ok(client_id) -> Some(#(True, client_id))
+            Error(_) -> None
+          }
+        Error(_) -> None
+      }
+    Ok("leave") ->
+      case
+        json.parse(message, decode.field("data", decode.string, decode.success))
+      {
+        Ok(data) ->
+          case json.parse(data, decode.string) {
+            Ok(client_id) -> Some(#(False, client_id))
+            Error(_) -> None
+          }
+        Error(_) -> None
+      }
+    _ -> None
+  }
+}
+
 /// Rebuild a document's durable state from storage.
 ///
 /// This is a pure function of `storage` and `topic` — nothing about the calling
 /// process or any prior in-memory state feeds into it — which is what makes the
-/// per-document actors disposable: losing one costs the roster and each client's
-/// `client_states`, never the sequence numbering.
+/// per-document actors disposable. `session` closes unmatched durable joins on
+/// the first connection after a cold start; sequence numbering never regresses.
 pub fn rehydrate(storage: store.Backend, topic: String) -> Doc {
   // Rebuild durable state from ETS so a restarted server keeps numbering
   // after the last persisted op and serves the latest summary.

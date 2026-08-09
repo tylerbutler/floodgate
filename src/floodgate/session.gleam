@@ -8,7 +8,8 @@
 //// initial-summary build inside the mailbox, hence its 10 s timeout — stalled
 //// every other document) and a single crash domain (one crash discarded
 //// `client_states` for every document at once, nacking every connected client
-//// until it rejoined). Now a crash costs one document's roster.
+//// until it rejoined). Now a crash only resets one document's live client
+//// states; the first later connection closes any unmatched durable joins.
 ////
 //// Three collaborators, all private to this module's public API:
 ////
@@ -206,6 +207,7 @@ pub type ConnectionResult {
     summary_handle: String,
     summary_sequence_number: Int,
     current_sequence_number: Int,
+    recovery: List(#(Int, String)),
     membership: Option(#(Int, String)),
   )
 }
@@ -235,7 +237,9 @@ pub type SubmitSummaryMessagesResult {
 /// dict — including for the `existing` flag, which must distinguish "we have
 /// this in memory" from "storage has it".
 type DocState {
-  DocState(self: Subject(Msg), doc: Option(Doc))
+  /// Replaying the full durable log is needed only before the first connection
+  /// handled by this actor. Other messages may populate `doc` first.
+  DocState(self: Subject(Msg), doc: Option(Doc), membership_reconciled: Bool)
 }
 
 /// Allocate a fresh name for a session's registry owner.
@@ -814,7 +818,7 @@ fn start_document(
   let #(topic, storage, registry, idle_ms) = argument
   actor.new_with_initialiser(1000, fn(self) {
     schedule_sweep(self, idle_ms)
-    actor.initialised(DocState(self:, doc: None))
+    actor.initialised(DocState(self:, doc: None, membership_reconciled: False))
     |> actor.returning(self)
     |> Ok
   })
@@ -855,6 +859,49 @@ fn already_exists(
 
 fn cache(state: DocState, d: Doc) -> actor.Next(DocState, Msg) {
   actor.continue(DocState(..state, doc: Some(d)))
+}
+
+fn reconcile_membership(
+  storage: store.Backend,
+  topic: String,
+  d: Doc,
+) -> #(Doc, List(#(Int, String))) {
+  let unmatched =
+    store.get_ops(storage, topic)
+    |> doc_state.unmatched_clients
+    |> list.filter(fn(client_id) { !dict.has_key(d.presence, client_id) })
+  let #(reconciled, newest_first) =
+    list.fold(unmatched, #(d, []), fn(acc, client_id) {
+      let #(next, op) =
+        sequence_leave(storage, topic, acc.0, client_id, now_seconds() * 1000)
+      #(next, [op, ..acc.1])
+    })
+  #(reconciled, list.reverse(newest_first))
+}
+
+fn sequence_leave(
+  storage: store.Backend,
+  topic: String,
+  d: Doc,
+  client_id: String,
+  timestamp: Int,
+) -> #(Doc, #(Int, String)) {
+  let sn = d.seq.sequence_number + 1
+  let left = sequencing.client_leave(d.seq, client_id)
+  let seq = sequencing.SequenceState(..left, sequence_number: sn)
+  let data = json.string(client_id) |> json.to_string
+  let message =
+    system_message("leave", data, sn, seq.minimum_sequence_number, timestamp)
+  store.put_op(storage, topic, sn, message)
+  #(
+    Doc(
+      ..d,
+      seq: seq,
+      history: doc_state.remember(d, #(sn, message)),
+      presence: dict.delete(d.presence, client_id),
+    ),
+    #(sn, message),
+  )
 }
 
 fn handle(
@@ -913,6 +960,10 @@ fn handle(
       let existing = already_exists(storage, t, st)
       store.put_document(storage, t)
       let d = doc(storage, t, st)
+      let #(d, recovery) = case st.membership_reconciled {
+        True -> #(d, [])
+        False -> reconcile_membership(storage, t, d)
+      }
       let roster = dict.to_list(d.presence)
       let #(handle, summary_sn) = d.summary
       case mode {
@@ -938,11 +989,12 @@ fn handle(
               handle,
               summary_sn,
               sn,
+              recovery,
               Some(#(sn, message)),
             ),
           )
           cache(
-            st,
+            DocState(..st, membership_reconciled: True),
             Doc(
               ..d,
               seq: seq,
@@ -961,10 +1013,14 @@ fn handle(
               handle,
               summary_sn,
               d.seq.sequence_number,
+              recovery,
               None,
             ),
           )
-          cache(st, Doc(..d, presence: dict.insert(d.presence, c, client)))
+          cache(
+            DocState(..st, membership_reconciled: True),
+            Doc(..d, presence: dict.insert(d.presence, c, client)),
+          )
         }
       }
     }
@@ -1033,29 +1089,9 @@ fn handle(
     }
     LeaveSequenced(t, c, timestamp, reply) -> {
       let d = doc(storage, t, st)
-      let sn = d.seq.sequence_number + 1
-      let left = sequencing.client_leave(d.seq, c)
-      let seq = sequencing.SequenceState(..left, sequence_number: sn)
-      let data = json.string(c) |> json.to_string
-      let message =
-        system_message(
-          "leave",
-          data,
-          sn,
-          seq.minimum_sequence_number,
-          timestamp,
-        )
-      store.put_op(storage, t, sn, message)
-      process.send(reply, Left(sn, seq.minimum_sequence_number, message))
-      cache(
-        st,
-        Doc(
-          ..d,
-          seq: seq,
-          history: doc_state.remember(d, #(sn, message)),
-          presence: dict.delete(d.presence, c),
-        ),
-      )
+      let #(d, #(sn, message)) = sequence_leave(storage, t, d, c, timestamp)
+      process.send(reply, Left(sn, d.seq.minimum_sequence_number, message))
+      cache(st, d)
     }
     Submit(t, c, csn, rsn, contents, reply) -> {
       let d = doc(storage, t, st)
@@ -1279,3 +1315,6 @@ fn raw_json(value: String) -> json.Json
 
 @external(erlang, "floodgate_ffi", "getenv")
 fn getenv(name: String, default: String) -> String
+
+@external(erlang, "floodgate_ffi", "now_seconds")
+fn now_seconds() -> Int

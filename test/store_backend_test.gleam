@@ -379,6 +379,7 @@ fn observe_runtime_contract(backend: store.Backend) -> RuntimeObservation {
     summary_handle,
     summary_sequence_number,
     current_sequence_number,
+    _recovery,
     _membership,
   ) =
     session.connect(

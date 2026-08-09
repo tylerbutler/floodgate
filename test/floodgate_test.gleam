@@ -244,6 +244,107 @@ pub fn supervised_session_restarts_and_rehydrates_test() {
   session.sequence_number(sess, topic) |> should.equal(before)
 }
 
+pub fn document_crash_closes_unmatched_durable_joins_test() {
+  let topic = "document:fluid:membership-recovery"
+  let backend = memory_store.new()
+  let sess = session.start_with_backend(backend)
+  let assert session.Joined(_, 1, _, join_c1) =
+    session.join_sequenced(sess, topic, "c1", "{\"clientId\":\"c1\"}", 1000)
+  let assert session.Joined(_, 2, _, join_c2) =
+    session.join_sequenced(sess, topic, "c2", "{\"clientId\":\"c2\"}", 2000)
+
+  let assert Ok(pid) = session.document_owner(sess, topic)
+  process.kill(pid)
+
+  let assert session.Connected(
+    True,
+    [],
+    initial_ops,
+    "",
+    0,
+    5,
+    recovery,
+    Some(join_c3),
+  ) =
+    session.connect(
+      sess,
+      topic,
+      "c3",
+      "write",
+      "{\"mode\":\"write\"}",
+      "{\"clientId\":\"c3\"}",
+      3000,
+    )
+
+  recovery |> list.map(fn(op) { op.0 }) |> should.equal([3, 4])
+  let assert [#(_, leave_c1), #(_, leave_c2)] = recovery
+  leave_c1 |> string.contains("\"type\":\"leave\"") |> should.be_true
+  leave_c1 |> string.contains("\\\"c1\\\"") |> should.be_true
+  leave_c2 |> string.contains("\\\"c2\\\"") |> should.be_true
+  initial_ops
+  |> should.equal([
+    #(1, join_c1),
+    #(2, join_c2),
+    ..list.append(recovery, [join_c3])
+  ])
+  session.clients(sess, topic) |> should.equal(["c3"])
+  session.since(sess, topic, 0) |> should.equal(initial_ops)
+
+  let assert Ok(restarted_pid) = session.document_owner(sess, topic)
+  process.kill(restarted_pid)
+  let assert session.Connected(_, _, _, _, _, 7, second_recovery, Some(_)) =
+    session.connect(
+      sess,
+      topic,
+      "c4",
+      "write",
+      "{\"mode\":\"write\"}",
+      "{\"clientId\":\"c4\"}",
+      4000,
+    )
+  list.length(second_recovery) |> should.equal(1)
+  let assert [#(6, leave_c3)] = second_recovery
+  leave_c3 |> string.contains("\\\"c3\\\"") |> should.be_true
+}
+
+pub fn read_connect_repairs_unmatched_durable_joins_test() {
+  let topic = "document:fluid:read-membership-recovery"
+  let sess = session.start()
+  let assert session.Joined(_, 1, _, join_writer) =
+    session.join_sequenced(
+      sess,
+      topic,
+      "writer",
+      "{\"clientId\":\"writer\"}",
+      1000,
+    )
+  let assert Ok(pid) = session.document_owner(sess, topic)
+  process.kill(pid)
+
+  let assert session.Connected(
+    True,
+    [],
+    initial_ops,
+    "",
+    0,
+    2,
+    [#(2, leave_writer)],
+    None,
+  ) =
+    session.connect(
+      sess,
+      topic,
+      "reader",
+      "read",
+      "{\"mode\":\"read\"}",
+      "{}",
+      2000,
+    )
+  leave_writer |> string.contains("\\\"writer\\\"") |> should.be_true
+  initial_ops |> should.equal([#(1, join_writer), #(2, leave_writer)])
+  session.clients(sess, topic) |> should.equal(["reader"])
+}
+
 /// A summary is five independent DETS writes with no transaction, so a crash can
 /// land between them. They are ordered so that every prefix is safe — objects,
 /// then ops, then the session's summary pointer, then the ref that mirrors it —
@@ -298,7 +399,7 @@ pub fn initial_messages_are_capped_and_oldest_first_test() {
 
   submit_ops(s, topic, 1, 1005)
 
-  let session.Connected(_, _, initial_ops, _, _, _, _) =
+  let session.Connected(_, _, initial_ops, _, _, _, _, _) =
     session.connect(s, topic, "c2", "read", "{}", "{}", 0)
 
   list.length(initial_ops) |> should.equal(1000)
@@ -462,6 +563,8 @@ pub fn read_presence_does_not_pin_write_minimum_sequence_number_test() {
     session.submit_message(s, topic, "writer", 2, 2, fn(_, _) { "second" })
 }
 
+/// The write join is part of the atomic connect snapshot and is durably ordered
+/// before the client can submit its first application operation.
 pub fn connect_returns_an_atomic_document_snapshot_test() {
   let topic = "document:t:connect-snapshot"
   let s = session.start()
@@ -474,6 +577,7 @@ pub fn connect_returns_an_atomic_document_snapshot_test() {
     "summary-4",
     4,
     5,
+    [],
     Some(#(5, membership_message)),
   ) =
     session.connect(
@@ -496,6 +600,7 @@ pub fn connect_returns_an_atomic_document_snapshot_test() {
     "summary-4",
     4,
     6,
+    [],
     None,
   ) =
     session.connect(

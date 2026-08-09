@@ -234,6 +234,7 @@ fn connect_core(
         summary_handle,
         summary_sequence_number,
         current_sequence_number,
+        recovery,
         membership,
       ) =
         session.connect(
@@ -254,6 +255,19 @@ fn connect_core(
       // server echoes has been through an Erlang map, which stores keys in
       // term order, so the self add could never match the seed. Peers are
       // unaffected: every copy *they* see is Erlang-map-ordered alike.
+      case recovery {
+        [] -> Nil
+        recovery ->
+          beryl.broadcast_from(
+            channels,
+            cid,
+            topic,
+            events.op,
+            recovery
+              |> list.map(session.stored_message_json)
+              |> json.preprocessed_array,
+          )
+      }
       case mode {
         "write" -> {
           let assert Some(#(sn, message)) = membership
