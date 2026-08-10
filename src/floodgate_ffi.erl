@@ -1,6 +1,6 @@
 -module(floodgate_ffi).
 -export([now_seconds/0, now_ms/0, getenv/2, setenv/2, secure_compare/2,
-         json_encode/1, raw_json/1]).
+         json_encode/1, raw_json/1, identity/1]).
 
 now_seconds() -> erlang:system_time(second).
 
@@ -30,4 +30,8 @@ json_encode(Value) ->
   iolist_to_binary(json:encode(Value)).
 
 raw_json(Value) ->
+  Value.
+
+%% Compile-time-only type changes (floodgate/rest's JsonTerm boundary).
+identity(Value) ->
   Value.

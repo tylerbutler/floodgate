@@ -170,31 +170,31 @@ pub fn normalize_signal_v2_targeting_test() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub fn unknown_client_nack_test() {
-  let n = nack.unknown_client("c1")
-  n.sequence_number |> should.equal(-1)
-  n.content.code |> should.equal(400)
+  let nack_result = nack.unknown_client("c1")
+  nack_result.sequence_number |> should.equal(-1)
+  nack_result.content.code |> should.equal(400)
 }
 
 pub fn read_only_client_nack_test() {
-  let n = nack.read_only_client(None)
-  n.content.message |> should.equal("Client is in read-only mode")
+  let nack_result = nack.read_only_client(None)
+  nack_result.content.message |> should.equal("Client is in read-only mode")
 }
 
 pub fn invalid_csn_nack_test() {
-  let n = nack.invalid_csn(2, 5, None)
-  n.content.code |> should.equal(400)
-  n.content.message
+  let nack_result = nack.invalid_csn(2, 5, None)
+  nack_result.content.code |> should.equal(400)
+  nack_result.content.message
   |> should.equal("Invalid client sequence number: expected > 2, received 5")
 }
 
 pub fn invalid_rsn_nack_test() {
-  let n = nack.invalid_rsn(9, 3, None)
-  n.content.message
+  let nack_result = nack.invalid_rsn(9, 3, None)
+  nack_result.content.message
   |> should.equal("Invalid RSN: current SN is 9, received 3")
 }
 
-pub fn nack_error_type_to_string_test() {
+pub fn error_type_to_string_test() {
   nack.invalid_csn(1, 2, None).content.error_type
-  |> nack.nack_error_type_to_string()
+  |> nack.error_type_to_string()
   |> should.equal("BadRequestError")
 }

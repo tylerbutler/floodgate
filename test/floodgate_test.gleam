@@ -15,7 +15,7 @@ import gleeunit/should
 import signet/jwt
 import signet/types
 
-pub fn main() {
+pub fn main() -> Nil {
   gleeunit.main()
 }
 
@@ -110,22 +110,22 @@ pub fn unknown_tenant_error_matches_401_contract_test() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// `{id, name}` — `api.gleam`'s `tenant_decoder`. No secrets, ever.
-pub fn tenant_info_json_matches_admin_ui_decoder_shape_test() {
-  floodgate.tenant_info_json(store.TenantInfo(id: "t-1", name: "Acme"))
-  |> json_to_string
+pub fn tenant_info_to_json_matches_admin_ui_decoder_shape_test() {
+  floodgate.tenant_info_to_json(store.TenantInfo(id: "t-1", name: "Acme"))
+  |> json.to_string
   |> should.equal("{\"id\":\"t-1\",\"name\":\"Acme\"}")
 }
 
 /// `{id, name, secret1, secret2}` — `api.gleam`'s
 /// `tenant_with_secrets_decoder`, used by both create and show.
-pub fn tenant_with_secrets_json_matches_admin_ui_decoder_shape_test() {
-  floodgate.tenant_with_secrets_json(store.TenantWithSecrets(
+pub fn tenant_with_secrets_to_json_matches_admin_ui_decoder_shape_test() {
+  floodgate.tenant_with_secrets_to_json(store.TenantWithSecrets(
     id: "t-1",
     name: "Acme",
     secret1: "s1",
     secret2: "s2",
   ))
-  |> json_to_string
+  |> json.to_string
   |> should.equal(
     "{\"id\":\"t-1\",\"name\":\"Acme\",\"secret1\":\"s1\",\"secret2\":\"s2\"}",
   )
@@ -187,10 +187,6 @@ pub fn start_with_backend_does_not_reset_a_rotated_startup_secret_test() {
   |> should.equal(Ok(#("test-jwt-secret", rotated_secret2)))
 }
 
-fn json_to_string(value: json.Json) -> String {
-  json.to_string(value)
-}
-
 pub fn standalone_storage_backend_selection_test() {
   let assert Ok(_) = floodgate.backend_from_name("ets")
   let assert Ok(_) = floodgate.backend_from_name("shelf")
@@ -200,21 +196,22 @@ pub fn standalone_storage_backend_selection_test() {
 }
 
 pub fn session_sequences_per_document_test() {
-  let s = session.start()
-  session.join(s, "document:t:seqbasic", "c1") |> should.be_false
-  session.join(s, "document:t:seqbasic", "c2") |> should.be_true
+  let document_session = session.start()
+  session.join(document_session, "document:t:seqbasic", "c1") |> should.be_false
+  session.join(document_session, "document:t:seqbasic", "c2") |> should.be_true
   let assert session.Assigned(1, _) =
-    session.submit(s, "document:t:seqbasic", "c1", 1, 0, "a")
+    session.submit(document_session, "document:t:seqbasic", "c1", 1, 0, "a")
   let assert session.Assigned(2, _) =
-    session.submit(s, "document:t:seqbasic", "c1", 2, 0, "b")
+    session.submit(document_session, "document:t:seqbasic", "c1", 2, 0, "b")
 }
 
 pub fn session_create_marks_document_existing_without_audience_client_test() {
-  let s = session.start()
-  session.create(s, "document:t:created") |> should.be_false
-  session.clients(s, "document:t:created") |> should.equal([])
-  session.join(s, "document:t:created", "c1") |> should.be_true
-  session.clients(s, "document:t:created") |> should.equal(["c1"])
+  let document_session = session.start()
+  session.create(document_session, "document:t:created") |> should.be_false
+  session.clients(document_session, "document:t:created") |> should.equal([])
+  session.join(document_session, "document:t:created", "c1") |> should.be_true
+  session.clients(document_session, "document:t:created")
+  |> should.equal(["c1"])
 }
 
 pub fn supervised_session_restarts_and_rehydrates_test() {
@@ -222,38 +219,50 @@ pub fn supervised_session_restarts_and_rehydrates_test() {
   // The backend outlives the session actor, which is what makes a restart
   // recoverable: `docs` is in-memory only and rebuilt from persisted ops.
   let backend = memory_store.new()
-  let assert Ok(#(_channels, sess)) =
+  let assert Ok(#(_channels, document_session)) =
     floodgate.start_with_backend("fluid", "test-jwt-secret", backend)
 
-  session.create(sess, topic) |> should.be_false
+  session.create(document_session, topic) |> should.be_false
   let session.Joined(_, _, _, _) =
-    session.join_sequenced(sess, topic, "c1", "{}", 1000)
-  let before = session.sequence_number(sess, topic)
+    session.join_sequenced(document_session, topic, "c1", "{}", 1000)
+  let before = session.sequence_number(document_session, topic)
   before |> should.not_equal(0)
 
   // Kill it the way a real crash would, and confirm the supervisor brings it
   // back under the same registered name.
-  let assert Ok(pid) = session.owner(sess)
+  let assert Ok(pid) = session.owner(document_session)
   process.kill(pid)
-  let assert Ok(restarted_pid) = await_restart(sess, pid, 100)
+  let assert Ok(restarted_pid) = await_restart(document_session, pid, 100)
   { restarted_pid == pid } |> should.be_false
 
   // The handle still resolves — it holds the name, not the dead Subject — and
   // the sequence state comes back from storage rather than restarting at 0.
-  session.exists(sess, topic) |> should.be_true
-  session.sequence_number(sess, topic) |> should.equal(before)
+  session.exists(document_session, topic) |> should.be_true
+  session.sequence_number(document_session, topic) |> should.equal(before)
 }
 
 pub fn document_crash_closes_unmatched_durable_joins_test() {
   let topic = "document:fluid:membership-recovery"
   let backend = memory_store.new()
-  let sess = session.start_with_backend(backend)
+  let document_session = session.start_with_backend(backend)
   let assert session.Joined(_, 1, _, join_c1) =
-    session.join_sequenced(sess, topic, "c1", "{\"clientId\":\"c1\"}", 1000)
+    session.join_sequenced(
+      document_session,
+      topic,
+      "c1",
+      "{\"clientId\":\"c1\"}",
+      1000,
+    )
   let assert session.Joined(_, 2, _, join_c2) =
-    session.join_sequenced(sess, topic, "c2", "{\"clientId\":\"c2\"}", 2000)
+    session.join_sequenced(
+      document_session,
+      topic,
+      "c2",
+      "{\"clientId\":\"c2\"}",
+      2000,
+    )
 
-  let assert Ok(pid) = session.document_owner(sess, topic)
+  let assert Ok(pid) = session.document_owner(document_session, topic)
   process.kill(pid)
 
   let assert session.Connected(
@@ -264,17 +273,18 @@ pub fn document_crash_closes_unmatched_durable_joins_test() {
     0,
     5,
     recovery,
-    Some(join_c3),
+    session.Writer(join_c3_sn, join_c3_message),
   ) =
     session.connect(
-      sess,
+      document_session,
       topic,
       "c3",
-      "write",
+      session.Write,
       "{\"mode\":\"write\"}",
       "{\"clientId\":\"c3\"}",
       3000,
     )
+  let join_c3 = #(join_c3_sn, join_c3_message)
 
   recovery |> list.map(fn(op) { op.0 }) |> should.equal([3, 4])
   let assert [#(_, leave_c1), #(_, leave_c2)] = recovery
@@ -287,17 +297,26 @@ pub fn document_crash_closes_unmatched_durable_joins_test() {
     #(2, join_c2),
     ..list.append(recovery, [join_c3])
   ])
-  session.clients(sess, topic) |> should.equal(["c3"])
-  session.since(sess, topic, 0) |> should.equal(initial_ops)
+  session.clients(document_session, topic) |> should.equal(["c3"])
+  session.since(document_session, topic, 0) |> should.equal(initial_ops)
 
-  let assert Ok(restarted_pid) = session.document_owner(sess, topic)
+  let assert Ok(restarted_pid) = session.document_owner(document_session, topic)
   process.kill(restarted_pid)
-  let assert session.Connected(_, _, _, _, _, 7, second_recovery, Some(_)) =
+  let assert session.Connected(
+    _,
+    _,
+    _,
+    _,
+    _,
+    7,
+    second_recovery,
+    session.Writer(_, _),
+  ) =
     session.connect(
-      sess,
+      document_session,
       topic,
       "c4",
-      "write",
+      session.Write,
       "{\"mode\":\"write\"}",
       "{\"clientId\":\"c4\"}",
       4000,
@@ -309,16 +328,16 @@ pub fn document_crash_closes_unmatched_durable_joins_test() {
 
 pub fn read_connect_repairs_unmatched_durable_joins_test() {
   let topic = "document:fluid:read-membership-recovery"
-  let sess = session.start()
+  let document_session = session.start()
   let assert session.Joined(_, 1, _, join_writer) =
     session.join_sequenced(
-      sess,
+      document_session,
       topic,
       "writer",
       "{\"clientId\":\"writer\"}",
       1000,
     )
-  let assert Ok(pid) = session.document_owner(sess, topic)
+  let assert Ok(pid) = session.document_owner(document_session, topic)
   process.kill(pid)
 
   let assert session.Connected(
@@ -329,20 +348,20 @@ pub fn read_connect_repairs_unmatched_durable_joins_test() {
     0,
     2,
     [#(2, leave_writer)],
-    None,
+    session.Reader,
   ) =
     session.connect(
-      sess,
+      document_session,
       topic,
       "reader",
-      "read",
+      session.Read,
       "{\"mode\":\"read\"}",
       "{}",
       2000,
     )
   leave_writer |> string.contains("\\\"writer\\\"") |> should.be_true
   initial_ops |> should.equal([#(1, join_writer), #(2, leave_writer)])
-  session.clients(sess, topic) |> should.equal(["reader"])
+  session.clients(document_session, topic) |> should.equal(["reader"])
 }
 
 /// A summary is five independent DETS writes with no transaction, so a crash can
@@ -358,13 +377,13 @@ pub fn missing_summary_ref_is_restored_on_rehydrate_test() {
   let topic = "document:" <> tenant <> ":" <> doc
 
   // The state a crash between `put_summary` and the ref write leaves behind.
-  store.put_obj(backend, tenant, "commit-sha", "{}")
-  store.put_summary(backend, topic, "commit-sha", 5)
+  let assert Ok(Nil) = store.put_object(backend, tenant, "commit-sha", "{}")
+  let assert Ok(Nil) = store.put_summary(backend, topic, "commit-sha", 5)
   git.get_ref(backend, tenant, git.summary_ref(doc)) |> should.equal(Error(Nil))
 
   // Touching the document rehydrates it, which is where the repair runs.
-  let s = session.start_with_backend(backend)
-  session.sequence_number(s, topic) |> should.equal(5)
+  let document_session = session.start_with_backend(backend)
+  session.sequence_number(document_session, topic) |> should.equal(5)
   git.get_ref(backend, tenant, git.summary_ref(doc))
   |> should.equal(Ok("commit-sha"))
 }
@@ -378,11 +397,12 @@ pub fn existing_summary_ref_is_left_alone_on_rehydrate_test() {
   let doc = "doc"
   let topic = "document:" <> tenant <> ":" <> doc
 
-  git.put_ref(backend, tenant, git.summary_ref(doc), "client-chosen-sha")
-  store.put_summary(backend, topic, "commit-sha", 5)
+  let assert Ok(Nil) =
+    git.put_ref(backend, tenant, git.summary_ref(doc), "client-chosen-sha")
+  let assert Ok(Nil) = store.put_summary(backend, topic, "commit-sha", 5)
 
-  let s = session.start_with_backend(backend)
-  session.sequence_number(s, topic) |> should.equal(5)
+  let document_session = session.start_with_backend(backend)
+  session.sequence_number(document_session, topic) |> should.equal(5)
   git.get_ref(backend, tenant, git.summary_ref(doc))
   |> should.equal(Ok("client-chosen-sha"))
 }
@@ -394,13 +414,13 @@ pub fn existing_summary_ref_is_left_alone_on_rehydrate_test() {
 /// cap, and the order clients actually need.
 pub fn initial_messages_are_capped_and_oldest_first_test() {
   let topic = "document:t:history-cap"
-  let s = session.start()
-  session.join(s, topic, "c1") |> should.be_false
+  let document_session = session.start()
+  session.join(document_session, topic, "c1") |> should.be_false
 
-  submit_ops(s, topic, 1, 1005)
+  submit_ops(document_session, topic, 1, 1005)
 
   let session.Connected(_, _, initial_ops, _, _, _, _, _) =
-    session.connect(s, topic, "c2", "read", "{}", "{}", 0)
+    session.connect(document_session, topic, "c2", session.Read, "{}", "{}", 0)
 
   list.length(initial_ops) |> should.equal(1000)
   // The newest 1000 of 1005, oldest first: sequence numbers 6 through 1005.
@@ -411,7 +431,7 @@ pub fn initial_messages_are_capped_and_oldest_first_test() {
 }
 
 fn submit_ops(
-  s: session.Session,
+  document_session: session.Session,
   topic: String,
   csn: Int,
   through: Int,
@@ -420,8 +440,15 @@ fn submit_ops(
     True -> Nil
     False -> {
       let assert session.Assigned(_, _) =
-        session.submit(s, topic, "c1", csn, 0, "op-" <> int.to_string(csn))
-      submit_ops(s, topic, csn + 1, through)
+        session.submit(
+          document_session,
+          topic,
+          "c1",
+          csn,
+          0,
+          "op-" <> int.to_string(csn),
+        )
+      submit_ops(document_session, topic, csn + 1, through)
     }
   }
 }
@@ -438,24 +465,25 @@ pub fn idle_documents_are_evicted_and_rehydrate_test() {
   // 5 minute default.
   setenv("FLOODGATE_DOC_IDLE_MS", "100")
   let backend = memory_store.new()
-  let sess = session.start_with_backend(backend)
+  let document_session = session.start_with_backend(backend)
   setenv("FLOODGATE_DOC_IDLE_MS", "")
 
   let session.Joined(_, _, _, _) =
-    session.join_sequenced(sess, topic, "c1", "{}", 1000)
-  let before = session.sequence_number(sess, topic)
-  session.cached_documents(sess) |> should.equal(1)
+    session.join_sequenced(document_session, topic, "c1", "{}", 1000)
+  let before = session.sequence_number(document_session, topic)
+  session.cached_documents(document_session) |> should.equal(1)
 
   // A document with a connected client is never evicted, however idle.
   process.sleep(250)
-  session.cached_documents(sess) |> should.equal(1)
+  session.cached_documents(document_session) |> should.equal(1)
 
-  let session.Left(_, _, _) = session.leave_sequenced(sess, topic, "c1", 2000)
+  let session.Left(_, _, _) =
+    session.leave_sequenced(document_session, topic, "c1", 2000)
   process.sleep(250)
-  session.cached_documents(sess) |> should.equal(0)
+  session.cached_documents(document_session) |> should.equal(0)
 
   // Evicting it lost nothing: the numbering comes back from persisted ops.
-  session.sequence_number(sess, topic) |> should.equal(before + 1)
+  session.sequence_number(document_session, topic) |> should.equal(before + 1)
 }
 
 @external(erlang, "floodgate_ffi", "setenv")
@@ -463,18 +491,18 @@ fn setenv(name: String, value: String) -> Nil
 
 /// Poll until the session's name resolves to a pid other than `dead`.
 fn await_restart(
-  sess: session.Session,
+  document_session: session.Session,
   dead: process.Pid,
   attempts: Int,
 ) -> Result(process.Pid, Nil) {
   case attempts <= 0 {
     True -> Error(Nil)
     False ->
-      case session.owner(sess) {
+      case session.owner(document_session) {
         Ok(pid) if pid != dead -> Ok(pid)
         _ -> {
           process.sleep(10)
-          await_restart(sess, dead, attempts - 1)
+          await_restart(document_session, dead, attempts - 1)
         }
       }
   }
@@ -498,17 +526,18 @@ pub fn initialized_document_starts_at_summary_checkpoint_test() {
   // A shared backend outlives the session actor: a fresh session over the same
   // storage still sees the persisted summary checkpoint.
   let backend = memory_store.new()
-  let s = session.start_with_backend(backend)
+  let document_session = session.start_with_backend(backend)
 
-  session.create_initialized(s, topic, fn() {
+  session.create_initialized(document_session, topic, fn() {
     Ok(Some(#("initial-summary", 7)))
   })
   |> should.equal(session.Created)
-  session.summary(s, topic) |> should.equal(#("initial-summary", 7))
-  session.sequence_number(s, topic) |> should.equal(7)
+  session.summary(document_session, topic)
+  |> should.equal(Ok(#("initial-summary", 7)))
+  session.sequence_number(document_session, topic) |> should.equal(7)
 
   let restarted = session.start_with_backend(backend)
-  session.summary(restarted, topic) |> should.equal(#("initial-summary", 7))
+  session.summary(restarted, topic) |> should.equal(Ok(#("initial-summary", 7)))
   session.sequence_number(restarted, topic) |> should.equal(7)
   let assert session.Joined(True, 8, 7, _) =
     session.join_sequenced(restarted, topic, "c1", "{}", 1000)
@@ -516,59 +545,67 @@ pub fn initialized_document_starts_at_summary_checkpoint_test() {
 
 pub fn duplicate_initialized_document_preserves_existing_state_test() {
   let topic = "document:t:duplicate-initialized"
-  let s = session.start()
+  let document_session = session.start()
 
-  session.create_initialized(s, topic, fn() {
+  session.create_initialized(document_session, topic, fn() {
     Ok(Some(#("original-summary", 4)))
   })
   |> should.equal(session.Created)
-  session.create_initialized(s, topic, fn() { Error(Nil) })
+  session.create_initialized(document_session, topic, fn() { Error(Nil) })
   |> should.equal(session.AlreadyExists)
 
-  session.summary(s, topic) |> should.equal(#("original-summary", 4))
-  session.sequence_number(s, topic) |> should.equal(4)
+  session.summary(document_session, topic)
+  |> should.equal(Ok(#("original-summary", 4)))
+  session.sequence_number(document_session, topic) |> should.equal(4)
 }
 
 pub fn session_rejects_future_reference_sequence_number_test() {
-  let s = session.start()
-  session.join(s, "document:t:reject-future", "c1")
-  session.submit(s, "document:t:reject-future", "c1", 1, 10, "a")
+  let document_session = session.start()
+  session.join(document_session, "document:t:reject-future", "c1")
+  session.submit(document_session, "document:t:reject-future", "c1", 1, 10, "a")
   |> should.equal(session.Rejected(0))
 }
 
 pub fn session_leave_removes_client_test() {
-  let s = session.start()
-  session.join(s, "document:t:leave", "c1")
-  session.clients(s, "document:t:leave") |> should.equal(["c1"])
-  session.leave(s, "document:t:leave", "c1")
-  session.clients(s, "document:t:leave") |> should.equal([])
+  let document_session = session.start()
+  session.join(document_session, "document:t:leave", "c1")
+  session.clients(document_session, "document:t:leave") |> should.equal(["c1"])
+  session.leave(document_session, "document:t:leave", "c1")
+  session.clients(document_session, "document:t:leave") |> should.equal([])
 }
 
 pub fn read_presence_does_not_pin_write_minimum_sequence_number_test() {
   let topic = "document:t:read-presence"
-  let s = session.start()
+  let document_session = session.start()
   let assert session.Joined(False, 1, 0, _) =
-    session.join_sequenced(s, topic, "writer", "{}", 1000)
-  session.join_presence(s, topic, "reader", "read") |> should.be_true
+    session.join_sequenced(document_session, topic, "writer", "{}", 1000)
+  session.join_presence(document_session, topic, "reader", session.Read)
+  |> should.be_true
   let roster =
-    session.roster(s, topic)
+    session.roster(document_session, topic)
     |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
   let assert [#("reader", reader), #("writer", writer)] = roster
   reader |> string.contains("\"mode\":\"read\"") |> should.be_true
   writer |> string.contains("\"mode\":\"write\"") |> should.be_true
 
   let assert session.MessageAssigned(2, 1, _) =
-    session.submit_message(s, topic, "writer", 1, 1, fn(_, _) { "first" })
+    session.submit_message(document_session, topic, "writer", 1, 1, fn(_, _) {
+      "first"
+    })
   let assert session.MessageAssigned(3, 2, _) =
-    session.submit_message(s, topic, "writer", 2, 2, fn(_, _) { "second" })
+    session.submit_message(document_session, topic, "writer", 2, 2, fn(_, _) {
+      "second"
+    })
 }
 
 /// The write join is part of the atomic connect snapshot and is durably ordered
 /// before the client can submit its first application operation.
 pub fn connect_returns_an_atomic_document_snapshot_test() {
   let topic = "document:t:connect-snapshot"
-  let s = session.start()
-  session.create_initialized(s, topic, fn() { Ok(Some(#("summary-4", 4))) })
+  let document_session = session.start()
+  session.create_initialized(document_session, topic, fn() {
+    Ok(Some(#("summary-4", 4)))
+  })
 
   let assert session.Connected(
     True,
@@ -578,13 +615,13 @@ pub fn connect_returns_an_atomic_document_snapshot_test() {
     4,
     5,
     [],
-    Some(#(5, membership_message)),
+    session.Writer(5, membership_message),
   ) =
     session.connect(
-      s,
+      document_session,
       topic,
       "writer",
-      "write",
+      session.Write,
       "{\"mode\":\"write\"}",
       "{}",
       1000,
@@ -592,7 +629,9 @@ pub fn connect_returns_an_atomic_document_snapshot_test() {
   membership_message |> should.equal(join_message)
 
   let assert session.MessageAssigned(6, 5, "app-op") =
-    session.submit_message(s, topic, "writer", 1, 5, fn(_, _) { "app-op" })
+    session.submit_message(document_session, topic, "writer", 1, 5, fn(_, _) {
+      "app-op"
+    })
   let assert session.Connected(
     True,
     [#("writer", "{\"mode\":\"write\"}")],
@@ -601,13 +640,13 @@ pub fn connect_returns_an_atomic_document_snapshot_test() {
     4,
     6,
     [],
-    None,
+    session.Reader,
   ) =
     session.connect(
-      s,
+      document_session,
       topic,
       "reader",
-      "read",
+      session.Read,
       "{\"mode\":\"read\"}",
       "{}",
       2000,
@@ -617,69 +656,71 @@ pub fn connect_returns_an_atomic_document_snapshot_test() {
 
 pub fn sequenced_join_and_leave_are_persisted_as_protocol_ops_test() {
   let topic = "document:t:protocol-membership"
-  let s = session.start()
+  let document_session = session.start()
   let join_data = "{\"clientId\":\"c1\",\"detail\":{\"mode\":\"write\"}}"
   let assert session.Joined(False, 1, 0, join_message) =
-    session.join_sequenced(s, topic, "c1", join_data, 1000)
+    session.join_sequenced(document_session, topic, "c1", join_data, 1000)
   join_message |> string.contains("\"type\":\"join\"") |> should.be_true
 
   let assert session.Left(2, 0, leave_message) =
-    session.leave_sequenced(s, topic, "c1", 2000)
+    session.leave_sequenced(document_session, topic, "c1", 2000)
   leave_message |> string.contains("\"type\":\"leave\"") |> should.be_true
-  session.since(s, topic, 0)
+  session.since(document_session, topic, 0)
   |> should.equal([#(1, join_message), #(2, leave_message)])
 }
 
 pub fn reconnect_starts_from_current_sequence_checkpoint_test() {
   let topic = "document:t:reconnect-checkpoint"
-  let s = session.start()
-  session.join(s, topic, "c1")
+  let document_session = session.start()
+  session.join(document_session, topic, "c1")
   let assert session.Assigned(1, _) =
-    session.submit(s, topic, "c1", 1, 0, "before-disconnect")
-  session.leave(s, topic, "c1")
-  session.clients(s, topic) |> should.equal([])
+    session.submit(document_session, topic, "c1", 1, 0, "before-disconnect")
+  session.leave(document_session, topic, "c1")
+  session.clients(document_session, topic) |> should.equal([])
 
-  session.join(s, topic, "c2")
+  session.join(document_session, topic, "c2")
   let assert session.Assigned(2, 1) =
-    session.submit(s, topic, "c2", 1, 0, "after-reconnect")
+    session.submit(document_session, topic, "c2", 1, 0, "after-reconnect")
 }
 
 pub fn since_returns_history_after_sn_test() {
-  let s = session.start()
-  session.join(s, "document:t:since", "c1")
+  let document_session = session.start()
+  session.join(document_session, "document:t:since", "c1")
   let assert session.Assigned(1, _) =
-    session.submit(s, "document:t:since", "c1", 1, 0, "a")
+    session.submit(document_session, "document:t:since", "c1", 1, 0, "a")
   let assert session.Assigned(2, _) =
-    session.submit(s, "document:t:since", "c1", 2, 0, "b")
-  session.since(s, "document:t:since", 1) |> should.equal([#(2, "b")])
+    session.submit(document_session, "document:t:since", "c1", 2, 0, "b")
+  session.since(document_session, "document:t:since", 1)
+  |> should.equal([#(2, "b")])
 }
 
 pub fn submit_message_persists_the_built_message_test() {
   let topic = "document:t:atomic-message"
-  let s = session.start()
-  session.join(s, topic, "c1")
+  let document_session = session.start()
+  session.join(document_session, topic, "c1")
 
   let assert session.MessageAssigned(1, 0, message) =
-    session.submit_message(s, topic, "c1", 1, 0, fn(sn, msn) {
+    session.submit_message(document_session, topic, "c1", 1, 0, fn(sn, msn) {
       "message-" <> int.to_string(sn) <> "-" <> int.to_string(msn)
     })
   message |> should.equal("message-1-0")
-  session.since(s, topic, 0) |> should.equal([#(1, message)])
+  session.since(document_session, topic, 0) |> should.equal([#(1, message)])
 }
 
 pub fn summary_stores_latest_handle_test() {
-  let s = session.start()
-  session.set_summary(s, "document:t:d2", "sha-abc", 5)
-  session.summary(s, "document:t:d2") |> should.equal(#("sha-abc", 5))
+  let document_session = session.start()
+  session.set_summary(document_session, "document:t:d2", "sha-abc", 5)
+  session.summary(document_session, "document:t:d2")
+  |> should.equal(Ok(#("sha-abc", 5)))
 }
 
 pub fn sequenced_summary_advances_past_response_and_stores_context_test() {
   let topic = "document:t:sequenced-summary"
-  let s = session.start()
-  session.join(s, topic, "c1")
+  let document_session = session.start()
+  session.join(document_session, topic, "c1")
   let assert session.SummaryAssigned(1, 2, _) =
     session.submit_summary(
-      s,
+      document_session,
       topic,
       "c1",
       1,
@@ -688,20 +729,21 @@ pub fn sequenced_summary_advances_past_response_and_stores_context_test() {
       "ack",
       Some("summary-handle"),
     )
-  session.summary(s, topic) |> should.equal(#("summary-handle", 1))
-  session.sequence_number(s, topic) |> should.equal(2)
+  session.summary(document_session, topic)
+  |> should.equal(Ok(#("summary-handle", 1)))
+  session.sequence_number(document_session, topic) |> should.equal(2)
   let assert session.Assigned(3, _) =
-    session.submit(s, topic, "c1", 2, 2, "after-summary")
+    session.submit(document_session, topic, "c1", 2, 2, "after-summary")
 }
 
 pub fn summary_nack_does_not_replace_latest_summary_test() {
   let topic = "document:t:nacked-summary"
-  let s = session.start()
-  session.join(s, topic, "c1")
-  session.set_summary(s, topic, "existing-handle", 0)
+  let document_session = session.start()
+  session.join(document_session, topic, "c1")
+  session.set_summary(document_session, topic, "existing-handle", 0)
   let assert session.SummaryAssigned(1, 2, _) =
     session.submit_summary(
-      s,
+      document_session,
       topic,
       "c1",
       1,
@@ -710,7 +752,8 @@ pub fn summary_nack_does_not_replace_latest_summary_test() {
       "nack",
       None,
     )
-  session.summary(s, topic) |> should.equal(#("existing-handle", 0))
+  session.summary(document_session, topic)
+  |> should.equal(Ok(#("existing-handle", 0)))
 }
 
 pub fn ops_persist_across_session_restart_test() {
@@ -757,9 +800,9 @@ pub fn git_ref_roundtrip_test() {
   let storage = memory_store.new()
   store.open(storage)
   git.create_ref(storage, "t", "heads/main", "commit-sha")
-  |> should.be_true
+  |> should.equal(Ok(True))
   git.create_ref(storage, "t", "heads/main", "replacement")
-  |> should.be_false
+  |> should.equal(Ok(False))
   git.get_ref(storage, "t", "refs/heads/main")
   |> should.equal(Ok("commit-sha"))
   git.list_refs(storage, "t")
@@ -801,10 +844,10 @@ pub fn git_commit_history_follows_first_parent_test() {
 /// Here a 600 ms build on one document must not delay a join on another.
 pub fn slow_document_does_not_block_another_test() {
   let backend = memory_store.new()
-  let sess = session.start_with_backend(backend)
+  let document_session = session.start_with_backend(backend)
 
   process.spawn_unlinked(fn() {
-    session.create_initialized(sess, "document:t:slow", fn() {
+    session.create_initialized(document_session, "document:t:slow", fn() {
       process.sleep(600)
       Ok(Some(#("slow-summary", 1)))
     })
@@ -815,11 +858,17 @@ pub fn slow_document_does_not_block_another_test() {
   // The slow build is genuinely mid-flight: its actor is up and holding its own
   // mailbox. Without this the timing assertion below would also pass if the
   // spawn had failed and nothing slow were running at all.
-  let assert Ok(_) = session.document_owner(sess, "document:t:slow")
+  let assert Ok(_) = session.document_owner(document_session, "document:t:slow")
 
   let started = now_ms()
   let session.Joined(_, _, _, _) =
-    session.join_sequenced(sess, "document:t:fast", "c1", "{}", 1000)
+    session.join_sequenced(
+      document_session,
+      "document:t:fast",
+      "c1",
+      "{}",
+      1000,
+    )
   let elapsed = now_ms() - started
 
   // Generous enough not to be flaky, tight enough to fail outright if the two
@@ -829,8 +878,8 @@ pub fn slow_document_does_not_block_another_test() {
   // And the slow build really did take its 600 ms and then commit, so the join
   // above overlapped it rather than following it.
   process.sleep(700)
-  session.summary(sess, "document:t:slow")
-  |> should.equal(#("slow-summary", 1))
+  session.summary(document_session, "document:t:slow")
+  |> should.equal(Ok(#("slow-summary", 1)))
 }
 
 /// A crash now costs one document's roster instead of every document's. Under
@@ -838,28 +887,28 @@ pub fn slow_document_does_not_block_another_test() {
 /// everything on the node at once.
 pub fn document_crash_does_not_disturb_other_documents_test() {
   let backend = memory_store.new()
-  let sess = session.start_with_backend(backend)
+  let document_session = session.start_with_backend(backend)
   let victim = "document:t:crash-victim"
   let bystander = "document:t:crash-bystander"
 
   let session.Joined(_, _, _, _) =
-    session.join_sequenced(sess, victim, "c1", "{}", 1000)
+    session.join_sequenced(document_session, victim, "c1", "{}", 1000)
   let session.Joined(_, _, _, _) =
-    session.join_sequenced(sess, bystander, "c2", "{}", 1000)
-  let victim_sn = session.sequence_number(sess, victim)
+    session.join_sequenced(document_session, bystander, "c2", "{}", 1000)
+  let victim_sn = session.sequence_number(document_session, victim)
 
-  let assert Ok(pid) = session.document_owner(sess, victim)
+  let assert Ok(pid) = session.document_owner(document_session, victim)
   process.kill(pid)
   process.sleep(50)
 
   // The bystander kept its in-memory roster — it was never touched.
-  session.clients(sess, bystander) |> should.equal(["c2"])
+  session.clients(document_session, bystander) |> should.equal(["c2"])
 
   // The victim rehydrates from storage on next touch: numbering survives, the
   // roster does not. That is the documented restart contract, now scoped to one
   // document rather than all of them.
-  session.sequence_number(sess, victim) |> should.equal(victim_sn)
-  session.clients(sess, victim) |> should.equal([])
+  session.sequence_number(document_session, victim) |> should.equal(victim_sn)
+  session.clients(document_session, victim) |> should.equal([])
 }
 
 /// The failure mode the ETS registry introduces: a row can outlive its actor for
@@ -868,21 +917,21 @@ pub fn document_crash_does_not_disturb_other_documents_test() {
 /// channel process, in production — down with it.
 pub fn call_against_a_dead_document_actor_recovers_test() {
   let backend = memory_store.new()
-  let sess = session.start_with_backend(backend)
+  let document_session = session.start_with_backend(backend)
   let topic = "document:t:stale-row"
 
   let session.Joined(_, _, _, _) =
-    session.join_sequenced(sess, topic, "c1", "{}", 1000)
-  let before = session.sequence_number(sess, topic)
+    session.join_sequenced(document_session, topic, "c1", "{}", 1000)
+  let before = session.sequence_number(document_session, topic)
 
   // Kill it and call straight away, without giving the owner's monitor time to
   // clear the row — so the call really does resolve a dead subject.
-  let assert Ok(pid) = session.document_owner(sess, topic)
+  let assert Ok(pid) = session.document_owner(document_session, topic)
   process.kill(pid)
 
   let session.Joined(_, _, _, _) =
-    session.join_sequenced(sess, topic, "c2", "{}", 2000)
-  session.sequence_number(sess, topic) |> should.equal(before + 1)
+    session.join_sequenced(document_session, topic, "c2", "{}", 2000)
+  session.sequence_number(document_session, topic) |> should.equal(before + 1)
 }
 
 /// Reading must not be able to allocate. `session.exists` is reachable from REST
@@ -890,16 +939,22 @@ pub fn call_against_a_dead_document_actor_recovers_test() {
 /// get-or-start would let any `GET` for an unknown id spawn an actor.
 pub fn reading_an_unknown_document_starts_no_actor_test() {
   let backend = memory_store.new()
-  let sess = session.start_with_backend(backend)
+  let document_session = session.start_with_backend(backend)
 
-  session.exists(sess, "document:t:never-created") |> should.be_false
-  session.clients(sess, "document:t:never-created") |> should.equal([])
-  session.roster(sess, "document:t:never-created") |> should.equal([])
-  session.sequence_number(sess, "document:t:never-created") |> should.equal(0)
-  session.since(sess, "document:t:never-created", 0) |> should.equal([])
-  session.summary(sess, "document:t:never-created") |> should.equal(#("", 0))
+  session.exists(document_session, "document:t:never-created")
+  |> should.be_false
+  session.clients(document_session, "document:t:never-created")
+  |> should.equal([])
+  session.roster(document_session, "document:t:never-created")
+  |> should.equal([])
+  session.sequence_number(document_session, "document:t:never-created")
+  |> should.equal(0)
+  session.since(document_session, "document:t:never-created", 0)
+  |> should.equal([])
+  session.summary(document_session, "document:t:never-created")
+  |> should.equal(Error(Nil))
 
-  session.cached_documents(sess) |> should.equal(0)
+  session.cached_documents(document_session) |> should.equal(0)
 }
 
 /// The registry's ETS table belongs to the owner, so it dies with it. That is
@@ -909,26 +964,26 @@ pub fn reading_an_unknown_document_starts_no_actor_test() {
 /// silently, so pin it.
 pub fn owner_restart_takes_document_actors_with_it_test() {
   let backend = memory_store.new()
-  let sess = session.start_with_backend(backend)
+  let document_session = session.start_with_backend(backend)
   let topic = "document:t:owner-restart"
 
   let session.Joined(_, _, _, _) =
-    session.join_sequenced(sess, topic, "c1", "{}", 1000)
-  let before = session.sequence_number(sess, topic)
-  let assert Ok(doc_pid) = session.document_owner(sess, topic)
+    session.join_sequenced(document_session, topic, "c1", "{}", 1000)
+  let before = session.sequence_number(document_session, topic)
+  let assert Ok(doc_pid) = session.document_owner(document_session, topic)
 
-  let assert Ok(owner_pid) = session.owner(sess)
+  let assert Ok(owner_pid) = session.owner(document_session)
   process.kill(owner_pid)
-  let assert Ok(_) = await_restart(sess, owner_pid, 100)
+  let assert Ok(_) = await_restart(document_session, owner_pid, 100)
 
   // No orphan: the document actor went down with the table that pointed at it.
   process.is_alive(doc_pid) |> should.be_false
-  session.cached_documents(sess) |> should.equal(0)
+  session.cached_documents(document_session) |> should.equal(0)
 
   // And the document still works, rebuilt from storage.
-  session.sequence_number(sess, topic) |> should.equal(before)
+  session.sequence_number(document_session, topic) |> should.equal(before)
   let session.Joined(_, _, _, _) =
-    session.join_sequenced(sess, topic, "c2", "{}", 2000)
+    session.join_sequenced(document_session, topic, "c2", "{}", 2000)
 }
 
 @external(erlang, "floodgate_ffi", "now_ms")
@@ -954,12 +1009,12 @@ fn now_ms() -> Int
 /// correct order, so neither is flaky.
 pub fn submit_is_durable_before_it_acks_test() {
   let backend = memory_store.new()
-  let s = session.start_with_backend(backend)
+  let document_session = session.start_with_backend(backend)
   let topic = "document:t:durable-ack"
-  session.join(s, topic, "c1") |> should.be_false
+  session.join(document_session, topic, "c1") |> should.be_false
 
   let assert session.Assigned(sn, _) =
-    session.submit(s, topic, "c1", 1, 0, "DURABLE")
+    session.submit(document_session, topic, "c1", 1, 0, "DURABLE")
   store.get_ops(backend, topic)
   |> list.key_find(sn)
   |> should.equal(Ok("DURABLE"))
@@ -967,13 +1022,13 @@ pub fn submit_is_durable_before_it_acks_test() {
 
 pub fn submit_summary_is_durable_before_it_acks_test() {
   let backend = memory_store.new()
-  let s = session.start_with_backend(backend)
+  let document_session = session.start_with_backend(backend)
   let topic = "document:t:durable-summary-ack"
-  session.join(s, topic, "c1") |> should.be_false
+  session.join(document_session, topic, "c1") |> should.be_false
 
   let assert session.SummaryAssigned(summary_sn, response_sn, _) =
     session.submit_summary(
-      s,
+      document_session,
       topic,
       "c1",
       1,
@@ -987,5 +1042,6 @@ pub fn submit_summary_is_durable_before_it_acks_test() {
   stored |> list.key_find(response_sn) |> should.equal(Ok("summary-ack"))
   // The summary pointer is written last of the three, so observing the ack must
   // mean it landed too.
-  store.get_summary(backend, topic) |> should.equal(#("handle-1", summary_sn))
+  store.get_summary(backend, topic)
+  |> should.equal(Ok(#("handle-1", summary_sn)))
 }

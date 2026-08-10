@@ -459,7 +459,7 @@ pub fn open_count(docs: DocStore) -> Int {
   doc_registry.size(docs.registry)
 }
 
-pub fn put_marker(docs: DocStore, topic: String) -> Nil {
+pub fn put_marker(docs: DocStore, topic: String) -> Result(Nil, Nil) {
   put(docs, topic, #(key_marker, ""), topic)
 }
 
@@ -468,7 +468,7 @@ pub fn put_op(
   topic: String,
   sequence_number: Int,
   contents: String,
-) -> Nil {
+) -> Result(Nil, Nil) {
   put(docs, topic, #(key_op, int.to_string(sequence_number)), contents)
 }
 
@@ -497,7 +497,7 @@ pub fn put_summary(
   topic: String,
   handle: String,
   sequence_number: Int,
-) -> Nil {
+) -> Result(Nil, Nil) {
   put(
     docs,
     topic,
@@ -506,33 +506,37 @@ pub fn put_summary(
   )
 }
 
-/// `#(handle, sequence_number)`, or `#("", 0)` when the document has never been
-/// summarized — the same "no summary" answer every backend gives.
-pub fn get_summary(docs: DocStore, topic: String) -> #(String, Int) {
+/// `#(handle, sequence_number)`, or `Error(Nil)` when the document has never
+/// been summarized (or the stored pointer cannot be parsed) — the same "no
+/// summary" answer every backend gives.
+pub fn get_summary(
+  docs: DocStore,
+  topic: String,
+) -> Result(#(String, Int), Nil) {
   case get(docs, topic, #(key_summary, "")) {
-    Error(Nil) -> #("", 0)
+    Error(Nil) -> Error(Nil)
     Ok(stored) ->
       case string.split_once(stored, ":") {
         Ok(#(sequence_number, handle)) ->
           case int.parse(sequence_number) {
-            Ok(sequence_number) -> #(handle, sequence_number)
-            Error(Nil) -> #("", 0)
+            Ok(sequence_number) -> Ok(#(handle, sequence_number))
+            Error(Nil) -> Error(Nil)
           }
-        Error(Nil) -> #("", 0)
+        Error(Nil) -> Error(Nil)
       }
   }
 }
 
-pub fn put_obj(
+pub fn put_object(
   docs: DocStore,
   topic: String,
   sha: String,
   body: String,
-) -> Nil {
+) -> Result(Nil, Nil) {
   put(docs, topic, #(key_object, sha), body)
 }
 
-pub fn get_obj(
+pub fn get_object(
   docs: DocStore,
   topic: String,
   sha: String,
@@ -545,12 +549,10 @@ fn put(
   topic: String,
   key: #(String, String),
   value: String,
-) -> Nil {
-  let _ =
-    with_table(docs, topic, True, fn(table) {
-      set.insert(into: table, key: key, value: value)
-    })
-  Nil
+) -> Result(Nil, Nil) {
+  with_table(docs, topic, True, fn(table) {
+    set.insert(into: table, key: key, value: value)
+  })
 }
 
 fn get(

@@ -46,6 +46,7 @@ import gleam/string
 import gleam/uri
 import mist
 import signet/jwt
+import signet/types
 import vestibule/auth as vestibule_auth
 import vestibule/error as vestibule_error
 
@@ -161,7 +162,7 @@ pub fn start_with_backend(
   jwt_secret: String,
   storage: store.Backend,
 ) -> Result(#(beryl.Channels, session.Session), beryl_error.StartFailure) {
-  let ps = pubsub.start(pubsub.default_config())
+  let pubsub_handle = pubsub.start(pubsub.default_config())
   // Phoenix framing is the coordinator default so `levee-driver` sockets on
   // the stock beryl transport need no per-connection codec; the Socket.IO
   // transport overrides it per socket with the dewdrop/Routerlicious codec.
@@ -174,7 +175,7 @@ pub fn start_with_backend(
   // disable that limit.
   let config =
     beryl.config(wire.phoenix_codec())
-    |> beryl.with_pubsub(ps)
+    |> beryl.with_pubsub(pubsub_handle)
     |> beryl.with_max_inbound_frame_bytes(max_frame_bytes())
     // The values beryl already defaults to, made explicit and overridable.
     // The sweep they drive is what reclaims a socket whose process died without
@@ -230,7 +231,7 @@ pub fn start_with_backend(
   // registered with a handle that stays valid across restarts — and it doubles
   // as the name of the registry's ETS table.
   let session_name = session.new_name()
-  let sess = session.from_name(session_name, storage)
+  let document_session = session.from_name(session_name, storage)
   // The channel needs the handle `register` returns, to push a targeted
   // signal to one socket via `beryl.send_info` — but `register` takes the
   // channel, so the handle cannot exist at construction. The holder closes
@@ -278,13 +279,13 @@ pub fn start_with_backend(
           "document:*",
           document_channel.new(
             channels,
-            sess,
+            document_session,
             registration,
             presence_worker.from_name(presence_name),
           ),
         )
         |> result.map(document_channel.set_registration(registration, _))
-      Ok(#(channels, sess))
+      Ok(#(channels, document_session))
     }
     Error(e) -> Error(beryl_error.from_actor_start_error(e))
   }
@@ -409,14 +410,14 @@ pub fn serve_with_backend(
         )
       case start_with_backend(configured_tenant, jwt_secret, storage) {
         Error(_) -> Error(Nil)
-        Ok(#(channels, sess)) -> {
+        Ok(#(channels, document_session)) -> {
           let assert Ok(_) =
             socketio_transport.handler(channels, origin_policy(), fn(req) {
               beryl_mist.upgrade(
                 req,
                 channels,
                 phoenix_transport_config(),
-                fn() { rest(sess, config, public_url, req) },
+                fn() { rest(document_session, config, public_url, req) },
               )
             })
             |> mist.new
@@ -436,13 +437,13 @@ pub fn serve_with_backend(
 
 // REST: document lifecycle + deltas catch-up + git object storage.
 fn rest(
-  sess: session.Session,
+  document_session: session.Session,
   config: AuthConfig,
   public_url: String,
   req: request.Request(mist.Connection),
-) {
+) -> response.Response(mist.ResponseData) {
   let req = normalize_restless_request(req)
-  let storage = session.storage(sess)
+  let storage = session.storage(document_session)
   case req.method, request.path_segments(req) {
     // Unauthenticated readiness probe, byte-identical to levee's
     // `HealthController`, so container healthchecks and levee's integration
@@ -520,18 +521,24 @@ fn rest(
         Error(e) -> auth_error_response(e)
         Ok(_) -> {
           // Levee: `params["id"] || generate_document_id()`.
-          let doc = case requested_document_id(body) {
+          let document_id = case requested_document_id(body) {
             Some(id) -> id
             None -> generate_document_id()
           }
-          create_document(sess, tenant, doc, public_url, body)
+          create_document(
+            document_session,
+            tenant,
+            document_id,
+            public_url,
+            body,
+          )
         }
       }
     }
-    http.Get, ["documents", tenant, "session", doc] -> {
+    http.Get, ["documents", tenant, "session", document_id] -> {
       case
-        authorize_read(req, config, tenant, doc),
-        session.exists(sess, topic(tenant, doc))
+        authorize_read(req, config, tenant, document_id),
+        session.exists(document_session, topic(tenant, document_id))
       {
         Error(e), _ -> auth_error_response(e)
         _, False -> not_found()
@@ -547,36 +554,46 @@ fn rest(
           |> json_response(200)
       }
     }
-    http.Get, ["documents", tenant, doc, "deltas"] ->
-      deltas_response(sess, config, req, tenant, doc, False)
-    http.Get, ["deltas", tenant, doc] ->
-      deltas_response(sess, config, req, tenant, doc, True)
-    http.Get, ["documents", tenant, doc] -> {
+    http.Get, ["documents", tenant, document_id, "deltas"] ->
+      deltas_response(document_session, config, req, tenant, document_id, False)
+    http.Get, ["deltas", tenant, document_id] ->
+      deltas_response(document_session, config, req, tenant, document_id, True)
+    http.Get, ["documents", tenant, document_id] -> {
       case
-        authorize_read(req, config, tenant, doc),
-        session.exists(sess, topic(tenant, doc))
+        authorize_read(req, config, tenant, document_id),
+        session.exists(document_session, topic(tenant, document_id))
       {
         Error(e), _ -> auth_error_response(e)
         _, False -> not_found()
         Ok(_), True ->
           json.object([
-            #("id", json.string(doc)),
+            #("id", json.string(document_id)),
             #("tenantId", json.string(tenant)),
             #(
               "sequenceNumber",
-              json.int(session.sequence_number(sess, topic(tenant, doc))),
+              json.int(session.sequence_number(
+                document_session,
+                topic(tenant, document_id),
+              )),
             ),
           ])
           |> json.to_string
           |> json_response(200)
       }
     }
-    method, ["documents", tenant, doc]
+    method, ["documents", tenant, document_id]
       if method == http.Post || method == http.Put
     -> {
-      case authorize_write(req, config, tenant, doc) {
+      case authorize_write(req, config, tenant, document_id) {
         Error(e) -> auth_error_response(e)
-        Ok(_) -> create_document(sess, tenant, doc, public_url, read_body(req))
+        Ok(_) ->
+          create_document(
+            document_session,
+            tenant,
+            document_id,
+            public_url,
+            read_body(req),
+          )
       }
     }
     http.Get, ["repos", tenant, "commits"] ->
@@ -667,8 +684,8 @@ fn rest(
             Error(_) -> not_found()
             Ok(data) -> {
               let query =
-                uri.parse_query(req.query |> option_unwrap)
-                |> result_unwrap_list
+                uri.parse_query(req.query |> option.unwrap(""))
+                |> result.unwrap([])
               let recursive = case list.key_find(query, "recursive") {
                 Ok("1") -> True
                 _ -> False
@@ -701,7 +718,7 @@ fn token_mint_response(
   config: AuthConfig,
   req: request.Request(mist.Connection),
   tenant: String,
-) {
+) -> response.Response(mist.ResponseData) {
   case
     store.get_tenant_secrets(config.storage, tenant),
     config.token_mint_secret,
@@ -802,7 +819,7 @@ fn authorize_tenant_write(
   req: request.Request(mist.Connection),
   config: AuthConfig,
   tenant: String,
-) {
+) -> Result(types.TokenClaims, auth.AuthError) {
   use #(authorization, secrets) <- result.try(tenant_secrets_and_header(
     req,
     config.storage,
@@ -820,8 +837,8 @@ fn authorize_write(
   req: request.Request(mist.Connection),
   config: AuthConfig,
   tenant: String,
-  doc: String,
-) {
+  document_id: String,
+) -> Result(types.TokenClaims, auth.AuthError) {
   use #(authorization, secrets) <- result.try(tenant_secrets_and_header(
     req,
     config.storage,
@@ -831,7 +848,7 @@ fn authorize_write(
     authorization,
     secrets,
     tenant,
-    doc,
+    document_id,
     now_seconds(),
   )
 }
@@ -840,8 +857,8 @@ fn authorize_read(
   req: request.Request(mist.Connection),
   config: AuthConfig,
   tenant: String,
-  doc: String,
-) {
+  document_id: String,
+) -> Result(types.TokenClaims, auth.AuthError) {
   use #(authorization, secrets) <- result.try(tenant_secrets_and_header(
     req,
     config.storage,
@@ -851,7 +868,7 @@ fn authorize_read(
     authorization,
     secrets,
     tenant,
-    doc,
+    document_id,
     now_seconds(),
   )
 }
@@ -860,7 +877,7 @@ fn authorize_storage_read(
   req: request.Request(mist.Connection),
   config: AuthConfig,
   tenant: String,
-) {
+) -> Result(types.TokenClaims, auth.AuthError) {
   use #(authorization, secrets) <- result.try(tenant_secrets_and_header(
     req,
     config.storage,
@@ -878,7 +895,7 @@ fn authorize_storage_write(
   req: request.Request(mist.Connection),
   config: AuthConfig,
   tenant: String,
-) {
+) -> Result(types.TokenClaims, auth.AuthError) {
   use #(authorization, secrets) <- result.try(tenant_secrets_and_header(
     req,
     config.storage,
@@ -898,12 +915,12 @@ fn commits_response(
   public_url: String,
   req: request.Request(mist.Connection),
   tenant: String,
-) {
+) -> response.Response(mist.ResponseData) {
   case authorize_storage_read(req, config, tenant) {
     Error(e) -> auth_error_response(e)
     Ok(claims) -> {
       let query =
-        uri.parse_query(req.query |> option_unwrap) |> result_unwrap_list
+        uri.parse_query(req.query |> option.unwrap("")) |> result.unwrap([])
       let count = case list.key_find(query, "count") {
         Error(_) -> Ok(1)
         Ok(value) ->
@@ -946,7 +963,7 @@ fn refs_response(
   public_url: String,
   req: request.Request(mist.Connection),
   tenant: String,
-) {
+) -> response.Response(mist.ResponseData) {
   case authorize_storage_read(req, config, tenant) {
     Error(e) -> auth_error_response(e)
     Ok(_) ->
@@ -964,7 +981,7 @@ fn create_ref_response(
   public_url: String,
   req: request.Request(mist.Connection),
   tenant: String,
-) {
+) -> response.Response(mist.ResponseData) {
   case authorize_storage_write(req, config, tenant) {
     Error(e) -> auth_error_response(e)
     Ok(_) ->
@@ -972,8 +989,9 @@ fn create_ref_response(
         Error(_) -> bad_request()
         Ok(ref) -> {
           case git.create_ref(storage, tenant, ref.0, ref.1) {
-            False -> conflict()
-            True ->
+            Error(Nil) -> storage_unavailable()
+            Ok(False) -> conflict()
+            Ok(True) ->
               git.ref_response(public_url, tenant, ref.0, ref.1)
               |> json.to_string
               |> json_response(201)
@@ -991,7 +1009,7 @@ fn ref_response(
   tenant: String,
   ref_parts: List(String),
   method: http.Method,
-) {
+) -> response.Response(mist.ResponseData) {
   let ref = "refs/" <> string.join(ref_parts, "/")
   case method {
     http.Get ->
@@ -1013,12 +1031,14 @@ fn ref_response(
       {
         Error(e), _ -> auth_error_response(e)
         _, Error(_) -> bad_request()
-        Ok(_), Ok(sha) -> {
-          git.put_ref(storage, tenant, ref, sha)
-          git.ref_response(public_url, tenant, ref, sha)
-          |> json.to_string
-          |> json_response(200)
-        }
+        Ok(_), Ok(sha) ->
+          case git.put_ref(storage, tenant, ref, sha) {
+            Error(Nil) -> storage_unavailable()
+            Ok(Nil) ->
+              git.ref_response(public_url, tenant, ref, sha)
+              |> json.to_string
+              |> json_response(200)
+          }
       }
     _ -> not_found()
   }
@@ -1030,38 +1050,38 @@ fn decode_sha(body: String) -> Result(String, Nil) {
 }
 
 fn deltas_response(
-  sess: session.Session,
+  document_session: session.Session,
   config: AuthConfig,
   req: request.Request(mist.Connection),
   tenant: String,
-  doc: String,
+  document_id: String,
   envelope: Bool,
-) {
+) -> response.Response(mist.ResponseData) {
   case
-    authorize_read(req, config, tenant, doc),
-    session.exists(sess, topic(tenant, doc))
+    authorize_read(req, config, tenant, document_id),
+    session.exists(document_session, topic(tenant, document_id))
   {
     Error(e), _ -> auth_error_response(e)
     _, False -> not_found()
     Ok(_), True -> {
       let query =
-        uri.parse_query(req.query |> option_unwrap) |> result_unwrap_list
+        uri.parse_query(req.query |> option.unwrap("")) |> result.unwrap([])
       let from = case list.key_find(query, "from") {
-        Ok(value) -> int.parse(value) |> result_unwrap(-1)
+        Ok(value) -> int.parse(value) |> result.unwrap(-1)
         Error(_) -> -1
       }
       let to = case list.key_find(query, "to") {
         Ok(value) ->
-          int.parse(value) |> result_unwrap(9_223_372_036_854_775_807)
+          int.parse(value) |> result.unwrap(9_223_372_036_854_775_807)
         Error(_) -> 9_223_372_036_854_775_807
       }
       let ops =
-        session.since(sess, topic(tenant, doc), from)
+        session.since(document_session, topic(tenant, document_id), from)
         |> list.filter(fn(op) { op.0 <= to })
         |> list.sort(fn(a, b) { int.compare(a.0, b.0) })
         |> list.take(2000)
       let messages =
-        json.preprocessed_array(list.map(ops, session.stored_message_json))
+        json.preprocessed_array(list.map(ops, session.stored_message_to_json))
       let body = case envelope {
         True -> json.object([#("value", messages)])
         False -> messages
@@ -1072,17 +1092,17 @@ fn deltas_response(
 }
 
 fn create_document(
-  sess: session.Session,
+  document_session: session.Session,
   tenant: String,
-  doc: String,
+  document_id: String,
   public_url: String,
   body: String,
-) {
-  let document_topic = topic(tenant, doc)
+) -> response.Response(mist.ResponseData) {
+  let document_topic = topic(tenant, document_id)
   case
-    session.create_initialized(sess, document_topic, fn() {
+    session.create_initialized(document_session, document_topic, fn() {
       initial_summary.persist(
-        session.storage(sess),
+        session.storage(document_session),
         document_topic,
         body,
         now_seconds(),
@@ -1095,13 +1115,23 @@ fn create_document(
       // The session has the summary pointer committed; publish the ref that
       // mirrors it. Deliberately after, not during `initial_summary.persist`, so
       // a crash can only leave the ref lagging rather than pointing at a summary
-      // the session does not know it accepted.
-      let #(handle, _sn) = session.summary(sess, document_topic)
-      case handle {
-        "" -> Nil
-        _ -> git.publish_summary_ref(session.storage(sess), tenant, doc, handle)
+      // the session does not know it accepted. Best-effort for the same reason:
+      // a failed publish is a lagging ref, repaired on the document's next
+      // cold start by `doc_state.rehydrate`.
+      case session.summary(document_session, document_topic) {
+        Error(Nil) -> Nil
+        Ok(#(handle, _sn)) -> {
+          let _ =
+            git.publish_summary_ref(
+              session.storage(document_session),
+              tenant,
+              document_id,
+              handle,
+            )
+          Nil
+        }
       }
-      create_response(doc, tenant, public_url, enable_discovery(body))
+      create_response(document_id, tenant, public_url, enable_discovery(body))
       |> json.to_string
       |> json_response(201)
     }
@@ -1113,16 +1143,16 @@ fn create_document(
 /// `restWrapper.post<string>` consumes, and only wraps it in an object when the
 /// caller asked for discovery.
 pub fn create_response(
-  doc: String,
+  document_id: String,
   tenant: String,
   public_url: String,
   enable_discovery: Bool,
 ) -> json.Json {
   case enable_discovery {
-    False -> json.string(doc)
+    False -> json.string(document_id)
     True ->
       json.object([
-        #("id", json.string(doc)),
+        #("id", json.string(document_id)),
         #("session", session_info_json(tenant, public_url)),
       ])
   }
@@ -1193,34 +1223,44 @@ pub fn auth_error_message(error: auth.AuthError) -> String {
   }
 }
 
-fn auth_error_response(error: auth.AuthError) {
+fn auth_error_response(
+  error: auth.AuthError,
+) -> response.Response(mist.ResponseData) {
   json.object([#("error", json.string(auth_error_message(error)))])
   |> json.to_string
   |> json_response(auth_error_status(error))
 }
 
-fn unauthorized() {
+fn unauthorized() -> response.Response(mist.ResponseData) {
   json.object([#("error", json.string("unauthorized"))])
   |> json.to_string
   |> json_response(401)
 }
 
-fn not_found() {
+fn not_found() -> response.Response(mist.ResponseData) {
   json.object([#("error", json.string("not found"))])
   |> json.to_string
   |> json_response(404)
 }
 
-fn bad_request() {
+fn bad_request() -> response.Response(mist.ResponseData) {
   json.object([#("error", json.string("bad request"))])
   |> json.to_string
   |> json_response(400)
 }
 
-fn conflict() {
+fn conflict() -> response.Response(mist.ResponseData) {
   json.object([#("error", json.string("conflict"))])
   |> json.to_string
   |> json_response(409)
+}
+
+/// A write that storage itself refused — retries exhausted, disk fault. 503 so
+/// clients treat it as transient rather than as a bad request.
+fn storage_unavailable() -> response.Response(mist.ResponseData) {
+  json.object([#("error", json.string("storage unavailable"))])
+  |> json.to_string
+  |> json_response(503)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1313,7 +1353,11 @@ fn admin_session_token_authorized(
 
 /// Shape of every admin API error, matching levee's
 /// `%{error: %{code:, message:}}`.
-fn admin_error(code: String, message: String, status: Int) {
+fn admin_error(
+  code: String,
+  message: String,
+  status: Int,
+) -> response.Response(mist.ResponseData) {
   json.object([
     #(
       "error",
@@ -1327,11 +1371,11 @@ fn admin_error(code: String, message: String, status: Int) {
   |> json_response(status)
 }
 
-fn admin_unauthorized() {
+fn admin_unauthorized() -> response.Response(mist.ResponseData) {
   admin_error("unauthorized", "Invalid admin key", 401)
 }
 
-fn admin_not_found() {
+fn admin_not_found() -> response.Response(mist.ResponseData) {
   admin_error("not_found", "Tenant not found", 404)
 }
 
@@ -1378,12 +1422,14 @@ fn session_token(req: request.Request(mist.Connection)) -> Result(String, Nil) {
   }
 }
 
-fn session_unauthorized() {
+fn session_unauthorized() -> response.Response(mist.ResponseData) {
   admin_error("unauthorized", "Invalid or expired session", 401)
 }
 
-fn me_response(user: admin_auth.AdminUser) {
-  json.object([#("user", admin_user_json(user))])
+fn me_response(
+  user: admin_auth.AdminUser,
+) -> response.Response(mist.ResponseData) {
+  json.object([#("user", admin_user_to_json(user))])
   |> json.to_string
   |> json_response(200)
 }
@@ -1391,9 +1437,9 @@ fn me_response(user: admin_auth.AdminUser) {
 /// Matches the admin UI's `user_decoder` (`id`, `email`, `display_name`,
 /// `created_at`) exactly, plus `github_username`/`is_admin` for callers that
 /// want them — extra JSON fields are simply ignored by that decoder.
-/// Floodgate has no non-admin role (see `admin_auth.AdminUser`'s doc
+/// Floodgate has no non-admin role (see `admin_auth.AdminUser`'s document_id
 /// comment), so `is_admin` is always `true`.
-fn admin_user_json(user: admin_auth.AdminUser) -> json.Json {
+fn admin_user_to_json(user: admin_auth.AdminUser) -> json.Json {
   json.object([
     #("id", json.string(user.id)),
     #("email", json.string(user.email)),
@@ -1404,7 +1450,7 @@ fn admin_user_json(user: admin_auth.AdminUser) -> json.Json {
   ])
 }
 
-fn logout_response(public_url: String) {
+fn logout_response(public_url: String) -> response.Response(mist.ResponseData) {
   json.object([#("message", json.string("logged out"))])
   |> json.to_string
   |> json_response(200)
@@ -1416,7 +1462,7 @@ fn logout_response(public_url: String) {
 /// a real capability check. The admin UI's login page reads it to hide its
 /// password form and "Register" link and present GitHub OAuth only, while
 /// leaving Levee's own login page — which reports `true` — unchanged.
-fn auth_config_response() {
+fn auth_config_response() -> response.Response(mist.ResponseData) {
   json.object([#("password_auth", json.bool(False))])
   |> json.to_string
   |> json_response(200)
@@ -1425,7 +1471,7 @@ fn auth_config_response() {
 fn oauth_begin_response(
   config: AuthConfig,
   req: request.Request(mist.Connection),
-) {
+) -> response.Response(mist.ResponseData) {
   let _ = req
   case oauth.begin_auth(config.github, config.oauth_state, now_seconds()) {
     Ok(url) -> redirect_response(url)
@@ -1446,8 +1492,9 @@ fn oauth_callback_response(
   config: AuthConfig,
   public_url: String,
   req: request.Request(mist.Connection),
-) {
-  let query = uri.parse_query(req.query |> option_unwrap) |> result_unwrap_list
+) -> response.Response(mist.ResponseData) {
+  let query =
+    uri.parse_query(req.query |> option.unwrap("")) |> result.unwrap([])
   case list.key_find(query, "state") {
     Error(_) ->
       oauth_error_response(
@@ -1521,7 +1568,7 @@ pub fn handle_successful_auth(
   config: AuthConfig,
   public_url: String,
   auth_result: vestibule_auth.Auth,
-) {
+) -> response.Response(mist.ResponseData) {
   let github_id = auth_result.uid
   let info = auth_result.info
   let github_username = option.unwrap(info.nickname, "")
@@ -1598,7 +1645,11 @@ pub fn find_or_create_admin_user(
   }
 }
 
-fn oauth_error_response(status: Int, code: String, message: String) {
+fn oauth_error_response(
+  status: Int,
+  code: String,
+  message: String,
+) -> response.Response(mist.ResponseData) {
   admin_error(code, message, status)
 }
 
@@ -1609,7 +1660,7 @@ fn admin_url_with_error(code: String) -> String {
   "/admin?error=" <> code
 }
 
-fn redirect_response(location: String) {
+fn redirect_response(location: String) -> response.Response(mist.ResponseData) {
   response.new(302)
   |> response.set_header("location", location)
   |> response.set_body(mist.Bytes(bytes_tree.new()))
@@ -1629,20 +1680,23 @@ fn public_url_scheme(public_url: String) -> http.Scheme {
 /// `/api/auth/*` and `/api/tenants/*`); Max-Age matching the session's
 /// remaining lifetime, so the browser expires it in step with the server.
 fn set_admin_session_cookie(
-  resp,
+  resp: response.Response(mist.ResponseData),
   public_url: String,
   session: admin_auth.AdminSession,
   config: AuthConfig,
-) {
-  let attrs =
+) -> response.Response(mist.ResponseData) {
+  let attributes =
     cookie.Attributes(
       ..cookie.defaults(public_url_scheme(public_url)),
       max_age: Some(config.admin_session_ttl_seconds),
     )
-  response.set_cookie(resp, admin_session_cookie_name, session.id, attrs)
+  response.set_cookie(resp, admin_session_cookie_name, session.id, attributes)
 }
 
-fn clear_admin_session_cookie(resp, public_url: String) {
+fn clear_admin_session_cookie(
+  resp: response.Response(mist.ResponseData),
+  public_url: String,
+) -> response.Response(mist.ResponseData) {
   response.expire_cookie(
     resp,
     admin_session_cookie_name,
@@ -1652,7 +1706,7 @@ fn clear_admin_session_cookie(resp, public_url: String) {
 
 /// `{id, name}` — the list-endpoint shape, matching `api.gleam`'s
 /// `tenant_decoder`. Never carries secrets.
-pub fn tenant_info_json(tenant: store.TenantInfo) -> json.Json {
+pub fn tenant_info_to_json(tenant: store.TenantInfo) -> json.Json {
   json.object([
     #("id", json.string(tenant.id)),
     #("name", json.string(tenant.name)),
@@ -1661,7 +1715,9 @@ pub fn tenant_info_json(tenant: store.TenantInfo) -> json.Json {
 
 /// `{id, name, secret1, secret2}` — the create/show shape, matching
 /// `api.gleam`'s `tenant_with_secrets_decoder`.
-pub fn tenant_with_secrets_json(tenant: store.TenantWithSecrets) -> json.Json {
+pub fn tenant_with_secrets_to_json(
+  tenant: store.TenantWithSecrets,
+) -> json.Json {
   json.object([
     #("id", json.string(tenant.id)),
     #("name", json.string(tenant.name)),
@@ -1670,13 +1726,15 @@ pub fn tenant_with_secrets_json(tenant: store.TenantWithSecrets) -> json.Json {
   ])
 }
 
-fn tenants_list_response(storage: store.Backend) {
+fn tenants_list_response(
+  storage: store.Backend,
+) -> response.Response(mist.ResponseData) {
   json.object([
     #(
       "tenants",
       json.preprocessed_array(list.map(
         store.list_tenants(storage),
-        tenant_info_json,
+        tenant_info_to_json,
       )),
     ),
   ])
@@ -1690,14 +1748,17 @@ pub fn decode_tenant_name(body: String) -> Result(String, Nil) {
   |> result.replace_error(Nil)
 }
 
-fn tenant_create_response(storage: store.Backend, body: String) {
+fn tenant_create_response(
+  storage: store.Backend,
+  body: String,
+) -> response.Response(mist.ResponseData) {
   case decode_tenant_name(body) {
     Error(_) -> admin_error("missing_fields", "Required: name", 422)
     Ok(name) ->
       json.object([
         #(
           "tenant",
-          tenant_with_secrets_json(store.create_tenant(storage, name)),
+          tenant_with_secrets_to_json(store.create_tenant(storage, name)),
         ),
       ])
       |> json.to_string
@@ -1705,13 +1766,16 @@ fn tenant_create_response(storage: store.Backend, body: String) {
   }
 }
 
-fn tenant_show_response(storage: store.Backend, id: String) {
+fn tenant_show_response(
+  storage: store.Backend,
+  id: String,
+) -> response.Response(mist.ResponseData) {
   case store.get_tenant(storage, id), store.get_tenant_secrets(storage, id) {
     Ok(info), Ok(#(secret1, secret2)) ->
       json.object([
         #(
           "tenant",
-          tenant_with_secrets_json(store.TenantWithSecrets(
+          tenant_with_secrets_to_json(store.TenantWithSecrets(
             id: info.id,
             name: info.name,
             secret1: secret1,
@@ -1725,7 +1789,10 @@ fn tenant_show_response(storage: store.Backend, id: String) {
   }
 }
 
-fn tenant_delete_response(storage: store.Backend, id: String) {
+fn tenant_delete_response(
+  storage: store.Backend,
+  id: String,
+) -> response.Response(mist.ResponseData) {
   case store.tenant_exists(storage, id) {
     False -> admin_not_found()
     True -> {
@@ -1755,7 +1822,7 @@ fn tenant_regenerate_secret_response(
   storage: store.Backend,
   id: String,
   slot: String,
-) {
+) -> response.Response(mist.ResponseData) {
   case parse_tenant_slot(slot) {
     Error(_) -> admin_error("invalid_slot", "Slot must be 1 or 2", 400)
     Ok(slot) ->
@@ -1769,7 +1836,10 @@ fn tenant_regenerate_secret_response(
   }
 }
 
-fn json_response(body: String, status: Int) {
+fn json_response(
+  body: String,
+  status: Int,
+) -> response.Response(mist.ResponseData) {
   response.new(status)
   |> response.set_header("content-type", "application/json")
   |> response.set_body(mist.Bytes(bytes_tree.from_string(body)))
@@ -1780,8 +1850,8 @@ fn generate_document_id() -> String {
   |> bit_array.base16_encode
 }
 
-fn topic(tenant: String, doc: String) -> String {
-  store.topic(tenant, doc)
+fn topic(tenant: String, document_id: String) -> String {
+  store.topic(tenant, document_id)
 }
 
 @external(erlang, "floodgate_ffi", "now_seconds")
@@ -1794,14 +1864,16 @@ fn read_body(req: request.Request(mist.Connection)) -> String {
   }
 }
 
-fn normalize_restless_request(req: request.Request(mist.Connection)) {
+fn normalize_restless_request(
+  req: request.Request(mist.Connection),
+) -> request.Request(mist.Connection) {
   case request.get_header(req, "content-type") {
     Ok(content_type) -> {
       case string.contains(content_type, ";restless") {
         False -> req
         True -> {
           let fields =
-            read_raw_body(req) |> uri.parse_query |> result_unwrap_list
+            read_raw_body(req) |> uri.parse_query |> result.unwrap([])
           let method = case list.key_find(fields, "method") {
             Ok(value) -> http.parse_method(value) |> result.unwrap(req.method)
             Error(_) -> req.method
@@ -1838,35 +1910,8 @@ fn normalize_restless_request(req: request.Request(mist.Connection)) {
 
 fn read_raw_body(req: request.Request(mist.Connection)) -> String {
   case mist.read_body(req, 4_000_000) {
-    Ok(r) -> bit_array.to_string(r.body) |> result_unwrap_str
+    Ok(r) -> bit_array.to_string(r.body) |> result.unwrap("")
     Error(_) -> ""
-  }
-}
-
-fn result_unwrap_str(r: Result(String, a)) -> String {
-  case r {
-    Ok(s) -> s
-    Error(_) -> ""
-  }
-}
-
-fn option_unwrap(o: option.Option(String)) -> String {
-  option.unwrap(o, "")
-}
-
-fn result_unwrap(r: Result(Int, a), d: Int) -> Int {
-  case r {
-    Ok(v) -> v
-    Error(_) -> d
-  }
-}
-
-fn result_unwrap_list(
-  r: Result(List(#(String, String)), a),
-) -> List(#(String, String)) {
-  case r {
-    Ok(v) -> v
-    Error(_) -> []
   }
 }
 
@@ -1886,9 +1931,10 @@ pub fn resolve_port(port: String, floodgate_port: String) -> Int {
   }
 }
 
-pub fn main() {
+pub fn main() -> Nil {
   let backend_name = getenv("FLOODGATE_STORAGE_BACKEND", "ets")
   let assert Ok(storage) = backend_from_name(backend_name)
   let port = resolve_port(getenv("PORT", ""), getenv("FLOODGATE_PORT", ""))
   let assert Ok(Nil) = serve_with_backend(port, storage)
+  Nil
 }

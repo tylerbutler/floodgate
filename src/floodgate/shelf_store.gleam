@@ -32,6 +32,7 @@ import gleam/otp/actor
 import gleam/otp/static_supervisor
 import gleam/otp/supervision
 import gleam/result
+import gleam/string
 import shelf
 import shelf/bag.{type PBag}
 import shelf/set.{type PSet}
@@ -141,18 +142,20 @@ fn backend(
     open: fn() { Nil },
     put_document: fn(topic) { doc_store.put_marker(docs, topic) },
     has_document: fn(topic) { doc_store.exists(docs, topic) },
-    put_op: fn(topic, sn, contents) {
-      doc_store.put_op(docs, topic, sn, contents)
+    put_op: fn(topic, sequence_number, contents) {
+      doc_store.put_op(docs, topic, sequence_number, contents)
     },
     get_ops: fn(topic) { doc_store.get_ops(docs, topic) },
-    put_summary: fn(topic, handle, sn) {
-      doc_store.put_summary(docs, topic, handle, sn)
+    put_summary: fn(topic, handle, sequence_number) {
+      doc_store.put_summary(docs, topic, handle, sequence_number)
     },
     get_summary: fn(topic) { doc_store.get_summary(docs, topic) },
-    put_obj: fn(topic, sha, data) { doc_store.put_obj(docs, topic, sha, data) },
+    put_object: fn(topic, sha, data) {
+      doc_store.put_object(docs, topic, sha, data)
+    },
     // Legacy objects remain readable from the old shared table.
-    get_obj: fn(topic, sha) {
-      case doc_store.get_obj(docs, topic, sha) {
+    get_object: fn(topic, sha) {
+      case doc_store.get_object(docs, topic, sha) {
         Ok(data) -> Ok(data)
         Error(Nil) ->
           optional(
@@ -163,16 +166,15 @@ fn backend(
       }
     },
     put_ref: fn(tenant, ref, sha) {
-      let assert Ok(Nil) =
-        run(resolve, fn(tables) {
-          use _ <- result.try(set.insert(
-            into: tables.refs,
-            key: #(tenant, ref),
-            value: sha,
-          ))
-          bag.insert(into: tables.refs_index, key: tenant, value: ref)
-        })
-      Nil
+      run(resolve, fn(tables) {
+        use _ <- result.try(set.insert(
+          into: tables.refs,
+          key: #(tenant, ref),
+          value: sha,
+        ))
+        bag.insert(into: tables.refs_index, key: tenant, value: ref)
+      })
+      |> result.replace_error(Nil)
     },
     create_ref: fn(tenant, ref, sha) {
       create_ref(resolve, tenant, ref, sha, False, retry_attempts)
@@ -351,14 +353,15 @@ fn retry(
   }
 }
 
+/// `NotFound` is the domain answer for a read; any other shelf error is a
+/// storage fault the caller cannot act on, so crash the calling process and
+/// let its supervisor deal with it rather than disguising the fault as an
+/// absent value.
 fn optional(result: Result(a, shelf.ShelfError)) -> Result(a, Nil) {
   case result {
     Ok(value) -> Ok(value)
     Error(shelf.NotFound) -> Error(Nil)
-    other -> {
-      let assert Ok(value) = other
-      Ok(value)
-    }
+    Error(error) -> panic as { "shelf storage error: " <> string.inspect(error) }
   }
 }
 
@@ -396,7 +399,7 @@ fn create_ref(
   sha: String,
   created: Bool,
   attempts: Int,
-) -> Bool {
+) -> Result(Bool, Nil) {
   case resolve() {
     Error(Nil) -> retry_create_ref(resolve, tenant, ref, sha, created, attempts)
     Ok(tables) ->
@@ -415,21 +418,15 @@ fn create_ref(
                 True,
                 attempts,
               )
-            Ok(_) -> False
+            Ok(_) -> Ok(False)
             Error(shelf.TableClosed) ->
               retry_create_ref(resolve, tenant, ref, sha, True, attempts)
-            other -> {
-              let assert Ok(_) = other
-              False
-            }
+            Error(_) -> Error(Nil)
           }
-        Error(shelf.KeyAlreadyPresent) -> False
+        Error(shelf.KeyAlreadyPresent) -> Ok(False)
         Error(shelf.TableClosed) ->
           retry_create_ref(resolve, tenant, ref, sha, True, attempts)
-        other -> {
-          let assert Ok(Nil) = other
-          False
-        }
+        Error(_) -> Error(Nil)
       }
   }
 }
@@ -442,15 +439,12 @@ fn index_created_ref(
   sha: String,
   created: Bool,
   attempts: Int,
-) -> Bool {
+) -> Result(Bool, Nil) {
   case bag.insert(into: tables.refs_index, key: tenant, value: ref) {
-    Ok(Nil) -> created
+    Ok(Nil) -> Ok(created)
     Error(shelf.TableClosed) ->
       retry_create_ref(resolve, tenant, ref, sha, created, attempts)
-    other -> {
-      let assert Ok(Nil) = other
-      False
-    }
+    Error(_) -> Error(Nil)
   }
 }
 
@@ -461,9 +455,9 @@ fn retry_create_ref(
   sha: String,
   created: Bool,
   attempts: Int,
-) -> Bool {
+) -> Result(Bool, Nil) {
   case attempts <= 0 {
-    True -> panic as "shelf storage unavailable"
+    True -> Error(Nil)
     False -> {
       process.sleep(retry_delay_ms)
       create_ref(resolve, tenant, ref, sha, created, attempts - 1)

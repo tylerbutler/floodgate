@@ -26,7 +26,7 @@ pub fn create(
   body: String,
 ) -> Result(String, Nil) {
   use sha <- result.try(object.object_id(kind, body))
-  store.put_obj(storage, topic, sha, body)
+  use Nil <- result.try(store.put_object(storage, topic, sha, body))
   Ok(sha)
 }
 
@@ -37,7 +37,7 @@ pub fn fetch(
   topic: String,
   sha: String,
 ) -> Result(String, Nil) {
-  store.get_obj(storage, topic, sha)
+  store.get_object(storage, topic, sha)
 }
 
 pub fn put_ref(
@@ -45,16 +45,18 @@ pub fn put_ref(
   tenant: String,
   ref: String,
   sha: String,
-) -> Nil {
+) -> Result(Nil, Nil) {
   store.put_ref(storage, tenant, rest.normalize_ref(ref), sha)
 }
 
+/// `Ok(False)` when the ref already exists with a different sha; `Error(Nil)`
+/// when storage itself failed.
 pub fn create_ref(
   storage: store.Backend,
   tenant: String,
   ref: String,
   sha: String,
-) -> Bool {
+) -> Result(Bool, Nil) {
   store.create_ref(storage, tenant, rest.normalize_ref(ref), sha)
 }
 
@@ -85,7 +87,7 @@ pub fn publish_summary_ref(
   tenant: String,
   document_id: String,
   sha: String,
-) -> Nil {
+) -> Result(Nil, Nil) {
   put_ref(storage, tenant, summary_ref(document_id), sha)
 }
 
@@ -101,9 +103,9 @@ pub fn ensure_summary_ref(
   tenant: String,
   document_id: String,
   sha: String,
-) -> Nil {
+) -> Result(Nil, Nil) {
   case get_ref(storage, tenant, summary_ref(document_id)) {
-    Ok(_) -> Nil
+    Ok(_) -> Ok(Nil)
     Error(Nil) -> publish_summary_ref(storage, tenant, document_id, sha)
   }
 }
@@ -180,5 +182,5 @@ pub fn ref_response(
 /// persistence. The walk stays inside one document, which is exactly the set of
 /// objects that document's storage holds.
 fn fetcher(storage: store.Backend, topic: String) -> rest.Fetch {
-  fn(sha) { store.get_obj(storage, topic, sha) }
+  fn(sha) { store.get_object(storage, topic, sha) }
 }

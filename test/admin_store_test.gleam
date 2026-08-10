@@ -24,7 +24,7 @@ pub fn memory_backend_satisfies_admin_user_and_session_boundary_test() {
 
 /// The same contract, run against both backends, matching
 /// `tenant_store_test.assert_tenant_backend_contract`'s pattern.
-fn assert_admin_backend_contract(backend: store.Backend) {
+fn assert_admin_backend_contract(backend: store.Backend) -> Nil {
   // Unknown users/sessions report absence consistently.
   store.get_admin_user(backend, "no-such-github-id") |> should.equal(Error(Nil))
   store.get_admin_session(backend, "no-such-session")

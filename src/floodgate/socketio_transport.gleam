@@ -44,7 +44,8 @@ type ConnectionState {
     socket_id: String,
     channels: Channels,
     send_subject: Subject(SendRequest),
-    topic: String,
+    /// `None` until the socket's `connect_document` names a document.
+    topic: Option(String),
     connection_permit: Option(ConnectionPermit),
     message_limiter: Option(RateLimiter),
     max_frame_bytes: Int,
@@ -199,7 +200,7 @@ fn on_init(
       socket_id: socket_id,
       channels: channels,
       send_subject: send_subject,
-      topic: "",
+      topic: None,
       connection_permit: Some(permit),
       message_limiter: transport.new_message_limiter(channels),
       max_frame_bytes: max_frame_bytes,
@@ -334,79 +335,85 @@ fn handle_fluid_event(
     Error(Nil) -> mist.continue(state)
     Ok(#(inbound, topic)) -> {
       transport.route_decoded(state.channels, state.socket_id, inbound)
-      mist.continue(ConnectionState(..state, topic: topic))
+      mist.continue(ConnectionState(..state, topic: Some(topic)))
     }
   }
 }
 
 fn inbound_event(
-  current_topic: String,
+  current_topic: Option(String),
   event: String,
   args: List(dynamic.Dynamic),
 ) -> Result(#(Inbound, String), Nil) {
   case event, args {
+    // A connect names its own document — and may rename the socket's topic —
+    // so it is routable whether or not the socket has joined before.
     e, [payload, ..] if e == events.connect_document -> {
-      let topic = topic_from_connect(payload)
-      case topic {
-        "" -> Error(Nil)
-        _ -> Ok(#(codec.inbound(None, None, topic, Join, payload), topic))
-      }
+      use topic <- result.try(topic_from_connect(payload))
+      Ok(#(codec.inbound(None, None, topic, Join, payload), topic))
     }
-    e, [client_id, messages, ..]
-      if e == events.submit_op && current_topic != ""
-    ->
+    // Everything else only makes sense on a socket that has joined a document.
+    _, _ ->
+      case current_topic {
+        None -> Error(Nil)
+        Some(topic) -> joined_event(topic, event, args)
+      }
+  }
+}
+
+fn joined_event(
+  topic: String,
+  event: String,
+  args: List(dynamic.Dynamic),
+) -> Result(#(Inbound, String), Nil) {
+  case event, args {
+    e, [client_id, messages, ..] if e == events.submit_op ->
       Ok(#(
         codec.inbound(
           None,
           None,
-          current_topic,
+          topic,
           Event(event),
           dynamic.properties([
             #(dynamic.string("clientId"), client_id),
             #(dynamic.string("messageBatches"), messages),
           ]),
         ),
-        current_topic,
+        topic,
       ))
-    e, [client_id, signals, ..]
-      if e == events.submit_signal && current_topic != ""
-    ->
+    e, [client_id, signals, ..] if e == events.submit_signal ->
       Ok(#(
         codec.inbound(
           None,
           None,
-          current_topic,
+          topic,
           Event(event),
           dynamic.properties([
             #(dynamic.string("clientId"), client_id),
             #(dynamic.string("signals"), signals),
           ]),
         ),
-        current_topic,
+        topic,
       ))
-    _, [payload, ..] if current_topic != "" ->
-      Ok(#(
-        codec.inbound(None, None, current_topic, Event(event), payload),
-        current_topic,
-      ))
-    _, _ -> Error(Nil)
+    _, [payload, ..] ->
+      Ok(#(codec.inbound(None, None, topic, Event(event), payload), topic))
+    _, [] -> Error(Nil)
   }
 }
 
-fn topic_from_connect(payload: dynamic.Dynamic) -> String {
-  let tenant = string_field(payload, "tenantId")
-  let document_id = string_field(payload, "id")
-  case tenant, document_id {
-    "", _ -> ""
-    _, "" -> ""
-    _, _ -> store.topic(tenant, document_id)
-  }
+fn topic_from_connect(payload: dynamic.Dynamic) -> Result(String, Nil) {
+  use tenant <- result.try(string_field(payload, "tenantId"))
+  use document_id <- result.try(string_field(payload, "id"))
+  Ok(store.topic(tenant, document_id))
 }
 
-fn string_field(value: dynamic.Dynamic, key: String) -> String {
+/// A non-empty string field of `value`, or `Error(Nil)` when the field is
+/// missing, not a string, or empty.
+fn string_field(value: dynamic.Dynamic, key: String) -> Result(String, Nil) {
   case decode.run(value, decode.field(key, decode.string, decode.success)) {
-    Ok(found) -> found
-    Error(_) -> ""
+    Ok("") -> Error(Nil)
+    Ok(found) -> Ok(found)
+    Error(_) -> Error(Nil)
   }
 }
 

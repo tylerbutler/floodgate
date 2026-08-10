@@ -18,8 +18,8 @@ pub type NackErrorType =
   spillway_nack.NackErrorType
 
 /// Convert a nack error type to its wire-format string.
-pub fn nack_error_type_to_string(t: NackErrorType) -> String {
-  spillway_nack.nack_error_type_to_string(t)
+pub fn error_type_to_string(error_type: NackErrorType) -> String {
+  spillway_nack.nack_error_type_to_string(error_type)
 }
 
 /// Create a nack for an invalid message format.

@@ -12,7 +12,7 @@ import gleam/option.{None}
 import gleam/result
 import gleam/string
 import signet/jwt
-import signet/types.{type TokenClaims, TokenClaims, User, scopes_from_strings}
+import signet/types.{type TokenClaims, TokenClaims, User}
 
 pub type AuthError {
   /// No `Authorization` header at all, as distinct from a malformed one —
@@ -376,7 +376,7 @@ fn verify_header(header: String) -> Result(Nil, AuthError) {
 }
 
 fn parse_claims(payload: String) -> Result(TokenClaims, AuthError) {
-  let dec = {
+  let decoder = {
     use doc <- decode.field("documentId", decode.string)
     use tenant <- decode.field("tenantId", decode.string)
     use exp <- decode.field("exp", decode.int)
@@ -395,7 +395,7 @@ fn parse_claims(payload: String) -> Result(TokenClaims, AuthError) {
     )
     decode.success(TokenClaims(
       doc,
-      scopes_from_strings(scopes),
+      types.scopes_from_strings(scopes),
       tenant,
       user,
       issued_at,
@@ -411,7 +411,7 @@ fn parse_claims(payload: String) -> Result(TokenClaims, AuthError) {
     bit_array.to_string(bytes) |> result.replace_error(BadFormat),
   )
   use claims <- result.try(
-    json.parse(text, dec) |> result.replace_error(BadFormat),
+    json.parse(text, decoder) |> result.replace_error(BadFormat),
   )
   case claims.version == "1.0", claims.user.id != "" {
     True, True -> Ok(claims)

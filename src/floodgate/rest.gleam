@@ -17,6 +17,51 @@ import gleam/int
 import gleam/list
 import gleam/string
 
+/// An arbitrary JSON-shaped BEAM term — a value the (Elixir) caller already
+/// decoded, or will encode, with its own JSON library — carried through these
+/// response shapes untouched. A dedicated type rather than `Dynamic` so the
+/// signatures say exactly what crosses this FFI boundary.
+pub type JsonTerm
+
+/// Mark a dynamic value as a `JsonTerm`. Runtime identity — the distinction
+/// exists only at compile time, so Elixir callers pass their terms unchanged.
+@external(erlang, "floodgate_ffi", "identity")
+pub fn json_term(value: Dynamic) -> JsonTerm
+
+/// The reverse boundary crossing, for callers that need to inspect a term.
+@external(erlang, "floodgate_ffi", "identity")
+pub fn json_term_to_dynamic(value: JsonTerm) -> Dynamic
+
+fn term_string(value: String) -> JsonTerm {
+  json_term(dynamic.string(value))
+}
+
+fn term_int(value: Int) -> JsonTerm {
+  json_term(dynamic.int(value))
+}
+
+fn term_bool(value: Bool) -> JsonTerm {
+  json_term(dynamic.bool(value))
+}
+
+fn term_nil() -> JsonTerm {
+  json_term(dynamic.nil())
+}
+
+fn term_list(values: List(JsonTerm)) -> JsonTerm {
+  json_term(dynamic.list(list.map(values, json_term_to_dynamic)))
+}
+
+fn term_properties(entries: List(#(String, JsonTerm))) -> JsonTerm {
+  json_term(
+    dynamic.properties(
+      list.map(entries, fn(entry) {
+        #(dynamic.string(entry.0), json_term_to_dynamic(entry.1))
+      }),
+    ),
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Base URL / git object URL construction
 // ─────────────────────────────────────────────────────────────────────────────
@@ -74,13 +119,13 @@ pub fn format_blob_response(
   sha: String,
   size: Int,
   content_base64: String,
-) -> List(#(String, Dynamic)) {
+) -> List(#(String, JsonTerm)) {
   [
-    #("sha", dynamic.string(sha)),
-    #("size", dynamic.int(size)),
-    #("content", dynamic.string(content_base64)),
-    #("encoding", dynamic.string("base64")),
-    #("url", dynamic.string(blob_url(base_url, tenant_id, sha))),
+    #("sha", term_string(sha)),
+    #("size", term_int(size)),
+    #("content", term_string(content_base64)),
+    #("encoding", term_string("base64")),
+    #("url", term_string(blob_url(base_url, tenant_id, sha))),
   ]
 }
 
@@ -92,21 +137,21 @@ fn format_tree_entry(
   base_url: String,
   tenant_id: String,
   entry: TreeEntryIn,
-) -> Dynamic {
+) -> JsonTerm {
   let #(path, mode, sha, entry_type) = entry
 
   let entry_url = case entry_type {
-    "blob" -> dynamic.string(blob_url(base_url, tenant_id, sha))
-    "tree" -> dynamic.string(tree_url(base_url, tenant_id, sha))
-    _ -> dynamic.nil()
+    "blob" -> term_string(blob_url(base_url, tenant_id, sha))
+    "tree" -> term_string(tree_url(base_url, tenant_id, sha))
+    _ -> term_nil()
   }
 
-  dynamic.properties([
-    #(dynamic.string("path"), dynamic.string(path)),
-    #(dynamic.string("mode"), dynamic.string(mode)),
-    #(dynamic.string("sha"), dynamic.string(sha)),
-    #(dynamic.string("type"), dynamic.string(entry_type)),
-    #(dynamic.string("url"), entry_url),
+  term_properties([
+    #("path", term_string(path)),
+    #("mode", term_string(mode)),
+    #("sha", term_string(sha)),
+    #("type", term_string(entry_type)),
+    #("url", entry_url),
   ])
 }
 
@@ -115,14 +160,14 @@ pub fn format_tree_response(
   tenant_id: String,
   sha: String,
   entries: List(TreeEntryIn),
-) -> List(#(String, Dynamic)) {
+) -> List(#(String, JsonTerm)) {
   let formatted_entries =
     list.map(entries, format_tree_entry(base_url, tenant_id, _))
 
   [
-    #("sha", dynamic.string(sha)),
-    #("url", dynamic.string(tree_url(base_url, tenant_id, sha))),
-    #("tree", dynamic.list(formatted_entries)),
+    #("sha", term_string(sha)),
+    #("url", term_string(tree_url(base_url, tenant_id, sha))),
+    #("tree", term_list(formatted_entries)),
   ]
 }
 
@@ -132,38 +177,32 @@ pub fn format_commit_response(
   sha: String,
   tree_sha: String,
   parents: List(String),
-  message: Dynamic,
-  author: Dynamic,
-  committer: Dynamic,
-) -> List(#(String, Dynamic)) {
+  message: JsonTerm,
+  author: JsonTerm,
+  committer: JsonTerm,
+) -> List(#(String, JsonTerm)) {
   let tree_obj =
-    dynamic.properties([
-      #(dynamic.string("sha"), dynamic.string(tree_sha)),
-      #(
-        dynamic.string("url"),
-        dynamic.string(tree_url(base_url, tenant_id, tree_sha)),
-      ),
+    term_properties([
+      #("sha", term_string(tree_sha)),
+      #("url", term_string(tree_url(base_url, tenant_id, tree_sha))),
     ])
 
   let formatted_parents =
     list.map(parents, fn(parent_sha) {
-      dynamic.properties([
-        #(dynamic.string("sha"), dynamic.string(parent_sha)),
-        #(
-          dynamic.string("url"),
-          dynamic.string(commit_url(base_url, tenant_id, parent_sha)),
-        ),
+      term_properties([
+        #("sha", term_string(parent_sha)),
+        #("url", term_string(commit_url(base_url, tenant_id, parent_sha))),
       ])
     })
 
   [
-    #("sha", dynamic.string(sha)),
+    #("sha", term_string(sha)),
     #("tree", tree_obj),
-    #("parents", dynamic.list(formatted_parents)),
+    #("parents", term_list(formatted_parents)),
     #("message", message),
     #("author", author),
     #("committer", committer),
-    #("url", dynamic.string(commit_url(base_url, tenant_id, sha))),
+    #("url", term_string(commit_url(base_url, tenant_id, sha))),
   ]
 }
 
@@ -172,21 +211,18 @@ pub fn format_ref_response(
   tenant_id: String,
   ref_path: String,
   sha: String,
-) -> List(#(String, Dynamic)) {
+) -> List(#(String, JsonTerm)) {
   let object =
-    dynamic.properties([
-      #(dynamic.string("sha"), dynamic.string(sha)),
-      #(dynamic.string("type"), dynamic.string("commit")),
-      #(
-        dynamic.string("url"),
-        dynamic.string(commit_url(base_url, tenant_id, sha)),
-      ),
+    term_properties([
+      #("sha", term_string(sha)),
+      #("type", term_string("commit")),
+      #("url", term_string(commit_url(base_url, tenant_id, sha))),
     ])
 
   [
-    #("ref", dynamic.string(ref_path)),
+    #("ref", term_string(ref_path)),
     #("object", object),
-    #("url", dynamic.string(ref_url(base_url, tenant_id, ref_path))),
+    #("url", term_string(ref_url(base_url, tenant_id, ref_path))),
   ]
 }
 
@@ -198,11 +234,11 @@ pub fn format_document_response(
   id: String,
   tenant_id: String,
   sequence_number: Int,
-) -> List(#(String, Dynamic)) {
+) -> List(#(String, JsonTerm)) {
   [
-    #("id", dynamic.string(id)),
-    #("tenantId", dynamic.string(tenant_id)),
-    #("sequenceNumber", dynamic.int(sequence_number)),
+    #("id", term_string(id)),
+    #("tenantId", term_string(tenant_id)),
+    #("sequenceNumber", term_int(sequence_number)),
   ]
 }
 
@@ -212,16 +248,16 @@ pub fn session_info(
   tenant_id: String,
   document_id: String,
   is_alive: Bool,
-) -> List(#(String, Dynamic)) {
+) -> List(#(String, JsonTerm)) {
   [
-    #("ordererUrl", dynamic.string(host <> "/socket")),
-    #("historianUrl", dynamic.string(host <> "/repos/" <> tenant_id)),
+    #("ordererUrl", term_string(host <> "/socket")),
+    #("historianUrl", term_string(host <> "/repos/" <> tenant_id)),
     #(
       "deltaStreamUrl",
-      dynamic.string(host <> "/deltas/" <> tenant_id <> "/" <> document_id),
+      term_string(host <> "/deltas/" <> tenant_id <> "/" <> document_id),
     ),
-    #("isSessionAlive", dynamic.bool(is_alive)),
-    #("isSessionActive", dynamic.bool(is_alive)),
+    #("isSessionAlive", term_bool(is_alive)),
+    #("isSessionActive", term_bool(is_alive)),
   ]
 }
 
@@ -245,24 +281,24 @@ pub fn format_delta_message(
   sequence_number: Int,
   client_sequence_number: Int,
   minimum_sequence_number: Int,
-  client_id: Dynamic,
+  client_id: JsonTerm,
   reference_sequence_number: Int,
   msg_type: String,
-  contents: Dynamic,
-  metadata: Dynamic,
+  contents: JsonTerm,
+  metadata: JsonTerm,
   timestamp: Int,
-  data: Dynamic,
-) -> List(#(String, Dynamic)) {
+  data: JsonTerm,
+) -> List(#(String, JsonTerm)) {
   let base = [
-    #("sequenceNumber", dynamic.int(sequence_number)),
-    #("clientSequenceNumber", dynamic.int(client_sequence_number)),
-    #("minimumSequenceNumber", dynamic.int(minimum_sequence_number)),
+    #("sequenceNumber", term_int(sequence_number)),
+    #("clientSequenceNumber", term_int(client_sequence_number)),
+    #("minimumSequenceNumber", term_int(minimum_sequence_number)),
     #("clientId", client_id),
-    #("referenceSequenceNumber", dynamic.int(reference_sequence_number)),
-    #("type", dynamic.string(msg_type)),
+    #("referenceSequenceNumber", term_int(reference_sequence_number)),
+    #("type", term_string(msg_type)),
     #("contents", contents),
     #("metadata", metadata),
-    #("timestamp", dynamic.int(timestamp)),
+    #("timestamp", term_int(timestamp)),
   ]
 
   case requires_data_field(msg_type) {

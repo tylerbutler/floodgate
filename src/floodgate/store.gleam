@@ -50,20 +50,20 @@ pub type Backend {
     /// without giving up the supervisor's type safety at the `add` site.
     supervise: fn(static_supervisor.Builder) -> static_supervisor.Builder,
     open: fn() -> Nil,
-    put_document: fn(String) -> Nil,
+    put_document: fn(String) -> Result(Nil, Nil),
     has_document: fn(String) -> Bool,
-    put_op: fn(String, Int, String) -> Nil,
+    put_op: fn(String, Int, String) -> Result(Nil, Nil),
     get_ops: fn(String) -> List(#(Int, String)),
-    put_summary: fn(String, String, Int) -> Nil,
-    get_summary: fn(String) -> #(String, Int),
+    put_summary: fn(String, String, Int) -> Result(Nil, Nil),
+    get_summary: fn(String) -> Result(#(String, Int), Nil),
     /// Git objects are keyed by **topic**, not tenant: an object belongs to the
     /// document whose summary tree reaches it, which is what lets a document's
     /// storage be self-contained. The document id comes from the caller's token
     /// claims — see `auth.verify_storage_*_authorization`.
-    put_obj: fn(String, String, String) -> Nil,
-    get_obj: fn(String, String) -> Result(String, Nil),
-    put_ref: fn(String, String, String) -> Nil,
-    create_ref: fn(String, String, String) -> Bool,
+    put_object: fn(String, String, String) -> Result(Nil, Nil),
+    get_object: fn(String, String) -> Result(String, Nil),
+    put_ref: fn(String, String, String) -> Result(Nil, Nil),
+    create_ref: fn(String, String, String) -> Result(Bool, Nil),
     get_ref: fn(String, String) -> Result(String, Nil),
     list_refs: fn(String) -> List(#(String, String)),
     create_tenant: fn(String) -> TenantWithSecrets,
@@ -112,7 +112,7 @@ pub fn topic(tenant: String, document_id: String) -> String {
   topic_prefix <> tenant <> ":" <> document_id
 }
 
-pub fn put_document(backend: Backend, topic: String) -> Nil {
+pub fn put_document(backend: Backend, topic: String) -> Result(Nil, Nil) {
   backend.put_document(topic)
 }
 
@@ -125,7 +125,7 @@ pub fn put_op(
   topic: String,
   sequence_number: Int,
   contents: String,
-) -> Nil {
+) -> Result(Nil, Nil) {
   backend.put_op(topic, sequence_number, contents)
 }
 
@@ -140,29 +140,34 @@ pub fn put_summary(
   topic: String,
   handle: String,
   sequence_number: Int,
-) -> Nil {
+) -> Result(Nil, Nil) {
   backend.put_summary(topic, handle, sequence_number)
 }
 
-pub fn get_summary(backend: Backend, topic: String) -> #(String, Int) {
+/// The latest summary pointer, `#(handle, sequence_number)`, or `Error(Nil)`
+/// when the document has never been summarized.
+pub fn get_summary(
+  backend: Backend,
+  topic: String,
+) -> Result(#(String, Int), Nil) {
   backend.get_summary(topic)
 }
 
-pub fn put_obj(
+pub fn put_object(
   backend: Backend,
   topic: String,
   sha: String,
   data: String,
-) -> Nil {
-  backend.put_obj(topic, sha, data)
+) -> Result(Nil, Nil) {
+  backend.put_object(topic, sha, data)
 }
 
-pub fn get_obj(
+pub fn get_object(
   backend: Backend,
   topic: String,
   sha: String,
 ) -> Result(String, Nil) {
-  backend.get_obj(topic, sha)
+  backend.get_object(topic, sha)
 }
 
 pub fn put_ref(
@@ -170,16 +175,18 @@ pub fn put_ref(
   tenant: String,
   ref: String,
   sha: String,
-) -> Nil {
+) -> Result(Nil, Nil) {
   backend.put_ref(tenant, ref, sha)
 }
 
+/// Create a ref only if absent. `Ok(False)` means it already exists with a
+/// different sha; `Error(Nil)` means storage itself failed.
 pub fn create_ref(
   backend: Backend,
   tenant: String,
   ref: String,
   sha: String,
-) -> Bool {
+) -> Result(Bool, Nil) {
   backend.create_ref(tenant, ref, sha)
 }
 

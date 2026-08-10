@@ -61,12 +61,16 @@ pub type GitHubConfig {
 /// deployment that never sets these variables still starts and serves every
 /// other route.
 pub fn build_config(
-  cfg: GitHubConfig,
+  config: GitHubConfig,
 ) -> Result(vestibule_config.Config, OAuthError) {
-  use <- guard_not_empty(cfg.client_id, "FLOODGATE_GITHUB_CLIENT_ID")
-  use <- guard_not_empty(cfg.client_secret, "FLOODGATE_GITHUB_CLIENT_SECRET")
-  use <- guard_not_empty(cfg.redirect_uri, "FLOODGATE_GITHUB_REDIRECT_URI")
-  Ok(vestibule_config.new(cfg.client_id, cfg.client_secret, cfg.redirect_uri))
+  use <- guard_not_empty(config.client_id, "FLOODGATE_GITHUB_CLIENT_ID")
+  use <- guard_not_empty(config.client_secret, "FLOODGATE_GITHUB_CLIENT_SECRET")
+  use <- guard_not_empty(config.redirect_uri, "FLOODGATE_GITHUB_REDIRECT_URI")
+  Ok(vestibule_config.new(
+    config.client_id,
+    config.client_secret,
+    config.redirect_uri,
+  ))
 }
 
 fn guard_not_empty(
@@ -84,11 +88,11 @@ fn guard_not_empty(
 /// verifier (expiring in `state_ttl_seconds`) and returns the URL to redirect
 /// the browser to.
 pub fn begin_auth(
-  cfg: GitHubConfig,
+  config: GitHubConfig,
   state_actor: Subject(oauth_state.Msg),
   now: Int,
 ) -> Result(String, OAuthError) {
-  use oauth_config <- result.try(build_config(cfg))
+  use oauth_config <- result.try(build_config(config))
   case vestibule.authorize_url(github.strategy(), oauth_config) {
     Ok(AuthorizationRequest(url:, state:, code_verifier:)) -> {
       oauth_state.store(
@@ -110,13 +114,13 @@ pub fn begin_auth(
 /// request's `state` parameter, used to look up (and consume) the matching
 /// CSRF entry before vestibule ever sees it.
 pub fn complete_auth(
-  cfg: GitHubConfig,
+  config: GitHubConfig,
   state_actor: Subject(oauth_state.Msg),
   callback_params: Dict(String, String),
   state: String,
   now: Int,
 ) -> Result(Auth, OAuthError) {
-  use oauth_config <- result.try(build_config(cfg))
+  use oauth_config <- result.try(build_config(config))
   use code_verifier <- result.try(
     oauth_state.validate_and_consume(state_actor, state, now)
     |> result.replace_error(StateInvalid),

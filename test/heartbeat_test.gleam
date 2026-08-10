@@ -36,7 +36,7 @@ pub fn socket_that_stops_heartbeating_is_evicted_and_closed_test() {
   // Read at config time only, so restoring it immediately keeps every other
   // test on the 60 s default.
   setenv("FLOODGATE_HEARTBEAT_TIMEOUT_MS", timeout_ms)
-  let assert Ok(#(channels, sess)) =
+  let assert Ok(#(channels, document_session)) =
     floodgate.start_with_backend(tenant, secret, memory_store.new())
   setenv("FLOODGATE_HEARTBEAT_TIMEOUT_MS", "")
 
@@ -67,13 +67,13 @@ pub fn socket_that_stops_heartbeating_is_evicted_and_closed_test() {
   // Routing is a cast, so wait for the connect response before observing the
   // roster it was built from.
   let assert Ok(_connected) = process.receive(sent, 1000)
-  session.clients(sess, topic) |> should.equal([socket_id])
+  session.clients(document_session, topic) |> should.equal([socket_id])
 
   // Now go silent. No heartbeat ever arrives. The closer firing means the
   // coordinator has already run the channel's terminate, which is what returns
   // the client to the session.
   let assert Ok(Nil) = process.receive(closed, 2000)
-  session.clients(sess, topic) |> should.equal([])
+  session.clients(document_session, topic) |> should.equal([])
 }
 
 fn connect_frame(topic: String, doc: String, token: String) -> codec.Inbound {

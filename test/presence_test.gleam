@@ -499,15 +499,19 @@ fn worker_only(
 ) {
   let diffs = process.new_subject()
   let pushes = process.new_subject()
-  let assert Ok(p) =
+  let assert Ok(presence_handle) =
     presence.default_config(label)
     |> presence.with_on_diff(fn(diff) { process.send(diffs, diff) })
     |> presence.start
   let name = presence_worker.new_name()
   let assert Ok(_) =
-    presence_worker.start_named(name, p, fn(socket, topic, event, payload) {
-      process.send(pushes, #(socket, topic, event, json.to_string(payload)))
-    })
+    presence_worker.start_named(
+      name,
+      presence_handle,
+      fn(socket, topic, event, payload) {
+        process.send(pushes, #(socket, topic, event, json.to_string(payload)))
+      },
+    )
   #(presence_worker.from_name(name), diffs, pushes)
 }
 

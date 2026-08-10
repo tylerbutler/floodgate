@@ -2,6 +2,11 @@ import floodgate/rest
 import gleam/dynamic
 import gleeunit/should
 
+/// Shorthand for the `JsonTerm` a string crosses the boundary as.
+fn term(value: String) -> rest.JsonTerm {
+  rest.json_term(dynamic.string(value))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // base_url / object URL construction
 // ─────────────────────────────────────────────────────────────────────────────
@@ -67,14 +72,11 @@ pub fn format_blob_response_test() {
 
   fields
   |> should.equal([
-    #("sha", dynamic.string("sha1")),
-    #("size", dynamic.int(11)),
-    #("content", dynamic.string("aGVsbG8gd29ybGQ=")),
-    #("encoding", dynamic.string("base64")),
-    #(
-      "url",
-      dynamic.string("http://localhost:4000/repos/tenant1/git/blobs/sha1"),
-    ),
+    #("sha", term("sha1")),
+    #("size", rest.json_term(dynamic.int(11))),
+    #("content", term("aGVsbG8gd29ybGQ=")),
+    #("encoding", term("base64")),
+    #("url", term("http://localhost:4000/repos/tenant1/git/blobs/sha1")),
   ])
 }
 
@@ -84,7 +86,7 @@ pub fn format_tree_response_builds_entry_urls_by_type_test() {
     #("subdir", "040000", "treesha", "tree"),
   ]
 
-  let assert [#("sha", _), #("url", _), #("tree", tree_dynamic)] =
+  let assert [#("sha", _), #("url", _), #("tree", tree_term)] =
     rest.format_tree_response(
       "http://localhost:4000",
       "tenant1",
@@ -92,16 +94,16 @@ pub fn format_tree_response_builds_entry_urls_by_type_test() {
       entries,
     )
 
-  // The tree field is a Dynamic-wrapped list; decode it back out to assert
-  // shape via classify (a full decode isn't needed to prove non-empty list).
-  dynamic.classify(tree_dynamic)
+  // The tree field is a term-wrapped list; classify it back out to assert
+  // shape (a full decode isn't needed to prove non-empty list).
+  dynamic.classify(rest.json_term_to_dynamic(tree_term))
   |> should.equal("List")
 }
 
 pub fn format_commit_response_shape_test() {
-  let author = dynamic.string("author-placeholder")
-  let committer = dynamic.string("committer-placeholder")
-  let message = dynamic.string("Initial commit")
+  let author = term("author-placeholder")
+  let committer = term("committer-placeholder")
+  let message = term("Initial commit")
 
   let fields =
     rest.format_commit_response(
@@ -125,15 +127,15 @@ pub fn format_commit_response_shape_test() {
     #("url", url),
   ] = fields
 
-  sha |> should.equal(dynamic.string("commitsha"))
+  sha |> should.equal(term("commitsha"))
   msg |> should.equal(message)
   auth |> should.equal(author)
   committer_out |> should.equal(committer)
   url
-  |> should.equal(dynamic.string(
+  |> should.equal(term(
     "http://localhost:4000/repos/tenant1/git/commits/commitsha",
   ))
-  dynamic.classify(parents) |> should.equal("List")
+  dynamic.classify(rest.json_term_to_dynamic(parents)) |> should.equal("List")
 }
 
 pub fn format_ref_response_shape_test() {
@@ -148,9 +150,9 @@ pub fn format_ref_response_shape_test() {
   let assert [#("ref", ref_field), #("object", _object), #("url", url_field)] =
     fields
 
-  ref_field |> should.equal(dynamic.string("refs/heads/main"))
+  ref_field |> should.equal(term("refs/heads/main"))
   url_field
-  |> should.equal(dynamic.string(
+  |> should.equal(term(
     "http://localhost:4000/repos/tenant1/git/refs/heads/main",
   ))
 }
@@ -162,37 +164,31 @@ pub fn format_ref_response_shape_test() {
 pub fn format_document_response_test() {
   rest.format_document_response("doc-1", "tenant1", 5)
   |> should.equal([
-    #("id", dynamic.string("doc-1")),
-    #("tenantId", dynamic.string("tenant1")),
-    #("sequenceNumber", dynamic.int(5)),
+    #("id", term("doc-1")),
+    #("tenantId", term("tenant1")),
+    #("sequenceNumber", rest.json_term(dynamic.int(5))),
   ])
 }
 
 pub fn session_info_alive_test() {
   rest.session_info("http://localhost:4000", "tenant1", "doc-1", True)
   |> should.equal([
-    #("ordererUrl", dynamic.string("http://localhost:4000/socket")),
-    #("historianUrl", dynamic.string("http://localhost:4000/repos/tenant1")),
-    #(
-      "deltaStreamUrl",
-      dynamic.string("http://localhost:4000/deltas/tenant1/doc-1"),
-    ),
-    #("isSessionAlive", dynamic.bool(True)),
-    #("isSessionActive", dynamic.bool(True)),
+    #("ordererUrl", term("http://localhost:4000/socket")),
+    #("historianUrl", term("http://localhost:4000/repos/tenant1")),
+    #("deltaStreamUrl", term("http://localhost:4000/deltas/tenant1/doc-1")),
+    #("isSessionAlive", rest.json_term(dynamic.bool(True))),
+    #("isSessionActive", rest.json_term(dynamic.bool(True))),
   ])
 }
 
 pub fn session_info_not_alive_test() {
   rest.session_info("http://localhost:4000", "tenant1", "doc-1", False)
   |> should.equal([
-    #("ordererUrl", dynamic.string("http://localhost:4000/socket")),
-    #("historianUrl", dynamic.string("http://localhost:4000/repos/tenant1")),
-    #(
-      "deltaStreamUrl",
-      dynamic.string("http://localhost:4000/deltas/tenant1/doc-1"),
-    ),
-    #("isSessionAlive", dynamic.bool(False)),
-    #("isSessionActive", dynamic.bool(False)),
+    #("ordererUrl", term("http://localhost:4000/socket")),
+    #("historianUrl", term("http://localhost:4000/repos/tenant1")),
+    #("deltaStreamUrl", term("http://localhost:4000/deltas/tenant1/doc-1")),
+    #("isSessionAlive", rest.json_term(dynamic.bool(False))),
+    #("isSessionActive", rest.json_term(dynamic.bool(False))),
   ])
 }
 
@@ -208,9 +204,9 @@ pub fn requires_data_field_for_join_and_leave_test() {
 }
 
 pub fn format_delta_message_op_omits_data_field_test() {
-  let contents = dynamic.string("some-op-contents")
-  let metadata = dynamic.nil()
-  let client_id = dynamic.string("client-1")
+  let contents = term("some-op-contents")
+  let metadata = rest.json_term(dynamic.nil())
+  let client_id = term("client-1")
 
   let fields =
     rest.format_delta_message(
@@ -223,28 +219,28 @@ pub fn format_delta_message_op_omits_data_field_test() {
       contents,
       metadata,
       1_700_000_000,
-      dynamic.nil(),
+      rest.json_term(dynamic.nil()),
     )
 
   fields
   |> should.equal([
-    #("sequenceNumber", dynamic.int(1)),
-    #("clientSequenceNumber", dynamic.int(1)),
-    #("minimumSequenceNumber", dynamic.int(0)),
+    #("sequenceNumber", rest.json_term(dynamic.int(1))),
+    #("clientSequenceNumber", rest.json_term(dynamic.int(1))),
+    #("minimumSequenceNumber", rest.json_term(dynamic.int(0))),
     #("clientId", client_id),
-    #("referenceSequenceNumber", dynamic.int(0)),
-    #("type", dynamic.string("op")),
+    #("referenceSequenceNumber", rest.json_term(dynamic.int(0))),
+    #("type", term("op")),
     #("contents", contents),
     #("metadata", metadata),
-    #("timestamp", dynamic.int(1_700_000_000)),
+    #("timestamp", rest.json_term(dynamic.int(1_700_000_000))),
   ])
 }
 
 pub fn format_delta_message_join_includes_data_field_test() {
-  let contents = dynamic.string("{\"clientId\":\"client-1\"}")
-  let metadata = dynamic.nil()
-  let client_id = dynamic.nil()
-  let data = dynamic.string("{\"clientId\":\"client-1\"}")
+  let contents = term("{\"clientId\":\"client-1\"}")
+  let metadata = rest.json_term(dynamic.nil())
+  let client_id = rest.json_term(dynamic.nil())
+  let data = term("{\"clientId\":\"client-1\"}")
 
   let fields =
     rest.format_delta_message(
@@ -273,6 +269,6 @@ pub fn format_delta_message_join_includes_data_field_test() {
     #("data", data_field),
   ] = fields
 
-  type_field |> should.equal(dynamic.string("join"))
+  type_field |> should.equal(term("join"))
   data_field |> should.equal(data)
 }

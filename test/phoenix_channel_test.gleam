@@ -14,6 +14,7 @@ import floodgate/store
 import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/erlang/process
+import gleam/int
 import gleam/json
 import gleam/option.{None, Some}
 import gleam/string
@@ -34,7 +35,7 @@ fn now() -> Int
 fn start_socket(
   socket_id: String,
 ) -> #(beryl.Channels, session.Session, process.Subject(String)) {
-  let assert Ok(#(channels, sess)) =
+  let assert Ok(#(channels, document_session)) =
     floodgate.start_with_backend(tenant, secret, memory_store.new())
   let sent = process.new_subject()
   process.send(
@@ -52,7 +53,7 @@ fn start_socket(
       dynamic.nil(),
     ),
   )
-  #(channels, sess, sent)
+  #(channels, document_session, sent)
 }
 
 fn route(channels: beryl.Channels, socket_id: String, frame: String) -> Nil {
@@ -324,7 +325,7 @@ pub fn recovered_membership_is_broadcast_before_the_new_join_test() {
   let doc = "phx-membership-recovery"
   let topic = store.topic(tenant, doc)
   let token = token_for(doc, ["doc:read", "doc:write"])
-  let assert Ok(#(channels, sess)) =
+  let assert Ok(#(channels, document_session)) =
     floodgate.start_with_backend(tenant, secret, memory_store.new())
 
   let old = attach(channels, "s-old")
@@ -333,7 +334,7 @@ pub fn recovered_membership_is_broadcast_before_the_new_join_test() {
   drain(old)
   drain(fresh)
 
-  let assert Ok(pid) = session.document_owner(sess, topic)
+  let assert Ok(pid) = session.document_owner(document_session, topic)
   process.kill(pid)
 
   route(channels, "s-fresh", phoenix_join(doc, token))
@@ -411,29 +412,26 @@ fn drain(sent: process.Subject(String)) -> Nil {
 // sequence number can move for an otherwise idle client.
 pub fn noop_advances_minimum_sequence_number_test() {
   let topic = "document:fluid:noop-msn"
-  let sess = session.start_with_backend(memory_store.new())
-  let assert session.Connected(_, _, _, _, _, _, [], Some(_)) =
-    session.connect(sess, topic, "c1", "write", "{}", "{}", 0)
+  let document_session = session.start_with_backend(memory_store.new())
+  let assert session.Connected(_, _, _, _, _, _, [], session.Writer(_, _)) =
+    session.connect(document_session, topic, "c1", session.Write, "{}", "{}", 0)
 
   let assert session.MessageAssigned(_, msn_before, _) =
-    session.submit_message(sess, topic, "c1", 1, 0, fn(sn, msn) {
-      "op-" <> string_of(sn) <> "-" <> string_of(msn)
+    session.submit_message(document_session, topic, "c1", 1, 0, fn(sn, msn) {
+      "op-" <> int.to_string(sn) <> "-" <> int.to_string(msn)
     })
 
-  session.update_client_rsn(sess, topic, "c1", 2)
+  session.update_client_rsn(document_session, topic, "c1", 2)
 
   // The follow-up op still references 0, so any advance in the minimum
   // sequence number can only have come from the noop.
   let assert session.MessageAssigned(_, msn_after, _) =
-    session.submit_message(sess, topic, "c1", 2, 0, fn(sn, msn) {
-      "op-" <> string_of(sn) <> "-" <> string_of(msn)
+    session.submit_message(document_session, topic, "c1", 2, 0, fn(sn, msn) {
+      "op-" <> int.to_string(sn) <> "-" <> int.to_string(msn)
     })
   msn_before |> should.equal(0)
   msn_after |> should.equal(2)
 }
-
-@external(erlang, "erlang", "integer_to_binary")
-fn string_of(value: Int) -> String
 
 /// `@fluidframework/container-loader`'s audience asserts that a client it
 /// already holds and the one carried by that client's sequenced join op
@@ -515,7 +513,7 @@ pub fn supplied_client_json_absent_when_not_sent_test() {
 // started, with its own server-generated secrets, joins and connects exactly
 // like the tenant seeded from FLOODGATE_TENANT_ID/FLOODGATE_JWT_SECRET. No
 // restart is needed: `document_channel.authorize_topic_token` resolves the
-// topic's tenant against `session.storage(sess)` on every join, so a tenant
+// topic's tenant against `session.storage(document_session)` on every join, so a tenant
 // created between two requests is visible on the very next one.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -550,9 +548,9 @@ fn tenant_scoped_connect_payload(
 
 pub fn phoenix_join_accepts_dynamically_registered_tenant_test() {
   let doc = "phx-dynamic-tenant"
-  let assert Ok(#(channels, sess)) =
+  let assert Ok(#(channels, document_session)) =
     floodgate.start_with_backend(tenant, secret, memory_store.new())
-  let acme = store.create_tenant(session.storage(sess), "Acme Co")
+  let acme = store.create_tenant(session.storage(document_session), "Acme Co")
   let topic = "document:" <> acme.id <> ":" <> doc
   let token =
     auth.mint_token(
@@ -589,9 +587,9 @@ pub fn phoenix_join_accepts_dynamically_registered_tenant_test() {
 /// never the token's own claimed tenant.
 pub fn phoenix_join_rejects_cross_tenant_token_test() {
   let doc = "phx-cross-tenant"
-  let assert Ok(#(channels, sess)) =
+  let assert Ok(#(channels, document_session)) =
     floodgate.start_with_backend(tenant, secret, memory_store.new())
-  let storage = session.storage(sess)
+  let storage = session.storage(document_session)
   let acme = store.create_tenant(storage, "Acme Co")
   let widgets = store.create_tenant(storage, "Widgets Inc")
   let token =
@@ -621,9 +619,9 @@ pub fn phoenix_join_rejects_cross_tenant_token_test() {
 /// invalidates only tokens signed with the slot that changed.
 pub fn phoenix_join_honours_secret_rotation_test() {
   let doc = "phx-rotation"
-  let assert Ok(#(channels, sess)) =
+  let assert Ok(#(channels, document_session)) =
     floodgate.start_with_backend(tenant, secret, memory_store.new())
-  let storage = session.storage(sess)
+  let storage = session.storage(document_session)
   let rotating = store.create_tenant(storage, "Rotating Co")
   let topic = "document:" <> rotating.id <> ":" <> doc
   let old_secret1 = rotating.secret1

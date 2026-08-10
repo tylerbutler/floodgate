@@ -21,9 +21,9 @@ pub fn serves_a_real_file_with_a_matching_content_type_test() {
   write_file(dir <> "/index.html", "<html>shell</html>")
   write_file(dir <> "/levee_admin/levee_admin.mjs", "export {}")
 
-  let resp = static.serve(dir, ["levee_admin", "levee_admin.mjs"])
-  resp.status |> should.equal(200)
-  response.get_header(resp, "content-type")
+  let served_response = static.serve(dir, ["levee_admin", "levee_admin.mjs"])
+  served_response.status |> should.equal(200)
+  response.get_header(served_response, "content-type")
   |> should.equal(Ok("application/javascript; charset=utf-8"))
 }
 
@@ -31,9 +31,9 @@ pub fn serves_index_html_for_the_bare_admin_path_test() {
   let dir = unique_dir()
   write_file(dir <> "/index.html", "<html>shell</html>")
 
-  let resp = static.serve(dir, [])
-  resp.status |> should.equal(200)
-  response.get_header(resp, "content-type")
+  let served_response = static.serve(dir, [])
+  served_response.status |> should.equal(200)
+  response.get_header(served_response, "content-type")
   |> should.equal(Ok("text/html; charset=utf-8"))
 }
 
@@ -45,9 +45,9 @@ pub fn falls_back_to_index_html_for_an_spa_route_test() {
   let dir = unique_dir()
   write_file(dir <> "/index.html", "<html>shell</html>")
 
-  let resp = static.serve(dir, ["dashboard"])
-  resp.status |> should.equal(200)
-  response.get_header(resp, "content-type")
+  let served_response = static.serve(dir, ["dashboard"])
+  served_response.status |> should.equal(200)
+  response.get_header(served_response, "content-type")
   |> should.equal(Ok("text/html; charset=utf-8"))
 }
 
@@ -55,9 +55,9 @@ pub fn falls_back_to_index_html_for_a_nested_spa_route_test() {
   let dir = unique_dir()
   write_file(dir <> "/index.html", "<html>shell</html>")
 
-  let resp = static.serve(dir, ["tenants", "abc-123"])
-  resp.status |> should.equal(200)
-  response.get_header(resp, "content-type")
+  let served_response = static.serve(dir, ["tenants", "abc-123"])
+  served_response.status |> should.equal(200)
+  response.get_header(served_response, "content-type")
   |> should.equal(Ok("text/html; charset=utf-8"))
 }
 
@@ -70,9 +70,9 @@ pub fn rejects_path_traversal_by_falling_back_to_index_test() {
   // A sentinel file outside `dir`, which a successful traversal would reach.
   write_file(dir <> "/../secret.txt", "top secret")
 
-  let resp = static.serve(dir, ["..", "secret.txt"])
-  resp.status |> should.equal(200)
-  response.get_header(resp, "content-type")
+  let served_response = static.serve(dir, ["..", "secret.txt"])
+  served_response.status |> should.equal(200)
+  response.get_header(served_response, "content-type")
   |> should.equal(Ok("text/html; charset=utf-8"))
 }
 
@@ -81,9 +81,10 @@ pub fn rejects_a_traversal_segment_buried_in_a_longer_path_test() {
   write_file(dir <> "/index.html", "<html>shell</html>")
   write_file(dir <> "/../secret.txt", "top secret")
 
-  let resp = static.serve(dir, ["levee_admin", "..", "..", "secret.txt"])
-  resp.status |> should.equal(200)
-  response.get_header(resp, "content-type")
+  let served_response =
+    static.serve(dir, ["levee_admin", "..", "..", "secret.txt"])
+  served_response.status |> should.equal(200)
+  response.get_header(served_response, "content-type")
   |> should.equal(Ok("text/html; charset=utf-8"))
 }
 
@@ -91,8 +92,8 @@ pub fn rejects_a_traversal_segment_buried_in_a_longer_path_test() {
 /// has nothing to serve — a 404 with a build hint, not a crash.
 pub fn returns_404_with_a_build_hint_when_no_assets_exist_test() {
   let dir = unique_dir()
-  let resp = static.serve(dir, [])
-  resp.status |> should.equal(404)
+  let served_response = static.serve(dir, [])
+  served_response.status |> should.equal(404)
 }
 
 pub fn distinguishes_content_types_by_extension_test() {
@@ -100,7 +101,7 @@ pub fn distinguishes_content_types_by_extension_test() {
   write_file(dir <> "/index.html", "<html>shell</html>")
   write_file(dir <> "/gleam_stdlib/gleam.mjs", "export {}")
 
-  let resp = static.serve(dir, ["gleam_stdlib", "gleam.mjs"])
-  response.get_header(resp, "content-type")
+  let served_response = static.serve(dir, ["gleam_stdlib", "gleam.mjs"])
+  response.get_header(served_response, "content-type")
   |> should.equal(Ok("application/javascript; charset=utf-8"))
 }

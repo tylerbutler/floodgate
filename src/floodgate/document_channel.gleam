@@ -31,7 +31,7 @@ import signet/types.{type TokenClaims}
 pub type DocAssigns {
   DocAssigns(
     client_id: String,
-    mode: String,
+    mode: session.Mode,
     topic: String,
     scopes: List(String),
     connected: Bool,
@@ -140,22 +140,32 @@ fn registered_channel(
 
 pub fn new(
   channels: beryl.Channels,
-  sess: Session,
+  document_session: Session,
   registration: Registration,
   presence: Subject(presence_worker.Msg),
 ) -> Channel(DocAssigns, DocInfo) {
-  channel.new(fn(t, p, s) { join(channels, sess, t, p, s) })
-  |> channel.with_handle_in(fn(e, p, s) {
-    handle_in(channels, sess, registration, presence, e, p, s)
+  channel.new(fn(topic, payload, sock) {
+    join(channels, document_session, topic, payload, sock)
   })
-  |> channel.with_handle_info(fn(info, s) {
+  |> channel.with_handle_in(fn(event, payload, sock) {
+    handle_in(
+      channels,
+      document_session,
+      registration,
+      presence,
+      event,
+      payload,
+      sock,
+    )
+  })
+  |> channel.with_handle_info(fn(info, sock) {
     case info {
-      SignalPush(payload) -> Push(events.signal, payload, s)
-      EventPush(event, payload) -> Push(event, payload, s)
+      SignalPush(payload) -> Push(events.signal, payload, sock)
+      EventPush(event, payload) -> Push(event, payload, sock)
     }
   })
-  |> channel.with_terminate(fn(_reason, s) {
-    on_leave(channels, sess, presence, s)
+  |> channel.with_terminate(fn(_reason, sock) {
+    on_leave(channels, document_session, presence, sock)
   })
 }
 
@@ -182,16 +192,16 @@ pub fn push_event(
 /// of IConnect arrive later on the `connect_document` event — so the socket
 /// joins first and connects in a second phase.
 fn join(
-  channels,
-  sess: Session,
-  topic,
+  channels: beryl.Channels,
+  document_session: Session,
+  topic: String,
   payload: Dynamic,
   sock: Socket(DocAssigns),
-) {
-  let cid = socket.id(sock)
+) -> channel.JoinResult(DocAssigns) {
+  let client_id = socket.id(sock)
   case is_connect_payload(payload) {
     True ->
-      case connect_core(channels, sess, topic, payload, cid) {
+      case connect_core(channels, document_session, topic, payload, client_id) {
         Error(error) -> join_error(error)
         Ok(#(response, assigns)) ->
           JoinOk(
@@ -200,7 +210,9 @@ fn join(
           )
       }
     False ->
-      case authorize_topic_token(session.storage(sess), topic, payload) {
+      case
+        authorize_topic_token(session.storage(document_session), topic, payload)
+      {
         Error(error) -> join_error(error)
         Ok(_claims) ->
           JoinOk(
@@ -218,11 +230,13 @@ fn is_connect_payload(payload: Dynamic) -> Bool {
   field(payload, "tenantId", "") != "" && field(payload, "id", "") != ""
 }
 
-/// Assigns for a Phoenix socket that has joined but not yet connected.
+/// Assigns for a Phoenix socket that has joined but not yet connected. `mode`
+/// is never read before `connected` is set — every mode-dependent handler
+/// guards on `connected` first — so the placeholder `Read` grants nothing.
 fn pending_assigns(topic: String) -> DocAssigns {
   DocAssigns(
     client_id: "",
-    mode: "",
+    mode: session.Read,
     topic: topic,
     scopes: [],
     connected: False,
@@ -230,11 +244,11 @@ fn pending_assigns(topic: String) -> DocAssigns {
   )
 }
 
-fn join_error(error: ConnectError) {
+fn join_error(error: ConnectError) -> channel.JoinResult(DocAssigns) {
   JoinError(json.object([#("reason", json.string(error.reason))]))
 }
 
-fn connect_error_json(error: ConnectError) -> json.Json {
+fn connect_error_to_json(error: ConnectError) -> json.Json {
   json.object([
     #("code", json.int(error.code)),
     #("message", json.string(error.message)),
@@ -244,13 +258,13 @@ fn connect_error_json(error: ConnectError) -> json.Json {
 /// Authorize, open the session, fan out the join, and build the connected
 /// response. Shared by the Socket.IO join and the Phoenix `connect_document`.
 fn connect_core(
-  channels,
-  sess: Session,
+  channels: beryl.Channels,
+  document_session: Session,
   topic: String,
   payload: Dynamic,
-  cid: String,
+  client_id: String,
 ) -> Result(#(json.Json, DocAssigns), ConnectError) {
-  case authorize(session.storage(sess), topic, payload) {
+  case authorize(session.storage(document_session), topic, payload) {
     Error(error) -> Error(error)
     Ok(claims) -> {
       let mode = connection_mode(payload)
@@ -271,12 +285,12 @@ fn connect_core(
         membership,
       ) =
         session.connect(
-          sess,
+          document_session,
           topic,
-          cid,
+          client_id,
           mode,
           json.to_string(client),
-          client_join_data(cid, client),
+          client_join_data(client_id, client),
           now_seconds() * 1000,
         )
       // `initialSignals` is always empty, matching levee's
@@ -293,43 +307,41 @@ fn connect_core(
         recovery ->
           beryl.broadcast_from(
             channels,
-            cid,
+            client_id,
             topic,
             events.op,
             recovery
-              |> list.map(session.stored_message_json)
+              |> list.map(session.stored_message_to_json)
               |> json.preprocessed_array,
           )
       }
-      case mode {
-        "write" -> {
-          let assert Some(#(sn, message)) = membership
-          // The joining client receives its own join op in initialMessages.
-          // Excluding it from fan-out avoids an early duplicate before the
-          // connect response has established its client ID.
+      case membership {
+        // The joining client receives its own join op in initialMessages.
+        // Excluding it from fan-out avoids an early duplicate before the
+        // connect response has established its client ID.
+        session.Writer(sn, message) ->
           beryl.broadcast_from(
             channels,
-            cid,
+            client_id,
             topic,
             events.op,
             json.preprocessed_array([
-              session.stored_message_json(#(sn, message)),
+              session.stored_message_to_json(#(sn, message)),
             ]),
           )
-        }
-        _ ->
+        session.Reader ->
           beryl.broadcast_from(
             channels,
-            cid,
+            client_id,
             topic,
             events.signal,
-            presence_join(cid, client),
+            presence_join(client_id, client),
           )
       }
       Ok(#(
         connected_response(
           claims,
-          cid,
+          client_id,
           mode,
           existing,
           roster,
@@ -340,7 +352,7 @@ fn connect_core(
           beryl.max_inbound_frame_bytes(channels),
         ),
         DocAssigns(
-          client_id: cid,
+          client_id: client_id,
           mode: mode,
           topic: topic,
           scopes: types.scopes_to_strings(claims.scopes),
@@ -353,46 +365,46 @@ fn connect_core(
 }
 
 fn on_leave(
-  channels,
-  sess: Session,
+  channels: beryl.Channels,
+  document_session: Session,
   presence: Subject(presence_worker.Msg),
   sock: Socket(DocAssigns),
-) {
-  let a = socket.get_assigns(sock)
+) -> Nil {
+  let assigns = socket.get_assigns(sock)
   // Before the `connected` guard: this is the one funnel every termination
   // reaches — a Socket.IO close, a Phoenix close, a heartbeat-sweep eviction, or
   // an explicit `phx_leave` — and it is what makes a dropped socket stop being
   // present without anyone waiting out a TTL. A no-op for a socket that never
   // tracked, so it is safe to run unconditionally.
-  presence_worker.cleanup(presence, a.client_id)
+  presence_worker.cleanup(presence, assigns.client_id)
   // A Phoenix socket that joined but never sent connect_document holds no
   // session membership, so there is nothing to tear down or announce.
-  use <- bool.guard(when: !a.connected, return: Nil)
-  case a.mode {
-    "write" -> {
+  use <- bool.guard(when: !assigns.connected, return: Nil)
+  case assigns.mode {
+    session.Write -> {
       let session.Left(sn, _, message) =
         session.leave_sequenced(
-          sess,
-          a.topic,
-          a.client_id,
+          document_session,
+          assigns.topic,
+          assigns.client_id,
           now_seconds() * 1000,
         )
       beryl.broadcast(
         channels,
-        a.topic,
+        assigns.topic,
         events.op,
         json.preprocessed_array([
-          session.stored_message_json(#(sn, message)),
+          session.stored_message_to_json(#(sn, message)),
         ]),
       )
     }
-    _ -> {
-      session.leave_presence(sess, a.topic, a.client_id)
+    session.Read -> {
+      session.leave_presence(document_session, assigns.topic, assigns.client_id)
       beryl.broadcast(
         channels,
-        a.topic,
+        assigns.topic,
         events.signal,
-        presence_leave(a.client_id),
+        presence_leave(assigns.client_id),
       )
     }
   }
@@ -493,7 +505,7 @@ pub fn presence_meta(
                       |> dict.drop(presence_worker.reserved_meta_fields)
                       |> dict.to_list
                       |> list.map(fn(field) {
-                        #(field.0, dynamic_json(field.1))
+                        #(field.0, dynamic_to_json(field.1))
                       })
                     ]),
                   )
@@ -526,15 +538,9 @@ fn client_join_data(client_id: String, client: json.Json) -> String {
 /// two byte-identical.
 pub fn normalize_client_json(value: json.Json) -> json.Json {
   case json.parse(json.to_string(value), decode.dynamic) {
-    Ok(parsed) -> dynamic_json(parsed)
+    Ok(parsed) -> dynamic_to_json(parsed)
     Error(_) -> value
   }
-}
-
-/// Expose the dynamic → JSON conversion the roster path uses, so tests can
-/// assert on the exact bytes a client payload serializes to.
-pub fn dynamic_to_json(value: Dynamic) -> json.Json {
-  dynamic_json(value)
 }
 
 /// The `IClient` record the peer sent in its connect payload, if any.
@@ -553,20 +559,20 @@ pub fn supplied_client_json(payload: Dynamic) -> Option(json.Json) {
       case decode.run(client, decode.dict(decode.string, decode.dynamic)) {
         // Only an object is a usable IClient; anything else falls back to the
         // server-built record.
-        Ok(_) -> Some(normalize_client_json(dynamic_json(client)))
+        Ok(_) -> Some(normalize_client_json(dynamic_to_json(client)))
         Error(_) -> None
       }
     Error(_) -> None
   }
 }
 
-fn client_json(mode: String, claims: TokenClaims) -> json.Json {
+fn client_json(mode: session.Mode, claims: TokenClaims) -> json.Json {
   normalize_client_json(raw_client_json(mode, claims))
 }
 
-fn raw_client_json(mode: String, claims: TokenClaims) -> json.Json {
+fn raw_client_json(mode: session.Mode, claims: TokenClaims) -> json.Json {
   json.object([
-    #("mode", json.string(mode)),
+    #("mode", json.string(session.mode_to_string(mode))),
     #(
       "details",
       json.object([
@@ -594,10 +600,10 @@ fn user_name(claims: TokenClaims) -> String {
   }
 }
 
-fn connection_mode(payload: Dynamic) -> String {
+fn connection_mode(payload: Dynamic) -> session.Mode {
   case field(payload, "mode", "read") {
-    "write" -> "write"
-    _ -> "read"
+    "write" -> session.Write
+    _ -> session.Read
   }
 }
 
@@ -682,7 +688,7 @@ fn authorize(
 fn connected_response(
   claims: TokenClaims,
   client_id: String,
-  mode: String,
+  mode: session.Mode,
   existing: Bool,
   roster: List(#(String, String)),
   initial_ops: List(#(Int, String)),
@@ -692,7 +698,7 @@ fn connected_response(
   max_message_size: Int,
 ) -> json.Json {
   json.object([
-    #("claims", claims_json(claims)),
+    #("claims", claims_to_json(claims)),
     #("clientId", json.string(client_id)),
     #("existing", json.bool(existing)),
     // Sourced from beryl's configured frame ceiling rather than hardcoded, so
@@ -700,7 +706,7 @@ fn connected_response(
     // claim 16 MiB while beryl's default enforced 1 MiB and the Engine.IO
     // handshake advertised 1 MiB — three numbers, one of them a fiction.
     #("maxMessageSize", json.int(max_message_size)),
-    #("mode", json.string(mode)),
+    #("mode", json.string(session.mode_to_string(mode))),
     #(
       "serviceConfiguration",
       json.object([
@@ -709,7 +715,7 @@ fn connected_response(
       ]),
     ),
     #("initialClients", initial_clients_json(roster)),
-    #("initialMessages", ops_json(initial_ops)),
+    #("initialMessages", ops_to_json(initial_ops)),
     // Always empty, matching levee. See the 0x4b2 note in `connect_core`.
     #("initialSignals", json.preprocessed_array([])),
     // Capability negotiation is one-directional: a client that has never heard
@@ -729,7 +735,7 @@ fn connected_response(
   ])
 }
 
-fn claims_json(claims: TokenClaims) -> json.Json {
+fn claims_to_json(claims: TokenClaims) -> json.Json {
   json.object([
     #("documentId", json.string(claims.document_id)),
     #("scopes", json.array(types.scopes_to_strings(claims.scopes), json.string)),
@@ -743,13 +749,21 @@ fn claims_json(claims: TokenClaims) -> json.Json {
 
 fn initial_clients_json(roster: List(#(String, String))) -> json.Json {
   json.preprocessed_array(
-    list.map(roster, fn(entry) {
+    list.filter_map(roster, fn(entry) {
       let #(client_id, serialized_client) = entry
-      let assert Ok(client) = json.parse(serialized_client, decode.dynamic)
-      json.object([
-        #("clientId", json.string(client_id)),
-        #("client", dynamic_json(client)),
-      ])
+      // Roster values are server-serialized JSON, so this parse only fails on
+      // corrupt storage. Omitting that one client beats crashing the connect
+      // for everyone else.
+      case json.parse(serialized_client, decode.dynamic) {
+        Error(_) -> Error(Nil)
+        Ok(client) ->
+          Ok(
+            json.object([
+              #("clientId", json.string(client_id)),
+              #("client", dynamic_to_json(client)),
+            ]),
+          )
+      }
     }),
   )
 }
@@ -758,18 +772,18 @@ fn initial_clients_json(roster: List(#(String, String))) -> json.Json {
 fn now_seconds() -> Int
 
 fn handle_in(
-  channels,
-  sess: Session,
+  channels: beryl.Channels,
+  document_session: Session,
   registration: Registration,
   presence: Subject(presence_worker.Msg),
-  event,
+  event: String,
   payload: Dynamic,
   sock: Socket(DocAssigns),
-) {
-  let a = socket.get_assigns(sock)
-  case event, a.connected {
+) -> channel.HandleResult(DocAssigns) {
+  let assigns = socket.get_assigns(sock)
+  case event, assigns.connected {
     e, False if e == events.connect_document ->
-      connect_phase_two(channels, sess, payload, sock, a)
+      connect_phase_two(channels, document_session, payload, sock, assigns)
     // Presence must never be attributable to an unauthenticated socket: before
     // connect there is no verified user id to key it by.
     e, False if e == presence_worker.event_join ->
@@ -788,22 +802,40 @@ fn handle_in(
       )
     _, False -> NoReply(sock)
     e, True if e == events.submit_op ->
-      submit_op(channels, sess, payload, sock, a)
+      submit_op(channels, document_session, payload, sock, assigns)
     e, True if e == events.submit_signal ->
-      submit_signals(channels, sess, registration, payload, sock, a)
+      submit_signals(
+        channels,
+        document_session,
+        registration,
+        payload,
+        sock,
+        assigns,
+      )
     e, True if e == presence_worker.event_join ->
-      case presence_meta(payload, a.client_id) {
+      case presence_meta(payload, assigns.client_id) {
         Error(frame) -> Push(presence_worker.event_error, frame, sock)
         Ok(meta) -> {
-          presence_worker.join(presence, a.client_id, a.topic, a.user_id, meta)
+          presence_worker.join(
+            presence,
+            assigns.client_id,
+            assigns.topic,
+            assigns.user_id,
+            meta,
+          )
           NoReply(sock)
         }
       }
     e, True if e == presence_worker.event_update ->
-      case presence_meta(payload, a.client_id) {
+      case presence_meta(payload, assigns.client_id) {
         Error(frame) -> Push(presence_worker.event_error, frame, sock)
         Ok(meta) -> {
-          presence_worker.update(presence, a.client_id, a.topic, meta)
+          presence_worker.update(
+            presence,
+            assigns.client_id,
+            assigns.topic,
+            meta,
+          )
           NoReply(sock)
         }
       }
@@ -811,25 +843,29 @@ fn handle_in(
     // leave, or one racing the socket's own cleanup, is a no-op rather than an
     // error. The payload is ignored.
     e, True if e == presence_worker.event_leave -> {
-      presence_worker.leave(presence, a.client_id)
+      presence_worker.leave(presence, assigns.client_id)
       NoReply(sock)
     }
     "requestOps", True ->
       Push(
         events.op,
-        ops_json(session.since(sess, a.topic, int_field(payload, "from", 0))),
+        ops_to_json(session.since(
+          document_session,
+          assigns.topic,
+          int_field(payload, "from", 0),
+        )),
         sock,
       )
     // Without this an idle levee-mode client never advances its reference
     // sequence number and the minimum sequence number stalls for the document.
     "noop", True -> {
-      case field(payload, "clientId", "") == a.client_id {
+      case field(payload, "clientId", "") == assigns.client_id {
         False -> Nil
         True ->
           session.update_client_rsn(
-            sess,
-            a.topic,
-            a.client_id,
+            document_session,
+            assigns.topic,
+            assigns.client_id,
             int_field(payload, "referenceSequenceNumber", 0),
           )
       }
@@ -841,7 +877,7 @@ fn handle_in(
         json.preprocessed_array([
           nack_json(
             None,
-            session.sequence_number(sess, a.topic),
+            session.sequence_number(document_session, assigns.topic),
             400,
             "Submit summaries as sequenced summarize operations",
           ),
@@ -855,13 +891,21 @@ fn handle_in(
 /// Phoenix path only: IConnect arrives as an event after the join, and the
 /// driver listens for a pushed result rather than a reply.
 fn connect_phase_two(
-  channels,
-  sess: Session,
+  channels: beryl.Channels,
+  document_session: Session,
   payload: Dynamic,
   sock: Socket(DocAssigns),
-  a: DocAssigns,
-) {
-  case connect_core(channels, sess, a.topic, payload, socket.id(sock)) {
+  assigns: DocAssigns,
+) -> channel.HandleResult(DocAssigns) {
+  case
+    connect_core(
+      channels,
+      document_session,
+      assigns.topic,
+      payload,
+      socket.id(sock),
+    )
+  {
     Ok(#(response, assigns)) ->
       Push(
         events.connect_document_success,
@@ -869,14 +913,21 @@ fn connect_phase_two(
         socket.set_assigns(sock, assigns),
       )
     Error(error) ->
-      Push(events.connect_document_error, connect_error_json(error), sock)
+      Push(events.connect_document_error, connect_error_to_json(error), sock)
   }
 }
 
-fn submit_op(channels, sess: Session, payload, sock, a: DocAssigns) {
-  case a.mode {
-    "write" -> submit_writable_ops(channels, sess, payload, sock, a)
-    _ ->
+fn submit_op(
+  channels: beryl.Channels,
+  document_session: Session,
+  payload: Dynamic,
+  sock: Socket(DocAssigns),
+  assigns: DocAssigns,
+) -> channel.HandleResult(DocAssigns) {
+  case assigns.mode {
+    session.Write ->
+      submit_writable_ops(channels, document_session, payload, sock, assigns)
+    session.Read ->
       Push(
         events.nack,
         json.preprocessed_array([
@@ -887,8 +938,17 @@ fn submit_op(channels, sess: Session, payload, sock, a: DocAssigns) {
   }
 }
 
-fn submit_writable_ops(channels, sess, payload, sock, a: DocAssigns) {
-  case field(payload, "clientId", "") == a.client_id, submitted_ops(payload) {
+fn submit_writable_ops(
+  channels: beryl.Channels,
+  document_session: Session,
+  payload: Dynamic,
+  sock: Socket(DocAssigns),
+  assigns: DocAssigns,
+) -> channel.HandleResult(DocAssigns) {
+  case
+    field(payload, "clientId", "") == assigns.client_id,
+    submitted_ops(payload)
+  {
     False, _ ->
       Push(
         events.nack,
@@ -910,12 +970,19 @@ fn submit_writable_ops(channels, sess, payload, sock, a: DocAssigns) {
         list.fold(ops, [], fn(nacks, op) {
           case op.kind {
             "summarize" ->
-              case list.contains(a.scopes, "summary:write") {
-                True -> submit_summary_op(channels, sess, op, a, nacks)
+              case list.contains(assigns.scopes, "summary:write") {
+                True ->
+                  submit_summary_op(
+                    channels,
+                    document_session,
+                    op,
+                    assigns,
+                    nacks,
+                  )
                 False -> [
                   nack_json(
                     Some(op),
-                    session.sequence_number(sess, a.topic),
+                    session.sequence_number(document_session, assigns.topic),
                     403,
                     "Summary scope required",
                   ),
@@ -925,13 +992,13 @@ fn submit_writable_ops(channels, sess, payload, sock, a: DocAssigns) {
             _ ->
               case
                 session.submit_message(
-                  sess,
-                  a.topic,
-                  a.client_id,
+                  document_session,
+                  assigns.topic,
+                  assigns.client_id,
                   op.client_sequence_number,
                   op.reference_sequence_number,
                   fn(sn, msn) {
-                    sequenced_op_json(a.client_id, op, sn, msn)
+                    sequenced_op_json(assigns.client_id, op, sn, msn)
                     |> json.to_string
                   },
                 )
@@ -939,10 +1006,10 @@ fn submit_writable_ops(channels, sess, payload, sock, a: DocAssigns) {
                 session.MessageAssigned(sn, _, message) -> {
                   beryl.broadcast(
                     channels,
-                    a.topic,
+                    assigns.topic,
                     events.op,
                     json.preprocessed_array([
-                      session.stored_message_json(#(sn, message)),
+                      session.stored_message_to_json(#(sn, message)),
                     ]),
                   )
                   nacks
@@ -970,24 +1037,30 @@ fn submit_writable_ops(channels, sess, payload, sock, a: DocAssigns) {
 }
 
 fn submit_summary_op(
-  channels,
-  sess: Session,
+  channels: beryl.Channels,
+  document_session: Session,
   op: SubmittedOp,
-  a: DocAssigns,
-  nacks,
-) {
+  assigns: DocAssigns,
+  nacks: List(json.Json),
+) -> List(json.Json) {
   case
     session.submit_summary_messages(
-      sess,
-      a.topic,
-      a.client_id,
+      document_session,
+      assigns.topic,
+      assigns.client_id,
       op.client_sequence_number,
       op.reference_sequence_number,
       fn(summary_sn, response_sn, msn) {
         let outcome = case summarize_contents(op.contents) {
           Error(reason) -> #(None, reason)
           Ok(contents) ->
-            case persist_summary(session.storage(sess), a.topic, contents) {
+            case
+              persist_summary(
+                session.storage(document_session),
+                assigns.topic,
+                contents,
+              )
+            {
               Ok(commit_sha) -> #(Some(commit_sha), "")
               Error(reason) -> #(None, reason)
             }
@@ -1005,7 +1078,7 @@ fn submit_summary_op(
             )
         }
         #(
-          sequenced_op_json(a.client_id, op, summary_sn, msn)
+          sequenced_op_json(assigns.client_id, op, summary_sn, msn)
             |> json.to_string,
           json.to_string(response),
           outcome.0,
@@ -1024,14 +1097,14 @@ fn submit_summary_op(
       // the ref match it. Reading the pointer back rather than reusing the sha
       // computed above is what makes the ref a projection of the authoritative
       // value: whatever the session accepted is what gets published.
-      publish_summary_ref(sess, a.topic)
+      publish_summary_ref(document_session, assigns.topic)
       beryl.broadcast(
         channels,
-        a.topic,
+        assigns.topic,
         events.op,
         json.preprocessed_array([
-          session.stored_message_json(#(summary_sn, summary_message)),
-          session.stored_message_json(#(response_sn, response_message)),
+          session.stored_message_to_json(#(summary_sn, summary_message)),
+          session.stored_message_to_json(#(response_sn, response_message)),
         ]),
       )
       nacks
@@ -1063,7 +1136,7 @@ fn summarize_contents(contents: Dynamic) -> Result(SummarizeContents, String) {
   }
 }
 
-fn summarize_contents_decoder() {
+fn summarize_contents_decoder() -> decode.Decoder(SummarizeContents) {
   use handle <- decode.field("handle", decode.string)
   use message <- decode.field("message", decode.string)
   use parents <- decode.field("parents", decode.list(decode.string))
@@ -1073,15 +1146,20 @@ fn summarize_contents_decoder() {
 
 /// Point `refs/heads/<document_id>` at whatever summary commit the session
 /// currently holds. A no-op when there is none.
-fn publish_summary_ref(sess: Session, topic: String) -> Nil {
-  case topic_ids(topic), session.summary(sess, topic) {
-    Ok(#(tenant, document_id)), #(handle, _sn) if handle != "" ->
-      git.publish_summary_ref(
-        session.storage(sess),
-        tenant,
-        document_id,
-        handle,
-      )
+fn publish_summary_ref(document_session: Session, topic: String) -> Nil {
+  case topic_ids(topic), session.summary(document_session, topic) {
+    Ok(#(tenant, document_id)), Ok(#(handle, _sn)) if handle != "" -> {
+      // Best-effort: a failed publish leaves a lagging ref, which
+      // `doc_state.rehydrate` repairs on the document's next cold start.
+      let _ =
+        git.publish_summary_ref(
+          session.storage(document_session),
+          tenant,
+          document_id,
+          handle,
+        )
+      Nil
+    }
     _, _ -> Nil
   }
 }
@@ -1133,20 +1211,20 @@ fn topic_ids(topic: String) -> Result(#(String, String), String) {
 }
 
 fn submit_signals(
-  channels,
-  sess: Session,
+  channels: beryl.Channels,
+  document_session: Session,
   registration: Registration,
   payload: Dynamic,
-  sock,
-  a: DocAssigns,
-) {
+  sock: Socket(DocAssigns),
+  assigns: DocAssigns,
+) -> channel.HandleResult(DocAssigns) {
   case
-    field(payload, "clientId", "") == a.client_id,
+    field(payload, "clientId", "") == assigns.client_id,
     submitted_signals(payload)
   {
     True, Ok(signals) -> {
       list.each(signals, fn(signal) {
-        relay_signal(channels, sess, registration, a, signal)
+        relay_signal(channels, document_session, registration, assigns, signal)
       })
       NoReply(sock)
     }
@@ -1167,36 +1245,41 @@ fn submit_signals(
 /// the one to use rather than `signals.get_signal_recipients`, which does not
 /// intersect the targeted list with the known clients.
 fn relay_signal(
-  channels,
-  sess: Session,
+  channels: beryl.Channels,
+  document_session: Session,
   registration: Registration,
-  a: DocAssigns,
+  assigns: DocAssigns,
   signal: signals.NormalizedSignal,
 ) -> Nil {
   let message =
     json.object([
-      #("clientId", json.string(a.client_id)),
-      #("content", dynamic_json(signal.content)),
+      #("clientId", json.string(assigns.client_id)),
+      #("content", dynamic_to_json(signal.content)),
     ])
 
   case targeted(signal), registered_channel(registration) {
     // Untargeted, or no registration handle to push through: broadcast, which
     // is what this did unconditionally before targeting was honoured.
     False, _ | _, None ->
-      beryl.broadcast(channels, a.topic, events.signal, message)
+      beryl.broadcast(channels, assigns.topic, events.signal, message)
     True, Some(registered) ->
       session_logic.determine_signal_recipients(
-        a.client_id,
+        assigns.client_id,
         signal.targeted_clients,
         signal.ignored_clients,
         signal.target_client_id,
-        session.clients(sess, a.topic),
+        session.clients(document_session, assigns.topic),
       )
       // The Fluid client id *is* the beryl socket id — `join` assigns
       // `socket.id(sock)` as the client id — so a recipient addresses a socket
       // directly, with no mapping to maintain.
       |> list.each(fn(recipient) {
-        beryl.send_info(registered, recipient, a.topic, SignalPush(message))
+        beryl.send_info(
+          registered,
+          recipient,
+          assigns.topic,
+          SignalPush(message),
+        )
       })
   }
 }
@@ -1210,7 +1293,9 @@ fn targeted(signal: signals.NormalizedSignal) -> Bool {
   || option.is_some(signal.target_client_id)
 }
 
-fn submitted_ops(payload: Dynamic) {
+fn submitted_ops(
+  payload: Dynamic,
+) -> Result(List(SubmittedOp), List(decode.DecodeError)) {
   let decoder = {
     use batches <- decode.field(
       "messageBatches",
@@ -1221,7 +1306,7 @@ fn submitted_ops(payload: Dynamic) {
   decode.run(payload, decoder)
 }
 
-fn submitted_op_decoder() {
+fn submitted_op_decoder() -> decode.Decoder(SubmittedOp) {
   use csn <- decode.field("clientSequenceNumber", decode.int)
   use rsn <- decode.field("referenceSequenceNumber", decode.int)
   use kind <- decode.optional_field("type", "op", decode.string)
@@ -1246,7 +1331,10 @@ fn submitted_op_decoder() {
   ))
 }
 
-fn optional_dynamic_field(name: String, next) {
+fn optional_dynamic_field(
+  name: String,
+  next: fn(Option(Dynamic)) -> decode.Decoder(final),
+) -> decode.Decoder(final) {
   decode.optional_field(name, None, decode.optional(decode.dynamic), next)
 }
 
@@ -1309,7 +1397,7 @@ fn sequenced_op_json(
     #("clientSequenceNumber", json.int(op.client_sequence_number)),
     #("referenceSequenceNumber", json.int(op.reference_sequence_number)),
     #("type", json.string(op.kind)),
-    #("contents", dynamic_json(op.contents)),
+    #("contents", dynamic_to_json(op.contents)),
     #("timestamp", json.int(now_seconds() * 1000)),
   ]
   fields
@@ -1332,7 +1420,7 @@ fn summary_ack_json(
     minimum_sequence_number,
     timestamp,
   )
-  |> list.map(fn(field) { #(field.0, dynamic_json(field.1)) })
+  |> list.map(fn(field) { #(field.0, dynamic_to_json(field.1)) })
   |> json.object
 }
 
@@ -1378,7 +1466,7 @@ fn nack_json(
         #("clientSequenceNumber", json.int(op.client_sequence_number)),
         #("referenceSequenceNumber", json.int(op.reference_sequence_number)),
         #("type", json.string(op.kind)),
-        #("contents", dynamic_json(op.contents)),
+        #("contents", dynamic_to_json(op.contents)),
       ]
       fields
       |> add_optional_json("metadata", op.metadata)
@@ -1410,19 +1498,21 @@ fn add_optional_json(
   value: option.Option(Dynamic),
 ) -> List(#(String, json.Json)) {
   case value {
-    Some(value) -> list.append(fields, [#(name, dynamic_json(value))])
+    Some(value) -> list.append(fields, [#(name, dynamic_to_json(value))])
     None -> fields
   }
 }
 
-fn dynamic_json(value: Dynamic) -> json.Json {
+/// The dynamic → JSON conversion the roster path uses. Public so tests can
+/// assert on the exact bytes a client payload serializes to.
+pub fn dynamic_to_json(value: Dynamic) -> json.Json {
   case decode.run(value, decode.optional(decode.dynamic)) {
     Ok(None) -> json.null()
-    _ -> non_null_dynamic_json(value)
+    _ -> non_null_dynamic_to_json(value)
   }
 }
 
-fn non_null_dynamic_json(value: Dynamic) -> json.Json {
+fn non_null_dynamic_to_json(value: Dynamic) -> json.Json {
   case decode.run(value, decode.string) {
     Ok(value) -> json.string(value)
     Error(_) ->
@@ -1437,7 +1527,7 @@ fn non_null_dynamic_json(value: Dynamic) -> json.Json {
                 Error(_) ->
                   case decode.run(value, decode.list(decode.dynamic)) {
                     Ok(values) ->
-                      json.preprocessed_array(list.map(values, dynamic_json))
+                      json.preprocessed_array(list.map(values, dynamic_to_json))
                     Error(_) ->
                       case
                         decode.run(
@@ -1449,7 +1539,7 @@ fn non_null_dynamic_json(value: Dynamic) -> json.Json {
                           values
                           |> dict.to_list
                           |> list.map(fn(entry) {
-                            #(entry.0, dynamic_json(entry.1))
+                            #(entry.0, dynamic_to_json(entry.1))
                           })
                           |> json.object
                         Error(_) -> json.null()
@@ -1461,20 +1551,20 @@ fn non_null_dynamic_json(value: Dynamic) -> json.Json {
   }
 }
 
-fn ops_json(ops: List(#(Int, String))) -> json.Json {
-  json.preprocessed_array(list.map(ops, session.stored_message_json))
+fn ops_to_json(ops: List(#(Int, String))) -> json.Json {
+  json.preprocessed_array(list.map(ops, session.stored_message_to_json))
 }
 
-fn field(v: Dynamic, k: String, d: String) -> String {
-  case decode.run(v, decode.field(k, decode.string, decode.success)) {
-    Ok(x) -> x
-    Error(_) -> d
+fn field(value: Dynamic, key: String, default: String) -> String {
+  case decode.run(value, decode.field(key, decode.string, decode.success)) {
+    Ok(found) -> found
+    Error(_) -> default
   }
 }
 
-fn int_field(v: Dynamic, k: String, d: Int) -> Int {
-  case decode.run(v, decode.field(k, decode.int, decode.success)) {
-    Ok(x) -> x
-    Error(_) -> d
+fn int_field(value: Dynamic, key: String, default: Int) -> Int {
+  case decode.run(value, decode.field(key, decode.int, decode.success)) {
+    Ok(found) -> found
+    Error(_) -> default
   }
 }

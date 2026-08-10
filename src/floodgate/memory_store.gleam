@@ -18,7 +18,7 @@ type State {
     ops: Dict(#(String, Int), String),
     summaries: Dict(String, #(String, Int)),
     /// `#(topic, sha) → body`. Keyed by document topic, not tenant — objects
-    /// belong to a document. See `store.Backend.put_obj`.
+    /// belong to a document. See `store.Backend.put_object`.
     objects: Dict(#(String, String), String),
     refs: Dict(#(String, String), String),
     /// `tenant id → #(name, secret1, secret2)`, mirroring `shelf_store`'s
@@ -38,7 +38,7 @@ pub type Msg {
   PutOp(String, Int, String, Subject(Nil))
   GetOps(String, Subject(List(#(Int, String))))
   PutSummary(String, String, Int, Subject(Nil))
-  GetSummary(String, Subject(#(String, Int)))
+  GetSummary(String, Subject(Result(#(String, Int), Nil)))
   PutObject(String, String, String, Subject(Nil))
   GetObject(String, String, Subject(Result(String, Nil)))
   PutRef(String, String, String, Subject(Nil))
@@ -135,32 +135,41 @@ fn backend(
     supervise: supervise,
     open: fn() { Nil },
     put_document: fn(topic) {
-      process.call(subject(), 1000, PutDocument(topic, _))
+      Ok(process.call(subject(), 1000, PutDocument(topic, _)))
     },
     has_document: fn(topic) {
       process.call(subject(), 1000, HasDocument(topic, _))
     },
-    put_op: fn(topic, sn, contents) {
-      process.call(subject(), 1000, PutOp(topic, sn, contents, _))
+    put_op: fn(topic, sequence_number, contents) {
+      Ok(
+        process.call(subject(), 1000, PutOp(topic, sequence_number, contents, _)),
+      )
     },
     get_ops: fn(topic) { process.call(subject(), 1000, GetOps(topic, _)) },
-    put_summary: fn(topic, summary, sn) {
-      process.call(subject(), 1000, PutSummary(topic, summary, sn, _))
+    put_summary: fn(topic, summary, sequence_number) {
+      Ok(
+        process.call(subject(), 1000, PutSummary(
+          topic,
+          summary,
+          sequence_number,
+          _,
+        )),
+      )
     },
     get_summary: fn(topic) {
       process.call(subject(), 1000, GetSummary(topic, _))
     },
-    put_obj: fn(topic, sha, data) {
-      process.call(subject(), 1000, PutObject(topic, sha, data, _))
+    put_object: fn(topic, sha, data) {
+      Ok(process.call(subject(), 1000, PutObject(topic, sha, data, _)))
     },
-    get_obj: fn(topic, sha) {
+    get_object: fn(topic, sha) {
       process.call(subject(), 1000, GetObject(topic, sha, _))
     },
     put_ref: fn(tenant, ref, sha) {
-      process.call(subject(), 1000, PutRef(tenant, ref, sha, _))
+      Ok(process.call(subject(), 1000, PutRef(tenant, ref, sha, _)))
     },
     create_ref: fn(tenant, ref, sha) {
-      process.call(subject(), 1000, CreateRef(tenant, ref, sha, _))
+      Ok(process.call(subject(), 1000, CreateRef(tenant, ref, sha, _)))
     },
     get_ref: fn(tenant, ref) {
       process.call(subject(), 1000, GetRef(tenant, ref, _))
@@ -215,10 +224,13 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
       process.send(reply, dict.has_key(state.documents, topic))
       actor.continue(state)
     }
-    PutOp(topic, sn, contents, reply) -> {
+    PutOp(topic, sequence_number, contents, reply) -> {
       process.send(reply, Nil)
       actor.continue(
-        State(..state, ops: dict.insert(state.ops, #(topic, sn), contents)),
+        State(
+          ..state,
+          ops: dict.insert(state.ops, #(topic, sequence_number), contents),
+        ),
       )
     }
     GetOps(topic, reply) -> {
@@ -226,29 +238,29 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
         state.ops
         |> dict.to_list
         |> list.filter_map(fn(entry) {
-          let #(#(stored_topic, sn), contents) = entry
+          let #(#(stored_topic, sequence_number), contents) = entry
           case stored_topic == topic {
-            True -> Ok(#(sn, contents))
+            True -> Ok(#(sequence_number, contents))
             False -> Error(Nil)
           }
         })
       process.send(reply, ops)
       actor.continue(state)
     }
-    PutSummary(topic, summary, sn, reply) -> {
+    PutSummary(topic, summary, sequence_number, reply) -> {
       process.send(reply, Nil)
       actor.continue(
         State(
           ..state,
-          summaries: dict.insert(state.summaries, topic, #(summary, sn)),
+          summaries: dict.insert(state.summaries, topic, #(
+            summary,
+            sequence_number,
+          )),
         ),
       )
     }
     GetSummary(topic, reply) -> {
-      process.send(
-        reply,
-        dict.get(state.summaries, topic) |> result_or(#("", 0)),
-      )
+      process.send(reply, dict.get(state.summaries, topic))
       actor.continue(state)
     }
     PutObject(topic, sha, data, reply) -> {
@@ -412,12 +424,5 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
         State(..state, admin_sessions: dict.delete(state.admin_sessions, id)),
       )
     }
-  }
-}
-
-fn result_or(result: Result(a, Nil), default: a) -> a {
-  case result {
-    Ok(value) -> value
-    Error(Nil) -> default
   }
 }

@@ -72,12 +72,28 @@ pub opaque type Session {
 
 /// Resolve the current registry owner. Called per request rather than cached, so
 /// the handle survives a restart.
-fn owner_subject(s: Session) -> Subject(OwnerMsg) {
-  process.named_subject(s.name)
+fn owner_subject(session: Session) -> Subject(OwnerMsg) {
+  process.named_subject(session.name)
 }
 
-fn registry(s: Session) -> doc_registry.Registry(Subject(Msg)) {
-  doc_registry.from_name(s.name)
+fn registry(session: Session) -> doc_registry.Registry(Subject(Msg)) {
+  doc_registry.from_name(session.name)
+}
+
+/// How a client asked to connect. Writers join the sequencing quorum with a
+/// durable join op; readers only appear in presence. The wire carries this as
+/// the IConnect `mode` string — see `mode_to_string`.
+pub type Mode {
+  Read
+  Write
+}
+
+/// The wire encoding of a `Mode`, as IConnect/IClient's `mode` field spells it.
+pub fn mode_to_string(mode: Mode) -> String {
+  case mode {
+    Read -> "read"
+    Write -> "write"
+  }
 }
 
 pub type Msg {
@@ -90,7 +106,7 @@ pub type Msg {
   Connect(
     topic: String,
     client_id: String,
-    mode: String,
+    mode: Mode,
     client: String,
     join_data: String,
     timestamp: Int,
@@ -100,7 +116,7 @@ pub type Msg {
   JoinPresence(
     topic: String,
     client_id: String,
-    mode: String,
+    mode: Mode,
     reply: Subject(Bool),
   )
   JoinSequenced(
@@ -199,6 +215,15 @@ pub type JoinResult {
   Joined(existing: Bool, sn: Int, msn: Int, message: String)
 }
 
+/// How the session admitted the connecting client. A writer's join is
+/// sequenced as a durable op, which every writer has and no reader does — so
+/// the op rides on the variant instead of an `Option` that would let a
+/// writer-without-join-op be represented.
+pub type Membership {
+  Writer(sequence_number: Int, message: String)
+  Reader
+}
+
 pub type ConnectionResult {
   Connected(
     existing: Bool,
@@ -208,7 +233,7 @@ pub type ConnectionResult {
     summary_sequence_number: Int,
     current_sequence_number: Int,
     recovery: List(#(Int, String)),
-    membership: Option(#(Int, String)),
+    membership: Membership,
   )
 }
 
@@ -333,9 +358,9 @@ fn schedule_sweep(self: Subject(Msg), idle_ms: Int) -> Nil {
 fn idle(state: DocState, idle_ms: Int) -> Bool {
   case state.doc {
     None -> True
-    Some(d) ->
-      dict.is_empty(d.presence)
-      && d.last_touched_ms <= doc_state.now_ms() - idle_ms
+    Some(document) ->
+      dict.is_empty(document.presence)
+      && document.last_touched_ms <= doc_state.now_ms() - idle_ms
   }
 }
 
@@ -417,15 +442,18 @@ pub fn storage(session: Session) -> store.Backend {
 
 /// The pid currently registered under the session's name, if the registry owner
 /// is running. For supervision tests and diagnostics.
-pub fn owner(s: Session) -> Result(process.Pid, Nil) {
-  process.subject_owner(owner_subject(s))
+pub fn owner(session: Session) -> Result(process.Pid, Nil) {
+  process.subject_owner(owner_subject(session))
 }
 
 /// The pid of the actor currently serving `topic`, if one is running. `Error`
 /// means the document is not in memory, not that it does not exist. For
 /// supervision tests and diagnostics.
-pub fn document_owner(s: Session, topic: String) -> Result(process.Pid, Nil) {
-  case doc_registry.lookup(registry(s), topic) {
+pub fn document_owner(
+  session: Session,
+  topic: String,
+) -> Result(process.Pid, Nil) {
+  case doc_registry.lookup(registry(session), topic) {
     Ok(subject) -> process.subject_owner(subject)
     Error(Nil) -> Error(Nil)
   }
@@ -447,16 +475,16 @@ pub fn document_owner(s: Session, topic: String) -> Result(process.Pid, Nil) {
 /// The ETS read is the fast path and happens right here in the calling process.
 /// Only a miss costs a message, and only to the owner, which serializes starts
 /// so two callers racing on the same cold document cannot produce two actors.
-fn resolve(s: Session, topic: String) -> Subject(Msg) {
-  case doc_registry.lookup(registry(s), topic) {
+fn resolve(session: Session, topic: String) -> Subject(Msg) {
+  case doc_registry.lookup(registry(session), topic) {
     Ok(subject) -> subject
-    Error(Nil) -> start_document_actor(s, topic)
+    Error(Nil) -> start_document_actor(session, topic)
   }
 }
 
-fn start_document_actor(s: Session, topic: String) -> Subject(Msg) {
+fn start_document_actor(session: Session, topic: String) -> Subject(Msg) {
   let assert Ok(subject) =
-    process.call(owner_subject(s), 1000, EnsureStarted(topic, _))
+    process.call(owner_subject(session), 1000, EnsureStarted(topic, _))
   subject
 }
 
@@ -469,20 +497,22 @@ fn start_document_actor(s: Session, topic: String) -> Subject(Msg) {
 /// panicking here would take down a channel process for what is a routine race.
 /// Retry once against a freshly started actor instead.
 fn call_doc(
-  s: Session,
+  session: Session,
   topic: String,
   timeout: Int,
   make: fn(Subject(reply)) -> Msg,
 ) -> reply {
   case
-    exception.rescue(fn() { process.call(resolve(s, topic), timeout, make) })
+    exception.rescue(fn() {
+      process.call(resolve(session, topic), timeout, make)
+    })
   {
     Ok(value) -> value
     Error(_) -> {
       // Drop the row we just failed against so the owner starts a fresh actor
       // rather than handing back the same corpse.
-      doc_registry.delete(registry(s), topic)
-      process.call(start_document_actor(s, topic), timeout, make)
+      doc_registry.delete(registry(session), topic)
+      process.call(start_document_actor(session, topic), timeout, make)
     }
   }
 }
@@ -490,39 +520,39 @@ fn call_doc(
 /// Fire-and-forget to a document that is already in memory, dropping the
 /// message if it is not. Only for messages whose effect on a document nobody has
 /// loaded would be nil anyway.
-fn send_doc(s: Session, topic: String, message: Msg) -> Nil {
-  case doc_registry.lookup(registry(s), topic) {
+fn send_doc(session: Session, topic: String, message: Msg) -> Nil {
+  case doc_registry.lookup(registry(session), topic) {
     Ok(subject) -> process.send(subject, message)
     Error(Nil) -> Nil
   }
 }
 
-pub fn create(s: Session, topic: String) -> Bool {
-  call_doc(s, topic, 1000, Create(topic, _))
+pub fn create(session: Session, topic: String) -> Bool {
+  call_doc(session, topic, 1000, Create(topic, _))
 }
 
 pub fn create_initialized(
-  s: Session,
+  session: Session,
   topic: String,
   build: fn() -> Result(Option(#(String, Int)), Nil),
 ) -> CreateInitializedResult {
-  call_doc(s, topic, 10_000, CreateInitialized(topic, build, _))
+  call_doc(session, topic, 10_000, CreateInitialized(topic, build, _))
 }
 
-pub fn join(s: Session, topic: String, c: String) -> Bool {
-  call_doc(s, topic, 1000, Join(topic, c, _))
+pub fn join(session: Session, topic: String, client_id: String) -> Bool {
+  call_doc(session, topic, 1000, Join(topic, client_id, _))
 }
 
 pub fn connect(
-  s: Session,
+  session: Session,
   topic: String,
   client_id: String,
-  mode: String,
+  mode: Mode,
   client: String,
   join_data: String,
   timestamp: Int,
 ) -> ConnectionResult {
-  call_doc(s, topic, 1000, Connect(
+  call_doc(session, topic, 1000, Connect(
     topic,
     client_id,
     mode,
@@ -534,48 +564,61 @@ pub fn connect(
 }
 
 pub fn join_presence(
-  s: Session,
+  session: Session,
   topic: String,
   client_id: String,
-  mode: String,
+  mode: Mode,
 ) -> Bool {
-  call_doc(s, topic, 1000, JoinPresence(topic, client_id, mode, _))
+  call_doc(session, topic, 1000, JoinPresence(topic, client_id, mode, _))
 }
 
 pub fn join_sequenced(
-  s: Session,
+  session: Session,
   topic: String,
   client_id: String,
   data: String,
   timestamp: Int,
 ) -> JoinResult {
-  call_doc(s, topic, 1000, JoinSequenced(topic, client_id, data, timestamp, _))
+  call_doc(session, topic, 1000, JoinSequenced(
+    topic,
+    client_id,
+    data,
+    timestamp,
+    _,
+  ))
 }
 
 pub fn submit(
-  s: Session,
-  t: String,
-  c: String,
+  session: Session,
+  topic: String,
+  client_id: String,
   csn: Int,
   rsn: Int,
   contents: String,
 ) -> SubmitResult {
-  call_doc(s, t, 1000, Submit(t, c, csn, rsn, contents, _))
+  call_doc(session, topic, 1000, Submit(topic, client_id, csn, rsn, contents, _))
 }
 
 pub fn submit_message(
-  s: Session,
+  session: Session,
   topic: String,
   client_id: String,
   csn: Int,
   rsn: Int,
   build: fn(Int, Int) -> String,
 ) -> SubmitMessageResult {
-  call_doc(s, topic, 1000, SubmitMessage(topic, client_id, csn, rsn, build, _))
+  call_doc(session, topic, 1000, SubmitMessage(
+    topic,
+    client_id,
+    csn,
+    rsn,
+    build,
+    _,
+  ))
 }
 
 pub fn submit_summary(
-  s: Session,
+  session: Session,
   topic: String,
   client_id: String,
   csn: Int,
@@ -584,7 +627,7 @@ pub fn submit_summary(
   response_contents: String,
   handle: Option(String),
 ) -> SubmitSummaryResult {
-  call_doc(s, topic, 1000, SubmitSummary(
+  call_doc(session, topic, 1000, SubmitSummary(
     topic,
     client_id,
     csn,
@@ -597,14 +640,14 @@ pub fn submit_summary(
 }
 
 pub fn submit_summary_messages(
-  s: Session,
+  session: Session,
   topic: String,
   client_id: String,
   csn: Int,
   rsn: Int,
   build: fn(Int, Int, Int) -> #(String, String, Option(String)),
 ) -> SubmitSummaryMessagesResult {
-  call_doc(s, topic, 1000, SubmitSummaryMessages(
+  call_doc(session, topic, 1000, SubmitSummaryMessages(
     topic,
     client_id,
     csn,
@@ -614,21 +657,25 @@ pub fn submit_summary_messages(
   ))
 }
 
-pub fn leave(s: Session, topic: String, client_id: String) -> Nil {
-  send_doc(s, topic, Leave(topic, client_id))
+pub fn leave(session: Session, topic: String, client_id: String) -> Nil {
+  send_doc(session, topic, Leave(topic, client_id))
 }
 
-pub fn leave_presence(s: Session, topic: String, client_id: String) -> Nil {
-  send_doc(s, topic, LeavePresence(topic, client_id))
+pub fn leave_presence(
+  session: Session,
+  topic: String,
+  client_id: String,
+) -> Nil {
+  send_doc(session, topic, LeavePresence(topic, client_id))
 }
 
 pub fn leave_sequenced(
-  s: Session,
+  session: Session,
   topic: String,
   client_id: String,
   timestamp: Int,
 ) -> LeaveResult {
-  call_doc(s, topic, 1000, LeaveSequenced(topic, client_id, timestamp, _))
+  call_doc(session, topic, 1000, LeaveSequenced(topic, client_id, timestamp, _))
 }
 
 /// Ops after `sn`, straight from storage — no process involved, hot or cold.
@@ -639,22 +686,22 @@ pub fn leave_sequenced(
 /// told was assigned is already readable here. This briefly routed through the
 /// document's actor instead, to close the window the two mis-ordered handlers
 /// left open before `2e59238`; fixing the order removed the reason.
-pub fn since(s: Session, t: String, sn: Int) -> List(#(Int, String)) {
-  store.get_ops(s.storage, t) |> list.filter(fn(o) { o.0 > sn })
+pub fn since(session: Session, topic: String, sn: Int) -> List(#(Int, String)) {
+  store.get_ops(session.storage, topic) |> list.filter(fn(op) { op.0 > sn })
 }
 
-pub fn clients(s: Session, t: String) -> List(String) {
-  case doc_registry.lookup(registry(s), t) {
-    Ok(subject) -> process.call(subject, 1000, Clients(t, _))
+pub fn clients(session: Session, topic: String) -> List(String) {
+  case doc_registry.lookup(registry(session), topic) {
+    Ok(subject) -> process.call(subject, 1000, Clients(topic, _))
     // A document with no actor has no presence: `doc_state.rehydrate` starts
     // with an empty roster, so the old code's answer here was `[]` too.
     Error(Nil) -> []
   }
 }
 
-pub fn roster(s: Session, t: String) -> List(#(String, String)) {
-  case doc_registry.lookup(registry(s), t) {
-    Ok(subject) -> process.call(subject, 1000, Roster(t, _))
+pub fn roster(session: Session, topic: String) -> List(#(String, String)) {
+  case doc_registry.lookup(registry(session), topic) {
+    Ok(subject) -> process.call(subject, 1000, Roster(topic, _))
     Error(Nil) -> []
   }
 }
@@ -663,18 +710,19 @@ pub fn roster(s: Session, t: String) -> List(#(String, String)) {
 ///
 /// Deliberately allocation-free — this is reachable from REST paths that do not
 /// require a document to exist, so it must not be able to spawn an actor.
-pub fn exists(s: Session, t: String) -> Bool {
-  case doc_registry.lookup(registry(s), t) {
+pub fn exists(session: Session, topic: String) -> Bool {
+  case doc_registry.lookup(registry(session), topic) {
     Ok(_) -> True
-    Error(Nil) -> doc_state.stored_document_exists(s.storage, t)
+    Error(Nil) -> doc_state.stored_document_exists(session.storage, topic)
   }
 }
 
-pub fn sequence_number(s: Session, t: String) -> Int {
-  case doc_registry.lookup(registry(s), t) {
-    Ok(subject) -> process.call(subject, 1000, SequenceNumber(t, _))
+pub fn sequence_number(session: Session, topic: String) -> Int {
+  case doc_registry.lookup(registry(session), topic) {
+    Ok(subject) -> process.call(subject, 1000, SequenceNumber(topic, _))
     // Same rebuild the actor would do on its first touch, without keeping it.
-    Error(Nil) -> doc_state.rehydrate(s.storage, t).seq.sequence_number
+    Error(Nil) ->
+      doc_state.rehydrate(session.storage, topic).seq.sequence_number
   }
 }
 
@@ -684,26 +732,42 @@ pub fn sequence_number(s: Session, t: String) -> Int {
 /// messages, because it is the only fire-and-forget message with a *durable*
 /// effect. While it was async, `summary` could not read storage directly — the
 /// read raced the write it had just asked for.
-pub fn set_summary(s: Session, t: String, handle: String, sn: Int) -> Nil {
-  call_doc(s, t, 1000, SetSummary(t, handle, sn, _))
+pub fn set_summary(
+  session: Session,
+  topic: String,
+  handle: String,
+  sn: Int,
+) -> Nil {
+  call_doc(session, topic, 1000, SetSummary(topic, handle, sn, _))
 }
 
 /// Advance a client's reference sequence number without sequencing an op, so
 /// an idle client still lets the minimum sequence number move. Fire-and-forget,
 /// mirroring levee's `Session.update_client_rsn` cast.
-pub fn update_client_rsn(s: Session, t: String, client_id: String, rsn: Int) {
-  send_doc(s, t, UpdateClientRsn(t, client_id, rsn))
+pub fn update_client_rsn(
+  session: Session,
+  topic: String,
+  client_id: String,
+  rsn: Int,
+) -> Nil {
+  send_doc(session, topic, UpdateClientRsn(topic, client_id, rsn))
 }
 
-pub fn initialize_summary(s: Session, t: String, handle: String, sn: Int) {
-  call_doc(s, t, 1000, InitializeSummary(t, handle, sn, _))
+pub fn initialize_summary(
+  session: Session,
+  topic: String,
+  handle: String,
+  sn: Int,
+) -> Nil {
+  call_doc(session, topic, 1000, InitializeSummary(topic, handle, sn, _))
 }
 
 /// The latest summary, straight from storage — same reasoning as `since`. The
 /// summary pointer is the last of `SubmitSummary`'s three writes and the ack
 /// follows all of them, so observing the ack means this read sees it.
-pub fn summary(s: Session, t: String) -> #(String, Int) {
-  store.get_summary(s.storage, t)
+/// `Error(Nil)` when the document has never been summarized.
+pub fn summary(session: Session, topic: String) -> Result(#(String, Int), Nil) {
+  store.get_summary(session.storage, topic)
 }
 
 /// How many documents are currently held in memory. Documents are a cache over
@@ -712,8 +776,8 @@ pub fn summary(s: Session, t: String) -> #(String, Int) {
 ///
 /// Now a direct ETS read of the registry's size rather than a process call,
 /// since one live actor is exactly one cached document.
-pub fn cached_documents(s: Session) -> Int {
-  doc_registry.size(registry(s))
+pub fn cached_documents(session: Session) -> Int {
+  doc_registry.size(registry(session))
 }
 
 // ── The registry owner ─────────────────────────────────────────────────────
@@ -837,7 +901,7 @@ fn start_document(
 /// stopping is just a cache drop and this rebuilds it.
 fn doc(storage: store.Backend, topic: String, state: DocState) -> Doc {
   case state.doc {
-    Some(d) -> Doc(..d, last_touched_ms: doc_state.now_ms())
+    Some(document) -> Doc(..document, last_touched_ms: doc_state.now_ms())
     None -> doc_state.rehydrate(storage, topic)
   }
 }
@@ -856,21 +920,21 @@ fn already_exists(
   }
 }
 
-fn cache(state: DocState, d: Doc) -> actor.Next(DocState, Msg) {
-  actor.continue(DocState(..state, doc: Some(d)))
+fn cache(state: DocState, document: Doc) -> actor.Next(DocState, Msg) {
+  actor.continue(DocState(..state, doc: Some(document)))
 }
 
 fn reconcile_membership(
   storage: store.Backend,
   topic: String,
-  d: Doc,
+  document: Doc,
 ) -> #(Doc, List(#(Int, String))) {
   let unmatched =
     store.get_ops(storage, topic)
     |> doc_state.unmatched_clients
-    |> list.filter(fn(client_id) { !dict.has_key(d.presence, client_id) })
+    |> list.filter(fn(client_id) { !dict.has_key(document.presence, client_id) })
   let #(reconciled, newest_first) =
-    list.fold(unmatched, #(d, []), fn(acc, client_id) {
+    list.fold(unmatched, #(document, []), fn(acc, client_id) {
       let #(next, op) =
         sequence_leave(storage, topic, acc.0, client_id, now_seconds() * 1000)
       #(next, [op, ..acc.1])
@@ -881,23 +945,23 @@ fn reconcile_membership(
 fn sequence_leave(
   storage: store.Backend,
   topic: String,
-  d: Doc,
+  document: Doc,
   client_id: String,
   timestamp: Int,
 ) -> #(Doc, #(Int, String)) {
-  let sn = d.seq.sequence_number + 1
-  let left = sequencing.client_leave(d.seq, client_id)
+  let sn = document.seq.sequence_number + 1
+  let left = sequencing.client_leave(document.seq, client_id)
   let seq = sequencing.SequenceState(..left, sequence_number: sn)
   let data = json.string(client_id) |> json.to_string
   let message =
     system_message("leave", data, sn, seq.minimum_sequence_number, timestamp)
-  store.put_op(storage, topic, sn, message)
+  persist_op(storage, topic, sn, message)
   #(
     Doc(
-      ..d,
+      ..document,
       seq: seq,
-      history: doc_state.remember(d, #(sn, message)),
-      presence: dict.delete(d.presence, client_id),
+      history: doc_state.remember(document, #(sn, message)),
+      presence: dict.delete(document.presence, client_id),
     ),
     #(sn, message),
   )
@@ -908,41 +972,41 @@ fn handle(
   storage: store.Backend,
   registry: doc_registry.Registry(Subject(Msg)),
   idle_ms: Int,
-  st: DocState,
-  m: Msg,
+  state: DocState,
+  message: Msg,
 ) -> actor.Next(DocState, Msg) {
-  case m {
-    Create(t, reply) -> {
-      let existing = already_exists(storage, t, st)
-      store.put_document(storage, t)
+  case message {
+    Create(topic, reply) -> {
+      let existing = already_exists(storage, topic, state)
+      persist_document(storage, topic)
       process.send(reply, existing)
-      cache(st, doc(storage, t, st))
+      cache(state, doc(storage, topic, state))
     }
-    CreateInitialized(t, build, reply) -> {
-      let existing = already_exists(storage, t, st)
+    CreateInitialized(topic, build, reply) -> {
+      let existing = already_exists(storage, topic, state)
       case existing {
         True -> {
           process.send(reply, AlreadyExists)
-          actor.continue(st)
+          actor.continue(state)
         }
         False ->
           case build() {
             Error(Nil) -> {
               process.send(reply, InvalidInitialSummary)
-              actor.continue(st)
+              actor.continue(state)
             }
             Ok(summary) -> {
-              store.put_document(storage, t)
+              persist_document(storage, topic)
               let #(seq, summary_state) = case summary {
                 Some(#(handle, sn)) -> {
-                  store.put_summary(storage, t, handle, sn)
+                  persist_summary(storage, topic, handle, sn)
                   #(sequencing.from_checkpoint(sn, sn), #(handle, sn))
                 }
                 None -> #(sequencing.new(), #("", 0))
               }
               process.send(reply, Created)
               cache(
-                st,
+                state,
                 Doc(
                   seq: seq,
                   history: [],
@@ -955,20 +1019,25 @@ fn handle(
           }
       }
     }
-    Connect(t, c, mode, client, join_data, timestamp, reply) -> {
-      let existing = already_exists(storage, t, st)
-      store.put_document(storage, t)
-      let d = doc(storage, t, st)
-      let #(d, recovery) = case st.membership_reconciled {
-        True -> #(d, [])
-        False -> reconcile_membership(storage, t, d)
+    Connect(topic, client_id, mode, client, join_data, timestamp, reply) -> {
+      let existing = already_exists(storage, topic, state)
+      persist_document(storage, topic)
+      let document = doc(storage, topic, state)
+      let #(document, recovery) = case state.membership_reconciled {
+        True -> #(document, [])
+        False -> reconcile_membership(storage, topic, document)
       }
-      let roster = dict.to_list(d.presence)
-      let #(handle, summary_sn) = d.summary
+      let roster = dict.to_list(document.presence)
+      let #(handle, summary_sn) = document.summary
       case mode {
-        "write" -> {
-          let sn = d.seq.sequence_number + 1
-          let joined = sequencing.client_join(d.seq, c, d.seq.sequence_number)
+        Write -> {
+          let sn = document.seq.sequence_number + 1
+          let joined =
+            sequencing.client_join(
+              document.seq,
+              client_id,
+              document.seq.sequence_number,
+            )
           let seq = sequencing.SequenceState(..joined, sequence_number: sn)
           let message =
             system_message(
@@ -978,160 +1047,219 @@ fn handle(
               seq.minimum_sequence_number,
               timestamp,
             )
-          store.put_op(storage, t, sn, message)
+          persist_op(storage, topic, sn, message)
           process.send(
             reply,
             Connected(
               existing,
               roster,
-              doc_state.initial_messages(doc_state.remember(d, #(sn, message))),
+              doc_state.initial_messages(
+                doc_state.remember(document, #(sn, message)),
+              ),
               handle,
               summary_sn,
               sn,
               recovery,
-              Some(#(sn, message)),
+              Writer(sn, message),
             ),
           )
           cache(
-            DocState(..st, membership_reconciled: True),
+            DocState(..state, membership_reconciled: True),
             Doc(
-              ..d,
+              ..document,
               seq: seq,
-              history: doc_state.remember(d, #(sn, message)),
-              presence: dict.insert(d.presence, c, client),
+              history: doc_state.remember(document, #(sn, message)),
+              presence: dict.insert(document.presence, client_id, client),
             ),
           )
         }
-        _ -> {
+        Read -> {
           process.send(
             reply,
             Connected(
               existing,
               roster,
-              doc_state.initial_messages(d.history),
+              doc_state.initial_messages(document.history),
               handle,
               summary_sn,
-              d.seq.sequence_number,
+              document.seq.sequence_number,
               recovery,
-              None,
+              Reader,
             ),
           )
           cache(
-            DocState(..st, membership_reconciled: True),
-            Doc(..d, presence: dict.insert(d.presence, c, client)),
+            DocState(..state, membership_reconciled: True),
+            Doc(
+              ..document,
+              presence: dict.insert(document.presence, client_id, client),
+            ),
           )
         }
       }
     }
-    Join(t, c, reply) -> {
-      let existing = already_exists(storage, t, st)
-      store.put_document(storage, t)
-      let d = doc(storage, t, st)
+    Join(topic, client_id, reply) -> {
+      let existing = already_exists(storage, topic, state)
+      persist_document(storage, topic)
+      let document = doc(storage, topic, state)
       process.send(reply, existing)
       cache(
-        st,
+        state,
         Doc(
-          ..d,
-          seq: sequencing.client_join(d.seq, c, d.seq.sequence_number),
-          presence: dict.insert(d.presence, c, minimal_client("write")),
+          ..document,
+          seq: sequencing.client_join(
+            document.seq,
+            client_id,
+            document.seq.sequence_number,
+          ),
+          presence: dict.insert(
+            document.presence,
+            client_id,
+            minimal_client(Write),
+          ),
         ),
       )
     }
-    JoinPresence(t, c, mode, reply) -> {
-      let existing = already_exists(storage, t, st)
-      store.put_document(storage, t)
-      let d = doc(storage, t, st)
+    JoinPresence(topic, client_id, mode, reply) -> {
+      let existing = already_exists(storage, topic, state)
+      persist_document(storage, topic)
+      let document = doc(storage, topic, state)
       process.send(reply, existing)
       cache(
-        st,
-        Doc(..d, presence: dict.insert(d.presence, c, minimal_client(mode))),
+        state,
+        Doc(
+          ..document,
+          presence: dict.insert(
+            document.presence,
+            client_id,
+            minimal_client(mode),
+          ),
+        ),
       )
     }
-    JoinSequenced(t, c, data, timestamp, reply) -> {
-      let existing = already_exists(storage, t, st)
-      store.put_document(storage, t)
-      let d = doc(storage, t, st)
-      let sn = d.seq.sequence_number + 1
-      let joined = sequencing.client_join(d.seq, c, d.seq.sequence_number)
+    JoinSequenced(topic, client_id, data, timestamp, reply) -> {
+      let existing = already_exists(storage, topic, state)
+      persist_document(storage, topic)
+      let document = doc(storage, topic, state)
+      let sn = document.seq.sequence_number + 1
+      let joined =
+        sequencing.client_join(
+          document.seq,
+          client_id,
+          document.seq.sequence_number,
+        )
       let seq = sequencing.SequenceState(..joined, sequence_number: sn)
       let message =
         system_message("join", data, sn, seq.minimum_sequence_number, timestamp)
-      store.put_op(storage, t, sn, message)
+      persist_op(storage, topic, sn, message)
       process.send(
         reply,
         Joined(existing, sn, seq.minimum_sequence_number, message),
       )
       cache(
-        st,
+        state,
         Doc(
-          ..d,
+          ..document,
           seq: seq,
-          history: doc_state.remember(d, #(sn, message)),
-          presence: dict.insert(d.presence, c, minimal_client("write")),
+          history: doc_state.remember(document, #(sn, message)),
+          presence: dict.insert(
+            document.presence,
+            client_id,
+            minimal_client(Write),
+          ),
         ),
       )
     }
-    Leave(t, c) -> {
-      let d = doc(storage, t, st)
+    Leave(topic, client_id) -> {
+      let document = doc(storage, topic, state)
       cache(
-        st,
+        state,
         Doc(
-          ..d,
-          seq: sequencing.client_leave(d.seq, c),
-          presence: dict.delete(d.presence, c),
+          ..document,
+          seq: sequencing.client_leave(document.seq, client_id),
+          presence: dict.delete(document.presence, client_id),
         ),
       )
     }
-    LeavePresence(t, c) -> {
-      let d = doc(storage, t, st)
-      cache(st, Doc(..d, presence: dict.delete(d.presence, c)))
+    LeavePresence(topic, client_id) -> {
+      let document = doc(storage, topic, state)
+      cache(
+        state,
+        Doc(..document, presence: dict.delete(document.presence, client_id)),
+      )
     }
-    LeaveSequenced(t, c, timestamp, reply) -> {
-      let d = doc(storage, t, st)
-      let #(d, #(sn, message)) = sequence_leave(storage, t, d, c, timestamp)
-      process.send(reply, Left(sn, d.seq.minimum_sequence_number, message))
-      cache(st, d)
+    LeaveSequenced(topic, client_id, timestamp, reply) -> {
+      let document = doc(storage, topic, state)
+      let #(document, #(sn, message)) =
+        sequence_leave(storage, topic, document, client_id, timestamp)
+      process.send(
+        reply,
+        Left(sn, document.seq.minimum_sequence_number, message),
+      )
+      cache(state, document)
     }
-    Submit(t, c, csn, rsn, contents, reply) -> {
-      let d = doc(storage, t, st)
-      case sequencing.assign_sequence_number(d.seq, c, csn, rsn) {
+    Submit(topic, client_id, csn, rsn, contents, reply) -> {
+      let document = doc(storage, topic, state)
+      case
+        sequencing.assign_sequence_number(document.seq, client_id, csn, rsn)
+      {
         sequencing.SequenceOk(seq, sn, msn) -> {
           // Durable before acked, matching `SubmitMessage`. Replying first let
           // the caller wake and read storage before this write ran.
-          store.put_op(storage, t, sn, contents)
+          persist_op(storage, topic, sn, contents)
           process.send(reply, Assigned(sn, msn))
           cache(
-            st,
-            Doc(..d, seq: seq, history: doc_state.remember(d, #(sn, contents))),
+            state,
+            Doc(
+              ..document,
+              seq: seq,
+              history: doc_state.remember(document, #(sn, contents)),
+            ),
           )
         }
         sequencing.SequenceError(_) -> {
-          process.send(reply, Rejected(d.seq.sequence_number))
-          actor.continue(st)
+          process.send(reply, Rejected(document.seq.sequence_number))
+          actor.continue(state)
         }
       }
     }
-    SubmitMessage(t, c, csn, rsn, build, reply) -> {
-      let d = doc(storage, t, st)
-      case sequencing.assign_sequence_number(d.seq, c, csn, rsn) {
+    SubmitMessage(topic, client_id, csn, rsn, build, reply) -> {
+      let document = doc(storage, topic, state)
+      case
+        sequencing.assign_sequence_number(document.seq, client_id, csn, rsn)
+      {
         sequencing.SequenceOk(seq, sn, msn) -> {
           let message = build(sn, msn)
-          store.put_op(storage, t, sn, message)
+          persist_op(storage, topic, sn, message)
           process.send(reply, MessageAssigned(sn, msn, message))
           cache(
-            st,
-            Doc(..d, seq: seq, history: doc_state.remember(d, #(sn, message))),
+            state,
+            Doc(
+              ..document,
+              seq: seq,
+              history: doc_state.remember(document, #(sn, message)),
+            ),
           )
         }
         sequencing.SequenceError(_) -> {
-          process.send(reply, MessageRejected(d.seq.sequence_number))
-          actor.continue(st)
+          process.send(reply, MessageRejected(document.seq.sequence_number))
+          actor.continue(state)
         }
       }
     }
-    SubmitSummary(t, c, csn, rsn, contents, response_contents, handle, reply) -> {
-      let d = doc(storage, t, st)
-      case sequencing.assign_sequence_number(d.seq, c, csn, rsn) {
+    SubmitSummary(
+      topic,
+      client_id,
+      csn,
+      rsn,
+      contents,
+      response_contents,
+      handle,
+      reply,
+    ) -> {
+      let document = doc(storage, topic, state)
+      case
+        sequencing.assign_sequence_number(document.seq, client_id, csn, rsn)
+      {
         sequencing.SequenceOk(seq, summary_sn, msn) -> {
           let response_sn = summary_sn + 1
           let seq =
@@ -1139,49 +1267,52 @@ fn handle(
           // Durable before acked, matching `SubmitSummaryMessages`. The write
           // order among these three is itself load-bearing — ops, then the
           // summary pointer — so the ack goes after all of them, not between.
-          store.put_op(storage, t, summary_sn, contents)
-          store.put_op(storage, t, response_sn, response_contents)
+          persist_op(storage, topic, summary_sn, contents)
+          persist_op(storage, topic, response_sn, response_contents)
           case handle {
-            Some(handle) -> store.put_summary(storage, t, handle, summary_sn)
-            _ -> Nil
+            Some(handle) -> persist_summary(storage, topic, handle, summary_sn)
+            None -> Nil
           }
           process.send(reply, SummaryAssigned(summary_sn, response_sn, msn))
           cache(
-            st,
+            state,
             Doc(
-              ..d,
+              ..document,
               seq: seq,
-              history: doc_state.remember_both(d, #(summary_sn, contents), #(
-                response_sn,
-                response_contents,
-              )),
+              history: doc_state.remember_both(
+                document,
+                #(summary_sn, contents),
+                #(response_sn, response_contents),
+              ),
               summary: case handle {
                 Some(handle) -> #(handle, summary_sn)
-                _ -> d.summary
+                None -> document.summary
               },
             ),
           )
         }
         sequencing.SequenceError(_) -> {
-          process.send(reply, SummaryRejected(d.seq.sequence_number))
-          actor.continue(st)
+          process.send(reply, SummaryRejected(document.seq.sequence_number))
+          actor.continue(state)
         }
       }
     }
-    SubmitSummaryMessages(t, c, csn, rsn, build, reply) -> {
-      let d = doc(storage, t, st)
-      case sequencing.assign_sequence_number(d.seq, c, csn, rsn) {
+    SubmitSummaryMessages(topic, client_id, csn, rsn, build, reply) -> {
+      let document = doc(storage, topic, state)
+      case
+        sequencing.assign_sequence_number(document.seq, client_id, csn, rsn)
+      {
         sequencing.SequenceOk(seq, summary_sn, msn) -> {
           let response_sn = summary_sn + 1
           let seq =
             sequencing.SequenceState(..seq, sequence_number: response_sn)
           let #(summary_message, response_message, handle) =
             build(summary_sn, response_sn, msn)
-          store.put_op(storage, t, summary_sn, summary_message)
-          store.put_op(storage, t, response_sn, response_message)
+          persist_op(storage, topic, summary_sn, summary_message)
+          persist_op(storage, topic, response_sn, response_message)
           case handle {
-            Some(handle) -> store.put_summary(storage, t, handle, summary_sn)
-            _ -> Nil
+            Some(handle) -> persist_summary(storage, topic, handle, summary_sn)
+            None -> Nil
           }
           process.send(
             reply,
@@ -1194,68 +1325,74 @@ fn handle(
             ),
           )
           cache(
-            st,
+            state,
             Doc(
-              ..d,
+              ..document,
               seq: seq,
               history: doc_state.remember_both(
-                d,
+                document,
                 #(summary_sn, summary_message),
                 #(response_sn, response_message),
               ),
               summary: case handle {
                 Some(handle) -> #(handle, summary_sn)
-                _ -> d.summary
+                None -> document.summary
               },
             ),
           )
         }
         sequencing.SequenceError(_) -> {
-          process.send(reply, SummaryMessagesRejected(d.seq.sequence_number))
-          actor.continue(st)
+          process.send(
+            reply,
+            SummaryMessagesRejected(document.seq.sequence_number),
+          )
+          actor.continue(state)
         }
       }
     }
-    Clients(t, reply) -> {
-      process.send(reply, dict.keys(doc(storage, t, st).presence))
-      actor.continue(st)
+    Clients(topic, reply) -> {
+      process.send(reply, dict.keys(doc(storage, topic, state).presence))
+      actor.continue(state)
     }
-    Roster(t, reply) -> {
-      process.send(reply, dict.to_list(doc(storage, t, st).presence))
-      actor.continue(st)
+    Roster(topic, reply) -> {
+      process.send(reply, dict.to_list(doc(storage, topic, state).presence))
+      actor.continue(state)
     }
-    Exists(t, reply) -> {
-      process.send(reply, already_exists(storage, t, st))
-      actor.continue(st)
+    Exists(topic, reply) -> {
+      process.send(reply, already_exists(storage, topic, state))
+      actor.continue(state)
     }
-    SequenceNumber(t, reply) -> {
-      process.send(reply, doc(storage, t, st).seq.sequence_number)
-      actor.continue(st)
+    SequenceNumber(topic, reply) -> {
+      process.send(reply, doc(storage, topic, state).seq.sequence_number)
+      actor.continue(state)
     }
-    InitializeSummary(t, handle, sn, reply) -> {
-      store.put_summary(storage, t, handle, sn)
-      let d = doc(storage, t, st)
+    InitializeSummary(topic, handle, sn, reply) -> {
+      persist_summary(storage, topic, handle, sn)
+      let document = doc(storage, topic, state)
       process.send(reply, Nil)
       cache(
-        st,
-        Doc(..d, seq: sequencing.from_checkpoint(sn, sn), summary: #(handle, sn)),
+        state,
+        Doc(..document, seq: sequencing.from_checkpoint(sn, sn), summary: #(
+          handle,
+          sn,
+        )),
       )
     }
-    SetSummary(t, handle, sn, reply) -> {
-      store.put_summary(storage, t, handle, sn)
-      let d = doc(storage, t, st)
+    SetSummary(topic, handle, sn, reply) -> {
+      persist_summary(storage, topic, handle, sn)
+      let document = doc(storage, topic, state)
       process.send(reply, Nil)
-      cache(st, Doc(..d, summary: #(handle, sn)))
+      cache(state, Doc(..document, summary: #(handle, sn)))
     }
-    UpdateClientRsn(t, client_id, rsn) -> {
-      let d = doc(storage, t, st)
-      case sequencing.update_client_rsn(d.seq, client_id, rsn) {
-        Error(_) -> actor.continue(st)
-        Ok(seq) -> cache(st, Doc(..d, seq: seq))
+    UpdateClientRsn(topic, client_id, rsn) -> {
+      let document = doc(storage, topic, state)
+      case sequencing.update_client_rsn(document.seq, client_id, rsn) {
+        Error(_) -> actor.continue(state)
+        Ok(seq) -> cache(state, Doc(..document, seq: seq))
       }
     }
     Sweep ->
-      case idle(st, idle_ms) {
+      case idle(state, idle_ms) {
         // Deregister *before* stopping, so the common path never leaves a row
         // pointing at a dead process. The owner's monitor is only the backstop
         // for the path this cannot cover — a crash.
@@ -1264,18 +1401,51 @@ fn handle(
           actor.stop()
         }
         False -> {
-          schedule_sweep(st.self, idle_ms)
-          actor.continue(st)
+          schedule_sweep(state.self, idle_ms)
+          actor.continue(state)
         }
       }
   }
 }
 
-fn minimal_client(mode: String) -> String {
-  json.object([#("mode", json.string(mode))]) |> json.to_string
+fn minimal_client(mode: Mode) -> String {
+  json.object([#("mode", json.string(mode_to_string(mode)))])
+  |> json.to_string
 }
 
-pub fn stored_message_json(op: #(Int, String)) -> json.Json {
+/// Durability before ack: every submit/join handler writes before it replies,
+/// so a failed storage write must crash this supervised actor — a restart
+/// rehydrates from what actually reached storage — rather than let an
+/// unpersisted op be acked.
+fn persist_op(
+  storage: store.Backend,
+  topic: String,
+  sequence_number: Int,
+  contents: String,
+) -> Nil {
+  let assert Ok(Nil) = store.put_op(storage, topic, sequence_number, contents)
+  Nil
+}
+
+/// See `persist_op`.
+fn persist_document(storage: store.Backend, topic: String) -> Nil {
+  let assert Ok(Nil) = store.put_document(storage, topic)
+  Nil
+}
+
+/// See `persist_op`.
+fn persist_summary(
+  storage: store.Backend,
+  topic: String,
+  handle: String,
+  sequence_number: Int,
+) -> Nil {
+  let assert Ok(Nil) =
+    store.put_summary(storage, topic, handle, sequence_number)
+  Nil
+}
+
+pub fn stored_message_to_json(op: #(Int, String)) -> json.Json {
   case
     json.parse(op.1, decode.field("sequenceNumber", decode.int, decode.success))
   {

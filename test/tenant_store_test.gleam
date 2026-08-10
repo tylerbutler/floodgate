@@ -24,7 +24,7 @@ pub fn memory_backend_satisfies_tenant_boundary_test() {
 
 /// The same contract, run against both backends, matching
 /// `store_backend_test.assert_backend_contract`'s pattern for documents/ops.
-fn assert_tenant_backend_contract(backend: store.Backend) {
+fn assert_tenant_backend_contract(backend: store.Backend) -> Nil {
   // Unknown tenants report absence consistently across every read path.
   store.get_tenant(backend, "no-such-tenant") |> should.equal(Error(Nil))
   store.get_tenant_secrets(backend, "no-such-tenant")
@@ -104,17 +104,20 @@ pub fn unregister_tenant_does_not_delete_documents_test() {
   let tenant = store.create_tenant(backend, "Doomed Co")
   let topic = "document:" <> tenant.id <> ":doc-1"
 
-  store.put_document(backend, topic)
-  store.put_op(backend, topic, 1, "first-op")
-  store.put_obj(backend, tenant.id, "obj-sha", "obj-body")
-  store.put_ref(backend, tenant.id, "refs/heads/main", "obj-sha")
+  let assert Ok(Nil) = store.put_document(backend, topic)
+  let assert Ok(Nil) = store.put_op(backend, topic, 1, "first-op")
+  let assert Ok(Nil) =
+    store.put_object(backend, tenant.id, "obj-sha", "obj-body")
+  let assert Ok(Nil) =
+    store.put_ref(backend, tenant.id, "refs/heads/main", "obj-sha")
 
   store.unregister_tenant(backend, tenant.id)
 
   store.tenant_exists(backend, tenant.id) |> should.be_false
   store.has_document(backend, topic) |> should.be_true
   store.get_ops(backend, topic) |> should.equal([#(1, "first-op")])
-  store.get_obj(backend, tenant.id, "obj-sha") |> should.equal(Ok("obj-body"))
+  store.get_object(backend, tenant.id, "obj-sha")
+  |> should.equal(Ok("obj-body"))
   store.list_refs(backend, tenant.id)
   |> should.equal([#("refs/heads/main", "obj-sha")])
 }

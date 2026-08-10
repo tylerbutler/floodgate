@@ -50,7 +50,11 @@ fn preserve_optional_parts(rebuilt: Codec, base: Codec) -> Codec {
   }
 }
 
-fn encode_push(topic: String, event: String, payload: json.Json) {
+fn encode_push(
+  topic: String,
+  event: String,
+  payload: json.Json,
+) -> codec.Frame {
   case event {
     e if e == events.op || e == events.nack ->
       TextFrame(

@@ -15,6 +15,7 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import spillway/sequencing
 import spillway/session_logic
@@ -43,18 +44,22 @@ pub const max_history_size = 1000
 
 /// Prepend an op to a document's history and trim, via the same spillway helper
 /// levee's `Bridge.add_to_history` calls.
-pub fn remember(d: Doc, op: #(Int, String)) -> List(#(Int, String)) {
-  session_logic.add_to_history(op, d.history, max_history_size)
+pub fn remember(document: Doc, op: #(Int, String)) -> List(#(Int, String)) {
+  session_logic.add_to_history(op, document.history, max_history_size)
 }
 
 /// Two ops in sequence order — a summarize and its ack, which are always
 /// assigned and stored together.
 pub fn remember_both(
-  d: Doc,
+  document: Doc,
   first: #(Int, String),
   second: #(Int, String),
 ) -> List(#(Int, String)) {
-  session_logic.add_to_history(second, remember(d, first), max_history_size)
+  session_logic.add_to_history(
+    second,
+    remember(document, first),
+    max_history_size,
+  )
 }
 
 /// The history in the order clients expect: oldest first.
@@ -124,29 +129,30 @@ pub fn rehydrate(storage: store.Backend, topic: String) -> Doc {
   // Rebuild durable state from ETS so a restarted server keeps numbering
   // after the last persisted op and serves the latest summary.
   let ops = store.get_ops(storage, topic)
-  let last_sn =
-    list.fold(ops, 0, fn(m, o) {
-      case o.0 > m {
-        True -> o.0
-        False -> m
+  let last_sequence_number =
+    list.fold(ops, 0, fn(highest, op) {
+      case op.0 > highest {
+        True -> op.0
+        False -> highest
       }
     })
-  let #(handle, ssn) = store.get_summary(storage, topic)
+  let #(handle, summary_sequence_number) =
+    store.get_summary(storage, topic) |> result.unwrap(#("", 0))
   // Repair the one crash prefix that is not benign. The summary pointer is
   // written before the ref that mirrors it, so a crash between the two can
   // leave a document whose summary exists but which `GET /commits?sha=<id>`
   // cannot resolve — making it unloadable. Restoring a *missing* ref here is
   // idempotent and only runs when a document is first touched.
   restore_summary_ref(storage, topic, handle)
-  let checkpoint = case ssn > last_sn {
-    True -> ssn
-    False -> last_sn
+  let checkpoint = case summary_sequence_number > last_sequence_number {
+    True -> summary_sequence_number
+    False -> last_sequence_number
   }
   Doc(
-    seq: sequencing.from_checkpoint(checkpoint, ssn),
+    seq: sequencing.from_checkpoint(checkpoint, summary_sequence_number),
     // Newest first, and only as much as a live document would have kept.
     history: ops |> list.reverse |> list.take(max_history_size),
-    summary: #(handle, ssn),
+    summary: #(handle, summary_sequence_number),
     presence: dict.new(),
     last_touched_ms: now_ms(),
   )
@@ -162,8 +168,12 @@ fn restore_summary_ref(
 ) -> Nil {
   case handle, string.split(topic, ":") {
     "", _ -> Nil
-    _, ["document", tenant, document_id] ->
-      git.ensure_summary_ref(storage, tenant, document_id, handle)
+    _, ["document", tenant, document_id] -> {
+      // Best-effort: a failed restore leaves exactly the pre-repair state, and
+      // the next touch of the document retries it.
+      let _ = git.ensure_summary_ref(storage, tenant, document_id, handle)
+      Nil
+    }
     _, _ -> Nil
   }
 }
@@ -173,10 +183,9 @@ fn restore_summary_ref(
 /// without starting an actor, since `session.exists` is reachable from
 /// unauthenticated REST paths.
 pub fn stored_document_exists(storage: store.Backend, topic: String) -> Bool {
-  let #(summary_handle, _) = store.get_summary(storage, topic)
   store.has_document(storage, topic)
   || store.get_ops(storage, topic) != []
-  || summary_handle != ""
+  || result.is_ok(store.get_summary(storage, topic))
 }
 
 @external(erlang, "floodgate_ffi", "now_ms")

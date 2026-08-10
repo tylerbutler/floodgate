@@ -123,7 +123,7 @@ fn persist_root_tree(
       use protocol_entries <- result.try(case find_entry(entries, ".protocol") {
         Some(SummaryTree(_) as protocol) -> {
           use sha <- result.try(persist_value(storage, topic, protocol))
-          Ok([tree_entry(".protocol", "tree", sha)])
+          Ok([subtree_entry(".protocol", sha)])
         }
         _ -> Ok([])
       })
@@ -142,8 +142,8 @@ fn persist_root_tree(
         payload.values,
       ))
       persist_tree_entries(storage, topic, [
-        tree_entry(".app", "tree", app_tree_sha),
-        tree_entry(".protocol", "tree", protocol_tree_sha),
+        subtree_entry(".app", app_tree_sha),
+        subtree_entry(".protocol", protocol_tree_sha),
       ])
     }
   }
@@ -203,10 +203,10 @@ fn persist_protocol(
     SummaryBlob("[]", "utf-8"),
   ))
   persist_tree_entries(storage, topic, [
-    tree_entry("attributes", "blob", attributes_sha),
-    tree_entry("quorumMembers", "blob", quorum_members_sha),
-    tree_entry("quorumProposals", "blob", quorum_proposals_sha),
-    tree_entry("quorumValues", "blob", quorum_values_sha),
+    blob_tree_entry("attributes", attributes_sha),
+    blob_tree_entry("quorumMembers", quorum_members_sha),
+    blob_tree_entry("quorumProposals", quorum_proposals_sha),
+    blob_tree_entry("quorumValues", quorum_values_sha),
   ])
 }
 
@@ -220,8 +220,20 @@ fn persist_tree_entries(
   |> git.create(storage, topic, "trees", _)
 }
 
-fn tree_entry(path: String, kind: String, sha: String) -> json.Json {
-  let assert Ok(mode) = mode(kind)
+fn blob_tree_entry(path: String, sha: String) -> json.Json {
+  tree_entry(path, "blob", "100644", sha)
+}
+
+fn subtree_entry(path: String, sha: String) -> json.Json {
+  tree_entry(path, "tree", "040000", sha)
+}
+
+fn tree_entry(
+  path: String,
+  kind: String,
+  mode: String,
+  sha: String,
+) -> json.Json {
   json.object([
     #("path", json.string(path)),
     #("mode", json.string(mode)),
@@ -280,7 +292,7 @@ fn mode(kind: String) -> Result(String, Nil) {
   }
 }
 
-fn create_payload_decoder() {
+fn create_payload_decoder() -> decode.Decoder(CreatePayload) {
   use summary <- decode.optional_field(
     "summary",
     None,
@@ -377,7 +389,7 @@ fn blob_content_decoder() -> decode.Decoder(String) {
   decode.one_of(decode.string, [decode.map(decode.dynamic, json_encode)])
 }
 
-fn summary_entry_decoder() {
+fn summary_entry_decoder() -> decode.Decoder(SummaryEntry) {
   use path <- decode.field("path", decode.string)
   use kind <- decode.field("type", decode.string)
   use value <- decode.optional_field(

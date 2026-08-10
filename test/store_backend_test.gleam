@@ -72,7 +72,7 @@ pub fn supervised_memory_backend_restarts_after_a_crash_test() {
     )
 
   let topic = "document:memory-restart:doc"
-  store.put_document(backend, topic)
+  let assert Ok(Nil) = store.put_document(backend, topic)
   store.has_document(backend, topic) |> should.be_true
 
   let assert Ok(pid) = process.subject_owner(process.named_subject(name))
@@ -82,7 +82,7 @@ pub fn supervised_memory_backend_restarts_after_a_crash_test() {
   // still reaches it.
   await_restart(name, pid, 100)
   store.has_document(backend, topic) |> should.be_false
-  store.put_document(backend, topic)
+  let assert Ok(Nil) = store.put_document(backend, topic)
   store.has_document(backend, topic) |> should.be_true
 }
 
@@ -92,17 +92,17 @@ pub fn supervised_shelf_backend_restarts_and_rehydrates_test() {
   let backend = shelf_store.from_name(name, dir)
   let tenant = "shelf-restart"
   let topic = store.topic(tenant, "doc")
-  let assert Ok(#(_channels, sess)) =
+  let assert Ok(#(_channels, document_session)) =
     floodgate.start_with_backend(tenant, "shelf-restart-secret", backend)
 
-  session.create(sess, topic) |> should.be_false
-  session.join(sess, topic, "c1") |> should.be_true
+  session.create(document_session, topic) |> should.be_false
+  session.join(document_session, topic, "c1") |> should.be_true
   let assert session.Assigned(1, _) =
-    session.submit(sess, topic, "c1", 1, 0, "durable-op")
-  store.put_summary(backend, topic, "summary-1", 1)
-  store.put_obj(backend, topic, "blob-1", "blob-body")
+    session.submit(document_session, topic, "c1", 1, 0, "durable-op")
+  let assert Ok(Nil) = store.put_summary(backend, topic, "summary-1", 1)
+  let assert Ok(Nil) = store.put_object(backend, topic, "blob-1", "blob-body")
   store.create_ref(backend, tenant, "refs/heads/main", "blob-1")
-  |> should.be_true
+  |> should.equal(Ok(True))
 
   let assert Ok(pid) = process.subject_owner(process.named_subject(name))
   process.kill(pid)
@@ -112,15 +112,15 @@ pub fn supervised_shelf_backend_restarts_and_rehydrates_test() {
   let restarted_pid = await_shelf_restart(name, pid, 500)
   { restarted_pid == pid } |> should.be_false
 
-  session.sequence_number(sess, topic) |> should.equal(1)
-  store.get_summary(backend, topic) |> should.equal(#("summary-1", 1))
-  store.get_obj(backend, topic, "blob-1") |> should.equal(Ok("blob-body"))
+  session.sequence_number(document_session, topic) |> should.equal(1)
+  store.get_summary(backend, topic) |> should.equal(Ok(#("summary-1", 1)))
+  store.get_object(backend, topic, "blob-1") |> should.equal(Ok("blob-body"))
   store.list_refs(backend, tenant)
   |> should.equal([#("refs/heads/main", "blob-1")])
   store.create_ref(backend, tenant, "refs/heads/main", "replacement")
-  |> should.be_false
+  |> should.equal(Ok(False))
   store.create_ref(backend, tenant, "refs/heads/next", "blob-1")
-  |> should.be_true
+  |> should.equal(Ok(True))
 }
 
 pub fn supervised_shelf_backends_use_independent_names_test() {
@@ -132,8 +132,8 @@ pub fn supervised_shelf_backends_use_independent_names_test() {
     |> store.supervise(second)
     |> static_supervisor.start
 
-  store.put_document(first, "document:first:doc")
-  store.put_document(second, "document:second:doc")
+  let assert Ok(Nil) = store.put_document(first, "document:first:doc")
+  let assert Ok(Nil) = store.put_document(second, "document:second:doc")
 
   store.has_document(first, "document:first:doc") |> should.be_true
   store.has_document(first, "document:second:doc") |> should.be_false
@@ -222,12 +222,12 @@ pub fn shelf_backend_reads_do_not_create_documents_test() {
   let topic = "document:cold/tenant:never-written"
 
   store.get_ops(backend, topic) |> should.equal([])
-  store.get_summary(backend, topic) |> should.equal(#("", 0))
-  store.get_obj(backend, topic, "some-sha") |> should.equal(Error(Nil))
+  store.get_summary(backend, topic) |> should.equal(Error(Nil))
+  store.get_object(backend, topic, "some-sha") |> should.equal(Error(Nil))
   store.has_document(backend, topic) |> should.be_false
 
   // A write is what creates it.
-  store.put_document(backend, topic)
+  let assert Ok(Nil) = store.put_document(backend, topic)
   store.has_document(backend, topic) |> should.be_true
 }
 
@@ -246,7 +246,7 @@ pub fn shelf_backend_stores_hostile_document_ids_test() {
 
   list.each(hostile, fn(document_id) {
     let topic = store.topic("hostile", document_id)
-    store.put_op(backend, topic, 1, "body-" <> document_id)
+    let assert Ok(Nil) = store.put_op(backend, topic, 1, "body-" <> document_id)
     store.get_ops(backend, topic)
     |> should.equal([#(1, "body-" <> document_id)])
   })
@@ -275,19 +275,20 @@ pub fn doc_store_reopens_evicted_documents_test() {
   let first = store.topic("evict", "first")
   let second = store.topic("evict", "second")
 
-  doc_store.put_op(docs, first, 1, "first-body")
-  doc_store.put_summary(docs, first, "first-summary", 1)
-  doc_store.put_obj(docs, first, "first-sha", "first-object")
+  let assert Ok(Nil) = doc_store.put_op(docs, first, 1, "first-body")
+  let assert Ok(Nil) = doc_store.put_summary(docs, first, "first-summary", 1)
+  let assert Ok(Nil) =
+    doc_store.put_object(docs, first, "first-sha", "first-object")
   doc_store.open_count(docs) |> should.equal(1)
 
   // Opening the second document is what pushes the first out.
-  doc_store.put_op(docs, second, 1, "second-body")
+  let assert Ok(Nil) = doc_store.put_op(docs, second, 1, "second-body")
   doc_store.open_count(docs) |> should.equal(1)
 
   // So this can only be answered by reopening the closed file.
   doc_store.get_ops(docs, first) |> should.equal([#(1, "first-body")])
-  doc_store.get_summary(docs, first) |> should.equal(#("first-summary", 1))
-  doc_store.get_obj(docs, first, "first-sha")
+  doc_store.get_summary(docs, first) |> should.equal(Ok(#("first-summary", 1)))
+  doc_store.get_object(docs, first, "first-sha")
   |> should.equal(Ok("first-object"))
   doc_store.exists(docs, first) |> should.be_true
 
@@ -307,10 +308,11 @@ pub fn doc_store_reads_back_documents_after_a_restart_test() {
   setenv("FLOODGATE_DOC_IDLE_MS", "")
 
   let topic = store.topic("restart", "doc")
-  doc_store.put_marker(before, topic)
-  doc_store.put_op(before, topic, 1, "survives")
-  doc_store.put_summary(before, topic, "summary-sha", 1)
-  doc_store.put_obj(before, topic, "obj-sha", "object-body")
+  let assert Ok(Nil) = doc_store.put_marker(before, topic)
+  let assert Ok(Nil) = doc_store.put_op(before, topic, 1, "survives")
+  let assert Ok(Nil) = doc_store.put_summary(before, topic, "summary-sha", 1)
+  let assert Ok(Nil) =
+    doc_store.put_object(before, topic, "obj-sha", "object-body")
 
   // Let the sweep close the file, so nothing is left open for the next store.
   process.sleep(300)
@@ -319,8 +321,9 @@ pub fn doc_store_reads_back_documents_after_a_restart_test() {
   let after = doc_store.started(dir)
   doc_store.exists(after, topic) |> should.be_true
   doc_store.get_ops(after, topic) |> should.equal([#(1, "survives")])
-  doc_store.get_summary(after, topic) |> should.equal(#("summary-sha", 1))
-  doc_store.get_obj(after, topic, "obj-sha") |> should.equal(Ok("object-body"))
+  doc_store.get_summary(after, topic) |> should.equal(Ok(#("summary-sha", 1)))
+  doc_store.get_object(after, topic, "obj-sha")
+  |> should.equal(Ok("object-body"))
 
   // And a document that was never written is still absent.
   doc_store.exists(after, store.topic("restart", "other")) |> should.be_false
@@ -334,7 +337,7 @@ pub fn doc_store_evicts_idle_documents_test() {
   setenv("FLOODGATE_DOC_IDLE_MS", "")
 
   let topic = store.topic("idle", "doc")
-  doc_store.put_op(docs, topic, 1, "body")
+  let assert Ok(Nil) = doc_store.put_op(docs, topic, 1, "body")
   doc_store.open_count(docs) |> should.equal(1)
 
   // Two full windows: the sweep runs at half the window, so one window is not
@@ -398,50 +401,51 @@ fn assert_backend_contract(
   backend: store.Backend,
   topic: String,
   tenant: String,
-) {
+) -> Nil {
   store.open(backend)
 
   store.has_document(backend, topic) |> should.be_false
-  store.put_document(backend, topic)
+  let assert Ok(Nil) = store.put_document(backend, topic)
   store.has_document(backend, topic) |> should.be_true
 
-  store.put_op(backend, topic, 2, "second")
-  store.put_op(backend, topic, 1, "first")
+  let assert Ok(Nil) = store.put_op(backend, topic, 2, "second")
+  let assert Ok(Nil) = store.put_op(backend, topic, 1, "first")
   store.get_ops(backend, topic)
   |> should.equal([#(1, "first"), #(2, "second")])
 
   // Re-putting a sequence number replaces it rather than accumulating. The
   // shelf backend indexes ops by topic to avoid scanning the whole table, so
   // this is what pins the index to the set it indexes.
-  store.put_op(backend, topic, 2, "second-replaced")
+  let assert Ok(Nil) = store.put_op(backend, topic, 2, "second-replaced")
   store.get_ops(backend, topic)
   |> should.equal([#(1, "first"), #(2, "second-replaced")])
 
   // And one document's ops never surface in another's.
   let other = topic <> "-other"
-  store.put_op(backend, other, 1, "other-first")
+  let assert Ok(Nil) = store.put_op(backend, other, 1, "other-first")
   store.get_ops(backend, other) |> should.equal([#(1, "other-first")])
   store.get_ops(backend, topic)
   |> should.equal([#(1, "first"), #(2, "second-replaced")])
 
-  store.get_summary(backend, topic) |> should.equal(#("", 0))
-  store.put_summary(backend, topic, "summary-sha", 2)
-  store.get_summary(backend, topic) |> should.equal(#("summary-sha", 2))
+  store.get_summary(backend, topic) |> should.equal(Error(Nil))
+  let assert Ok(Nil) = store.put_summary(backend, topic, "summary-sha", 2)
+  store.get_summary(backend, topic) |> should.equal(Ok(#("summary-sha", 2)))
 
   // Objects are keyed by topic, not tenant, so they land in the document's own
   // storage and another document in the same tenant cannot see them.
-  store.get_obj(backend, topic, "missing") |> should.equal(Error(Nil))
-  store.put_obj(backend, topic, "object-sha", "object-body")
-  store.get_obj(backend, topic, "object-sha")
+  store.get_object(backend, topic, "missing") |> should.equal(Error(Nil))
+  let assert Ok(Nil) =
+    store.put_object(backend, topic, "object-sha", "object-body")
+  store.get_object(backend, topic, "object-sha")
   |> should.equal(Ok("object-body"))
-  store.get_obj(backend, topic <> "-other", "object-sha")
+  store.get_object(backend, topic <> "-other", "object-sha")
   |> should.equal(Error(Nil))
 
   store.create_ref(backend, tenant, "refs/heads/z", "z-sha")
-  |> should.be_true
+  |> should.equal(Ok(True))
   store.create_ref(backend, tenant, "refs/heads/z", "replacement")
-  |> should.be_false
-  store.put_ref(backend, tenant, "refs/heads/a", "a-sha")
+  |> should.equal(Ok(False))
+  let assert Ok(Nil) = store.put_ref(backend, tenant, "refs/heads/a", "a-sha")
   store.get_ref(backend, tenant, "refs/heads/z")
   |> should.equal(Ok("z-sha"))
   store.list_refs(backend, tenant)
@@ -453,8 +457,9 @@ fn assert_backend_contract(
   // Refs are indexed by tenant for the same reason ops are by topic: a losing
   // `create_ref` must leave no index entry, an overwrite must not duplicate one,
   // and another tenant's refs must not appear here.
-  store.put_ref(backend, tenant, "refs/heads/a", "a-sha-2")
-  store.put_ref(backend, tenant <> "-other", "refs/heads/elsewhere", "e-sha")
+  let assert Ok(Nil) = store.put_ref(backend, tenant, "refs/heads/a", "a-sha-2")
+  let assert Ok(Nil) =
+    store.put_ref(backend, tenant <> "-other", "refs/heads/elsewhere", "e-sha")
   store.list_refs(backend, tenant)
   |> should.equal([
     #("refs/heads/a", "a-sha-2"),
@@ -467,9 +472,11 @@ fn assert_backend_contract(
 fn observe_runtime_contract(backend: store.Backend) -> RuntimeObservation {
   let topic = "document:backend-runtime:document"
   let tenant = "backend-runtime"
-  let assert Ok(#(_channels, sess)) =
+  let assert Ok(#(_channels, document_session)) =
     floodgate.start_with_backend(tenant, "backend-runtime-secret", backend)
-  session.create_initialized(sess, topic, fn() { Ok(Some(#("summary-7", 7))) })
+  session.create_initialized(document_session, topic, fn() {
+    Ok(Some(#("summary-7", 7)))
+  })
 
   let session.Connected(
     existing,
@@ -482,10 +489,10 @@ fn observe_runtime_contract(backend: store.Backend) -> RuntimeObservation {
     _membership,
   ) =
     session.connect(
-      sess,
+      document_session,
       topic,
       "socket-client",
-      "write",
+      session.Write,
       "{\"mode\":\"write\"}",
       "{\"clientId\":\"socket-client\"}",
       1_700_000_000,
@@ -493,7 +500,7 @@ fn observe_runtime_contract(backend: store.Backend) -> RuntimeObservation {
 
   let assert session.MessageAssigned(_, _, _) =
     session.submit_message(
-      sess,
+      document_session,
       topic,
       "socket-client",
       1,
@@ -510,8 +517,8 @@ fn observe_runtime_contract(backend: store.Backend) -> RuntimeObservation {
     )
 
   let deltas_json =
-    session.since(sess, topic, 7)
-    |> list.map(session.stored_message_json)
+    session.since(document_session, topic, 7)
+    |> list.map(session.stored_message_to_json)
     |> json.preprocessed_array
     |> json.to_string
 
@@ -528,7 +535,8 @@ fn observe_runtime_contract(backend: store.Backend) -> RuntimeObservation {
       blob_body,
       False,
     )
-  git.put_ref(backend, tenant, "refs/heads/document", blob_sha)
+  let assert Ok(Nil) =
+    git.put_ref(backend, tenant, "refs/heads/document", blob_sha)
   let refs_json =
     git.list_refs(backend, tenant)
     |> list.map(fn(ref) {
