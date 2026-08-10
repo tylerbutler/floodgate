@@ -9,6 +9,7 @@ import dewdrop/events
 import floodgate/auth
 import floodgate/connect_document
 import floodgate/git
+import floodgate/presence_worker
 import floodgate/session.{type Session}
 import floodgate/session_logic
 import floodgate/signals
@@ -34,6 +35,12 @@ pub type DocAssigns {
     topic: String,
     scopes: List(String),
     connected: Bool,
+    /// The token's verified user id, and the presence key derived from it.
+    ///
+    /// Deliberately not read back off the session roster: `connect_core` prefers
+    /// the peer's *own* supplied `IClient` when it sent one, so the roster value
+    /// is client-controlled and a socket could claim another user's presence.
+    user_id: String,
   )
 }
 
@@ -75,6 +82,10 @@ type SummarizeContents {
 /// so they arrive here instead and are pushed from `handle_info`.
 pub type DocInfo {
   SignalPush(payload: json.Json)
+  /// Any other server-originated event for one socket. The presence worker uses
+  /// it for `presence_state` and `presence_error`, which are per-socket frames
+  /// with no reply channel to ride on.
+  EventPush(event: String, payload: json.Json)
 }
 
 /// Holds the `RegisteredChannel` handle `beryl.send_info` needs.
@@ -131,17 +142,38 @@ pub fn new(
   channels: beryl.Channels,
   sess: Session,
   registration: Registration,
+  presence: Subject(presence_worker.Msg),
 ) -> Channel(DocAssigns, DocInfo) {
   channel.new(fn(t, p, s) { join(channels, sess, t, p, s) })
   |> channel.with_handle_in(fn(e, p, s) {
-    handle_in(channels, sess, registration, e, p, s)
+    handle_in(channels, sess, registration, presence, e, p, s)
   })
   |> channel.with_handle_info(fn(info, s) {
     case info {
       SignalPush(payload) -> Push(events.signal, payload, s)
+      EventPush(event, payload) -> Push(event, payload, s)
     }
   })
-  |> channel.with_terminate(fn(_reason, s) { on_leave(channels, sess, s) })
+  |> channel.with_terminate(fn(_reason, s) {
+    on_leave(channels, sess, presence, s)
+  })
+}
+
+/// Push one server-originated event to one socket, out of band. This is the
+/// callback `floodgate.start_with_backend` hands the presence worker; the worker
+/// cannot call `beryl.send_info` itself because it must not import this module.
+pub fn push_event(
+  registration: Registration,
+  socket_id: String,
+  topic: String,
+  event: String,
+  payload: json.Json,
+) -> Nil {
+  case registered_channel(registration) {
+    None -> Nil
+    Some(registered) ->
+      beryl.send_info(registered, socket_id, topic, EventPush(event, payload))
+  }
 }
 
 /// Two wire protocols enter this channel differently. Socket.IO carries the
@@ -194,6 +226,7 @@ fn pending_assigns(topic: String) -> DocAssigns {
     topic: topic,
     scopes: [],
     connected: False,
+    user_id: "",
   )
 }
 
@@ -312,14 +345,26 @@ fn connect_core(
           topic: topic,
           scopes: types.scopes_to_strings(claims.scopes),
           connected: True,
+          user_id: claims.user.id,
         ),
       ))
     }
   }
 }
 
-fn on_leave(channels, sess: Session, sock: Socket(DocAssigns)) {
+fn on_leave(
+  channels,
+  sess: Session,
+  presence: Subject(presence_worker.Msg),
+  sock: Socket(DocAssigns),
+) {
   let a = socket.get_assigns(sock)
+  // Before the `connected` guard: this is the one funnel every termination
+  // reaches — a Socket.IO close, a Phoenix close, a heartbeat-sweep eviction, or
+  // an explicit `phx_leave` — and it is what makes a dropped socket stop being
+  // present without anyone waiting out a TTL. A no-op for a socket that never
+  // tracked, so it is safe to run unconditionally.
+  presence_worker.cleanup(presence, a.client_id)
   // A Phoenix socket that joined but never sent connect_document holds no
   // session membership, so there is nothing to tear down or announce.
   use <- bool.guard(when: !a.connected, return: Nil)
@@ -387,6 +432,75 @@ fn presence_leave(client_id: String) -> json.Json {
         |> json.string,
     ),
   ])
+}
+
+fn unauthenticated_presence() -> json.Json {
+  presence_worker.error(
+    "unauthenticated",
+    "presence requires a completed document connection",
+  )
+}
+
+/// Read a presence command's metadata and stamp the server's own session id on
+/// it, or produce the `presence_error` frame that rejects it.
+///
+/// Two tiers, and the difference is the point. A server-owned name at the
+/// command's *top level* is an attempt to claim another identity, so it is
+/// rejected outright; the same name nested inside `meta` is merely smuggled and
+/// is stripped. Metadata must be a JSON **object** because the Phoenix `metas`
+/// shape puts `phx_ref` and `client_id` alongside the application's own fields,
+/// and a scalar or array leaves nowhere to put them.
+///
+/// `client_id` is added here rather than by beryl: beryl stamps `phx_ref` on
+/// every tracked meta but knows nothing of session ids, and watershed reads
+/// `client_id` as `PresenceEntry.session_id` — omit it and every session in the
+/// roster collapses to the empty string.
+pub fn presence_meta(
+  payload: Dynamic,
+  client_id: String,
+) -> Result(json.Json, json.Json) {
+  let malformed =
+    presence_worker.error(
+      "invalid_meta",
+      "presence metadata must be a JSON object",
+    )
+  case decode.run(payload, decode.dict(decode.string, decode.dynamic)) {
+    Error(_) -> Error(malformed)
+    Ok(fields) ->
+      case
+        list.any(dict.keys(fields), fn(name) {
+          list.contains(presence_worker.reserved_meta_fields, name)
+        })
+      {
+        True ->
+          Error(presence_worker.error(
+            "invalid_meta",
+            "the server owns key, session, and ref; a client cannot set them",
+          ))
+        False ->
+          case dict.get(fields, "meta") {
+            Error(Nil) -> Error(malformed)
+            Ok(meta) ->
+              case
+                decode.run(meta, decode.dict(decode.string, decode.dynamic))
+              {
+                Error(_) -> Error(malformed)
+                Ok(meta_fields) ->
+                  Ok(
+                    json.object([
+                      #("client_id", json.string(client_id)),
+                      ..meta_fields
+                      |> dict.drop(presence_worker.reserved_meta_fields)
+                      |> dict.to_list
+                      |> list.map(fn(field) {
+                        #(field.0, dynamic_json(field.1))
+                      })
+                    ]),
+                  )
+              }
+          }
+      }
+  }
 }
 
 fn client_join_data(client_id: String, client: json.Json) -> String {
@@ -598,6 +712,15 @@ fn connected_response(
     #("initialMessages", ops_json(initial_ops)),
     // Always empty, matching levee. See the 0x4b2 note in `connect_core`.
     #("initialSignals", json.preprocessed_array([])),
+    // Capability negotiation is one-directional: a client that has never heard
+    // of a feature ignores the key, and one that has opts in per document by
+    // sending its own command (`joinPresence`). Watershed's gate is strict —
+    // present *and* boolean `true` — so a stringified "true" here would read as
+    // unsupported and silently downgrade every client to heartbeat presence.
+    #(
+      "supportedFeatures",
+      json.object([#(presence_worker.feature_presence_v1, json.bool(True))]),
+    ),
     #("supportedVersions", json.array(["^0.1.0", "^1.0.0"], json.string)),
     #("version", json.string("1.0.0")),
     #("checkpointSequenceNumber", json.int(current_sequence_number)),
@@ -638,6 +761,7 @@ fn handle_in(
   channels,
   sess: Session,
   registration: Registration,
+  presence: Subject(presence_worker.Msg),
   event,
   payload: Dynamic,
   sock: Socket(DocAssigns),
@@ -646,6 +770,12 @@ fn handle_in(
   case event, a.connected {
     e, False if e == events.connect_document ->
       connect_phase_two(channels, sess, payload, sock, a)
+    // Presence must never be attributable to an unauthenticated socket: before
+    // connect there is no verified user id to key it by.
+    e, False if e == presence_worker.event_join ->
+      Push(presence_worker.event_error, unauthenticated_presence(), sock)
+    e, False if e == presence_worker.event_update ->
+      Push(presence_worker.event_error, unauthenticated_presence(), sock)
     // Everything below needs session membership, which only connect
     // establishes. Mirrors levee's `connected` assign guard.
     e, False if e == events.submit_op ->
@@ -661,6 +791,29 @@ fn handle_in(
       submit_op(channels, sess, payload, sock, a)
     e, True if e == events.submit_signal ->
       submit_signals(channels, sess, registration, payload, sock, a)
+    e, True if e == presence_worker.event_join ->
+      case presence_meta(payload, a.client_id) {
+        Error(frame) -> Push(presence_worker.event_error, frame, sock)
+        Ok(meta) -> {
+          presence_worker.join(presence, a.client_id, a.topic, a.user_id, meta)
+          NoReply(sock)
+        }
+      }
+    e, True if e == presence_worker.event_update ->
+      case presence_meta(payload, a.client_id) {
+        Error(frame) -> Push(presence_worker.event_error, frame, sock)
+        Ok(meta) -> {
+          presence_worker.update(presence, a.client_id, a.topic, meta)
+          NoReply(sock)
+        }
+      }
+    // No rejection path at all, deliberately asymmetric with update: a duplicate
+    // leave, or one racing the socket's own cleanup, is a no-op rather than an
+    // error. The payload is ignored.
+    e, True if e == presence_worker.event_leave -> {
+      presence_worker.leave(presence, a.client_id)
+      NoReply(sock)
+    }
     "requestOps", True ->
       Push(
         events.op,

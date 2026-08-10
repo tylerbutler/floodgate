@@ -4,6 +4,7 @@
 
 import beryl
 import beryl/error as beryl_error
+import beryl/presence
 import beryl/pubsub
 import beryl/supervisor as beryl_supervisor
 import beryl/wire
@@ -17,6 +18,7 @@ import floodgate/memory_store
 import floodgate/oauth
 import floodgate/oauth_state
 import floodgate/origin
+import floodgate/presence_worker
 import floodgate/session
 import floodgate/shelf_store
 import floodgate/socketio_transport
@@ -27,6 +29,8 @@ import gleam/bytes_tree
 import gleam/crypto
 import gleam/dict
 import gleam/dynamic/decode
+import gleam/erlang/atom
+import gleam/erlang/node
 import gleam/erlang/process
 import gleam/http
 import gleam/http/cookie
@@ -195,6 +199,29 @@ pub fn start_with_backend(
       burst: limit_env("FLOODGATE_JOIN_BURST", 200),
     )
   let supervised = beryl_supervisor.config(config)
+  // `channels` is valid before the tree starts (it is a named handle), which is
+  // what lets the `on_diff` callback below capture it while still building the
+  // config that starts presence.
+  let channels = beryl_supervisor.channels(supervised)
+  // Server-backed presence (`presence_v1`).
+  //
+  // `diff_topics` has to be iterated rather than assuming one: `diff_joins` and
+  // `diff_leaves` are per-topic in the pinned beryl, so a diff spanning two
+  // documents would otherwise fan the wrong entries out to both.
+  let presence_name = presence_worker.new_name()
+  let supervised =
+    supervised
+    |> beryl_supervisor.with_presence(
+      presence.default_config(presence_replica())
+      |> presence_replication
+      |> presence.with_on_diff(fn(diff) {
+        presence.diff_topics(diff)
+        |> list.each(fn(topic) {
+          beryl.broadcast_presence_diff(channels, topic, diff)
+        })
+      }),
+    )
+  let assert Some(presence_handle) = beryl_supervisor.presence(supervised)
   // Sequence state lives in one actor per document, under the registry owner
   // and factory this child spec pairs. Supervising them matters because an
   // unsupervised registry owner left every `process.call` from every channel
@@ -204,6 +231,15 @@ pub fn start_with_backend(
   // as the name of the registry's ETS table.
   let session_name = session.new_name()
   let sess = session.from_name(session_name, storage)
+  // The channel needs the handle `register` returns, to push a targeted
+  // signal to one socket via `beryl.send_info` — but `register` takes the
+  // channel, so the handle cannot exist at construction. The holder closes
+  // that loop: built first, filled in immediately after. Discarding the
+  // result here is what left signal targeting unimplementable.
+  //
+  // Built before the tree starts because the presence worker is *in* the tree
+  // and its push callback closes over the holder.
+  let registration = document_channel.new_registration()
   case
     static_supervisor.new(static_supervisor.OneForOne)
     // The backend's own processes come first: the session actor's `store.open`
@@ -212,32 +248,80 @@ pub fn start_with_backend(
     |> store.supervise(storage)
     |> static_supervisor.add(beryl_supervisor.start(supervised))
     |> static_supervisor.add(session.child_spec(session_name, storage))
+    |> static_supervisor.add(
+      presence_worker.child_spec(
+        presence_name,
+        presence_handle,
+        fn(socket_id, topic, event, payload) {
+          document_channel.push_event(
+            registration,
+            socket_id,
+            topic,
+            event,
+            payload,
+          )
+        },
+      ),
+    )
     |> static_supervisor.start()
   {
     Ok(_) -> {
-      let channels = beryl_supervisor.channels(supervised)
       // Idempotent: creates the tenant if this is the first boot against
       // `storage` (or the memory backend, which never has one yet), leaves it
       // untouched if a previous boot (or the admin API) already registered it.
       // See `store.ensure_startup_tenant` for why this preserves existing
       // deployments across a persistent restart.
       store.ensure_startup_tenant(storage, configured_tenant, jwt_secret)
-      // The channel needs the handle `register` returns, to push a targeted
-      // signal to one socket via `beryl.send_info` — but `register` takes the
-      // channel, so the handle cannot exist at construction. The holder closes
-      // that loop: built first, filled in immediately after. Discarding the
-      // result here is what left signal targeting unimplementable.
-      let registration = document_channel.new_registration()
       let _ =
         beryl.register(
           channels,
           "document:*",
-          document_channel.new(channels, sess, registration),
+          document_channel.new(
+            channels,
+            sess,
+            registration,
+            presence_worker.from_name(presence_name),
+          ),
         )
         |> result.map(document_channel.set_registration(registration, _))
       Ok(#(channels, sess))
     }
     Error(e) -> Error(beryl_error.from_actor_start_error(e))
+  }
+}
+
+/// The replica id beryl's presence CRDT gossips under.
+///
+/// The node name, not a random per-boot id: beryl re-incarnates a *known*
+/// replica on restart and prunes its previous incarnation's entries, whereas a
+/// fresh id every boot would leave the old replica's sessions in every peer's
+/// CRDT with no tombstone ever arriving to clear them.
+fn presence_replica() -> String {
+  node.self() |> node.name |> atom.to_string
+}
+
+/// Replicate presence across the cluster — but only when there *is* a cluster.
+///
+/// Gossip is peer-to-peer over a pg scope, so on an undistributed VM the only
+/// peers it can ever reach are other Floodgate runtimes inside the same OS
+/// process. Those are not cluster peers: they share this node's name, so they
+/// share its replica id, and beryl's CRDT would merge their independent
+/// documents into one another's state under a single identity. That is never
+/// what a single-node deployment wants, and it is exactly what made two runtimes
+/// in one test VM clobber each other's rosters.
+///
+/// Nothing is lost by leaving it off: `on_diff` fires for local track and
+/// untrack whether or not PubSub is configured, so single-node presence is fully
+/// live. A distributed node has a real name, distinct from its peers', and turns
+/// replication on by having one.
+fn presence_replication(config: presence.Config) -> presence.Config {
+  case presence_replica() {
+    "nonode@nohost" -> config
+    _ ->
+      presence.with_pubsub(
+        config,
+        pubsub.start(pubsub.config_with_scope("floodgate_presence")),
+      )
   }
 }
 

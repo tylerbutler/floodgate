@@ -151,6 +151,55 @@ These shapes match what `server/levee_admin`'s Lustre admin UI already expects
 (`server/levee_admin/src/levee_admin/api.gleam`), so the same frontend that
 manages Levee's tenants can call Floodgate's API without any decoder changes.
 
+## Presence
+
+Floodgate speaks **server-backed presence (`presence_v1`)** on both socket
+endpoints, on top of beryl's presence registry. Because the server binds presence
+to the authenticated connection, a late joiner gets the whole roster at once and
+a dropped socket stops being present immediately — neither needs a client
+heartbeat or a TTL.
+
+It is advertised in `connect_document_success`:
+
+```json
+{ "supportedFeatures": { "presence_v1": true } }
+```
+
+Clients that ignore the key are unaffected; a client that reads it opts in per
+document by sending `joinPresence`.
+
+```
+joinPresence     {"meta": {...}}   → presence_state to that socket, then presence_diff to the topic
+updatePresence   {"meta": {...}}   → presence_diff carrying the leave, then one carrying the join
+leavePresence    {}                → presence_diff carrying the leave
+```
+
+Server→client frames are Phoenix-shaped, so a standard Phoenix Presence client
+can consume them:
+
+```json
+// presence_state
+{ "user:alice": { "metas": [{ "phx_ref": "…", "client_id": "…", "panel": "sudoku" }] } }
+// presence_diff
+{ "joins": { … }, "leaves": {} }
+// presence_error
+{ "code": "invalid_meta", "message": "…" }
+```
+
+Identity is derived server-side and cannot be claimed: `key` is the token's user
+id, `client_id` is the server-assigned client id, `phx_ref` is beryl's. A command
+naming `key`, `session_id`, `clientId`, `phx_ref`, or `phx_ref_prev` at the top
+level is rejected with `invalid_meta`; the same names inside `meta` are stripped.
+Presence commands are pushes with no reply, so every rejection
+(`unauthenticated`, `invalid_meta`, `not_joined`) comes back as a `presence_error`
+frame.
+
+Presence is per document connection: one registration per connection, and a
+reconnect is a new client id and therefore a new session. Cross-node replication
+turns itself on when the BEAM node is distributed (a named node) and stays off on
+an undistributed one, where the only reachable peers would be other runtimes in
+the same OS process.
+
 ## HTTP surface
 
 ```
