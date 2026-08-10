@@ -25,12 +25,20 @@ import floodgate/admin_auth.{AdminSession, AdminUser}
 import floodgate/doc_store.{type DocStore}
 import floodgate/store
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/list
+import gleam/option.{None, Some}
+import gleam/otp/actor
 import gleam/otp/static_supervisor
+import gleam/otp/supervision
 import gleam/result
 import shelf
 import shelf/bag.{type PBag}
 import shelf/set.{type PSet}
+
+const retry_attempts = 500
+
+const retry_delay_ms = 10
 
 type Tables {
   Tables(
@@ -55,58 +63,80 @@ type Tables {
   )
 }
 
-/// A shelf-backed backend rooted at `data_dir`, with the per-document store
-/// started eagerly and unsupervised. For tests and embedding; a runtime should
-/// use `supervised`. Mirrors `memory_store.new`/`memory_store.supervised`.
-pub fn new(data_dir: String) -> store.Backend {
-  backend(data_dir, doc_store.started(data_dir), fn(builder) { builder })
+pub type Msg {
+  Ping(process.Subject(Nil))
 }
 
-/// A shelf-backed backend whose per-document store is started by the runtime's
-/// supervision tree. `store.supervise` must be applied to the tree before
-/// anything calls into the backend — `serve_with_backend` does this first, for
-/// exactly this reason.
-pub fn supervised(data_dir: String) -> store.Backend {
-  let docs = doc_store.new(data_dir)
-  backend(data_dir, docs, fn(builder) { doc_store.supervise(builder, docs) })
+pub fn new_name() -> process.Name(Msg) {
+  process.new_name("floodgate_shelf_store")
 }
 
-/// Build the storage boundary over the shared tables plus `docs`.
-///
-/// Shared tables hold only what is not document-scoped. `list_refs` used to
-/// `set.to_list` the whole refs table and filter, so one tenant's cost was
-/// proportional to every ref on the server; DETS has no `ordered_set` and shelf
-/// has no partial-key match, so it is served from a bag keyed by tenant.
-///
-/// The bag is an *index*, not the store: keeping the set as the authority
-/// preserves `put_ref`'s overwrite-by-`(tenant, ref)` semantics, which a bag
-/// cannot (it dedupes only exact duplicates, so re-putting a ref with a
-/// different sha would leave two entries where `memory_store`'s dict leaves
-/// one). Re-putting the same key is a no-op in the bag, so the index cannot
-/// drift from the set even under overwrite.
-fn backend(
+pub fn start_named(
+  name: process.Name(Msg),
   data_dir: String,
-  docs: DocStore,
-  supervise: fn(static_supervisor.Builder) -> static_supervisor.Builder,
-) -> store.Backend {
+) -> Result(actor.Started(process.Subject(Msg)), actor.StartError) {
+  actor.new_with_initialiser(5000, fn(self) {
+    ensure_dir(data_dir)
+    let tables = open_tables(data_dir)
+    backfill_indexes(tables)
+    publish_tables(name, tables)
+    actor.initialised(tables)
+    |> actor.returning(self)
+    |> Ok
+  })
+  |> actor.on_message(fn(tables, message) {
+    case message {
+      Ping(reply) -> {
+        process.send(reply, Nil)
+        actor.continue(tables)
+      }
+    }
+  })
+  |> actor.named(name)
+  |> actor.start
+}
+
+pub fn child_spec(
+  name: process.Name(Msg),
+  data_dir: String,
+) -> supervision.ChildSpecification(process.Subject(Msg)) {
+  supervision.worker(fn() { start_named(name, data_dir) })
+}
+
+/// A shelf-backed backend rooted at `data_dir`, with both stores started
+/// eagerly and unsupervised. For tests and embedding; runtimes use `supervised`.
+pub fn new(data_dir: String) -> store.Backend {
   ensure_dir(data_dir)
   let tables = open_tables(data_dir)
   backfill_indexes(tables)
+  backend(fn() { Ok(tables) }, doc_store.started(data_dir), fn(builder) {
+    builder
+  })
+}
 
+/// A shelf backend whose shared table owner and per-document store are both
+/// part of the runtime supervision tree.
+pub fn supervised(data_dir: String) -> store.Backend {
+  from_name(new_name(), data_dir)
+}
+
+/// A supervised shelf backend with an explicit shared-table owner name.
+pub fn from_name(name: process.Name(Msg), data_dir: String) -> store.Backend {
+  let docs = doc_store.new(data_dir)
+  backend(fn() { lookup_tables(name) }, docs, fn(builder) {
+    builder
+    |> static_supervisor.add(child_spec(name, data_dir))
+    |> doc_store.supervise(docs)
+  })
+}
+
+/// Build the storage boundary over restart-resolved shared tables plus `docs`.
+fn backend(
+  resolve: fn() -> Result(Tables, Nil),
+  docs: DocStore,
+  supervise: fn(static_supervisor.Builder) -> static_supervisor.Builder,
+) -> store.Backend {
   store.Backend(
-    // The shared tables' ETS handles are owned by whichever process calls this
-    // function, and the closures below capture them, so they do not survive that
-    // process's death. In the shipped server that is not a live exposure: the
-    // owner is the process running `main`, which the generated entrypoint
-    // `spawn_link`s under a trapping parent that calls `init:stop(1)` — so its
-    // death halts the node, the container restarts it, and the tables are
-    // reopened from DETS. Nothing is lost, because `WriteThrough` has already
-    // flushed every write and shelf's guardian process closes DETS cleanly when
-    // the owner dies.
-    //
-    // Per-document tables are *not* like this: they are owned by `doc_store`'s
-    // supervised actor and resolved by name at call time, so they do survive in
-    // place. See `floodgate/doc_store`.
     supervise: supervise,
     open: fn() { Nil },
     put_document: fn(topic) { doc_store.put_marker(docs, topic) },
@@ -120,150 +150,325 @@ fn backend(
     },
     get_summary: fn(topic) { doc_store.get_summary(docs, topic) },
     put_obj: fn(topic, sha, data) { doc_store.put_obj(docs, topic, sha, data) },
-    // Objects moved into the per-document file. The shared table is still
-    // consulted on a miss so blobs written before the split stay readable
-    // without a migration that would have to walk each ref's commit → tree →
-    // blob graph to work out which document every sha belonged to.
+    // Legacy objects remain readable from the old shared table.
     get_obj: fn(topic, sha) {
       case doc_store.get_obj(docs, topic, sha) {
         Ok(data) -> Ok(data)
         Error(Nil) ->
-          set.lookup(from: tables.objects, key: #(topic, sha))
-          |> result.replace_error(Nil)
+          optional(
+            run(resolve, fn(tables) {
+              set.lookup(from: tables.objects, key: #(topic, sha))
+            }),
+          )
       }
     },
     put_ref: fn(tenant, ref, sha) {
-      let _ = set.insert(into: tables.refs, key: #(tenant, ref), value: sha)
-      let _ = bag.insert(into: tables.refs_index, key: tenant, value: ref)
+      let assert Ok(Nil) =
+        run(resolve, fn(tables) {
+          use _ <- result.try(set.insert(
+            into: tables.refs,
+            key: #(tenant, ref),
+            value: sha,
+          ))
+          bag.insert(into: tables.refs_index, key: tenant, value: ref)
+        })
       Nil
     },
     create_ref: fn(tenant, ref, sha) {
-      case set.insert_new(into: tables.refs, key: #(tenant, ref), value: sha) {
-        Ok(_) -> {
-          // Only index a ref that this call actually created, so a losing
-          // create leaves no trace.
-          let _ = bag.insert(into: tables.refs_index, key: tenant, value: ref)
-          True
-        }
-        Error(_) -> False
-      }
+      create_ref(resolve, tenant, ref, sha, False, retry_attempts)
     },
     get_ref: fn(tenant, ref) {
-      set.lookup(from: tables.refs, key: #(tenant, ref))
-      |> result.replace_error(Nil)
+      optional(
+        run(resolve, fn(tables) {
+          set.lookup(from: tables.refs, key: #(tenant, ref))
+        }),
+      )
     },
     list_refs: fn(tenant) {
-      bag.lookup(from: tables.refs_index, key: tenant)
-      |> result.unwrap([])
-      |> list.filter_map(fn(ref) {
-        set.lookup(from: tables.refs, key: #(tenant, ref))
-        |> result.map(fn(sha) { #(ref, sha) })
-        |> result.replace_error(Nil)
-      })
+      let assert Ok(refs) =
+        run(resolve, fn(tables) { list_refs(tables, tenant) })
+      refs
     },
     create_tenant: fn(name) {
       let id = store.generate_tenant_id()
       let secret1 = store.generate_tenant_secret()
       let secret2 = store.generate_tenant_secret()
-      let _ =
-        set.insert(into: tables.tenants, key: id, value: #(
-          name,
-          secret1,
-          secret2,
-        ))
+      let assert Ok(Nil) =
+        run(resolve, fn(tables) {
+          set.insert(into: tables.tenants, key: id, value: #(
+            name,
+            secret1,
+            secret2,
+          ))
+        })
       store.TenantWithSecrets(id:, name:, secret1:, secret2:)
     },
     get_tenant: fn(id) {
-      set.lookup(from: tables.tenants, key: id)
+      run(resolve, fn(tables) { set.lookup(from: tables.tenants, key: id) })
       |> result.map(fn(data) { store.TenantInfo(id:, name: data.0) })
-      |> result.replace_error(Nil)
+      |> optional
     },
     get_tenant_secrets: fn(id) {
-      set.lookup(from: tables.tenants, key: id)
+      run(resolve, fn(tables) { set.lookup(from: tables.tenants, key: id) })
       |> result.map(fn(data) { #(data.1, data.2) })
-      |> result.replace_error(Nil)
+      |> optional
     },
     regenerate_tenant_secret: fn(id, slot) {
-      case set.lookup(from: tables.tenants, key: id) {
-        Error(_) -> Error(Nil)
-        Ok(#(name, secret1, secret2)) -> {
-          let new_secret = store.generate_tenant_secret()
-          let updated = case slot {
-            store.Slot1 -> #(name, new_secret, secret2)
-            store.Slot2 -> #(name, secret1, new_secret)
-          }
-          let _ = set.insert(into: tables.tenants, key: id, value: updated)
-          Ok(new_secret)
+      let new_secret = store.generate_tenant_secret()
+      run(resolve, fn(tables) {
+        use data <- result.try(set.lookup(from: tables.tenants, key: id))
+        let #(name, secret1, secret2) = data
+        let updated = case slot {
+          store.Slot1 -> #(name, new_secret, secret2)
+          store.Slot2 -> #(name, secret1, new_secret)
         }
-      }
+        set.insert(into: tables.tenants, key: id, value: updated)
+        |> result.map(fn(_) { new_secret })
+      })
+      |> optional
     },
     register_tenant: fn(id, secret) {
-      let _ =
-        set.insert(into: tables.tenants, key: id, value: #(
-          id,
-          secret,
-          store.generate_tenant_secret(),
-        ))
+      let assert Ok(Nil) =
+        run(resolve, fn(tables) {
+          set.insert(into: tables.tenants, key: id, value: #(
+            id,
+            secret,
+            store.generate_tenant_secret(),
+          ))
+        })
       Nil
     },
     unregister_tenant: fn(id) {
-      let _ = set.delete_key(from: tables.tenants, key: id)
+      let assert Ok(Nil) =
+        run(resolve, fn(tables) {
+          set.delete_key(from: tables.tenants, key: id)
+        })
       Nil
     },
     tenant_exists: fn(id) {
-      set.member(of: tables.tenants, key: id) |> result.unwrap(False)
+      let assert Ok(found) =
+        run(resolve, fn(tables) { set.member(of: tables.tenants, key: id) })
+      found
     },
     list_tenants: fn() {
-      set.to_list(from: tables.tenants)
-      |> result.unwrap([])
+      let assert Ok(tenants) =
+        run(resolve, fn(tables) { set.to_list(from: tables.tenants) })
+      tenants
       |> list.map(fn(entry) {
         let #(id, data) = entry
         store.TenantInfo(id:, name: data.0)
       })
     },
     put_admin_user: fn(user) {
-      let _ =
-        set.insert(into: tables.admin_users, key: user.id, value: #(
-          user.github_username,
-          user.display_name,
-          user.email,
-          user.created_at,
-        ))
+      let assert Ok(Nil) =
+        run(resolve, fn(tables) {
+          set.insert(into: tables.admin_users, key: user.id, value: #(
+            user.github_username,
+            user.display_name,
+            user.email,
+            user.created_at,
+          ))
+        })
       Nil
     },
     get_admin_user: fn(id) {
-      set.lookup(from: tables.admin_users, key: id)
+      run(resolve, fn(tables) { set.lookup(from: tables.admin_users, key: id) })
       |> result.map(fn(data) {
         let #(github_username, display_name, email, created_at) = data
         AdminUser(id:, github_username:, display_name:, email:, created_at:)
       })
-      |> result.replace_error(Nil)
+      |> optional
     },
     admin_user_count: fn() {
-      set.to_list(from: tables.admin_users) |> result.unwrap([]) |> list.length
+      let assert Ok(count) =
+        run(resolve, fn(tables) { set.size(of: tables.admin_users) })
+      count
     },
     put_admin_session: fn(session) {
-      let _ =
-        set.insert(into: tables.admin_sessions, key: session.id, value: #(
-          session.user_id,
-          session.created_at,
-          session.expires_at,
-        ))
+      let assert Ok(Nil) =
+        run(resolve, fn(tables) {
+          set.insert(into: tables.admin_sessions, key: session.id, value: #(
+            session.user_id,
+            session.created_at,
+            session.expires_at,
+          ))
+        })
       Nil
     },
     get_admin_session: fn(id) {
-      set.lookup(from: tables.admin_sessions, key: id)
+      run(resolve, fn(tables) {
+        set.lookup(from: tables.admin_sessions, key: id)
+      })
       |> result.map(fn(data) {
         let #(user_id, created_at, expires_at) = data
         AdminSession(id:, user_id:, created_at:, expires_at:)
       })
-      |> result.replace_error(Nil)
+      |> optional
     },
     delete_admin_session: fn(id) {
-      let _ = set.delete_key(from: tables.admin_sessions, key: id)
+      let assert Ok(Nil) =
+        run(resolve, fn(tables) {
+          set.delete_key(from: tables.admin_sessions, key: id)
+        })
       Nil
     },
   )
+}
+
+fn run(
+  resolve: fn() -> Result(Tables, Nil),
+  operation: fn(Tables) -> Result(a, shelf.ShelfError),
+) -> Result(a, shelf.ShelfError) {
+  run_attempt(resolve, operation, retry_attempts)
+}
+
+fn run_attempt(
+  resolve: fn() -> Result(Tables, Nil),
+  operation: fn(Tables) -> Result(a, shelf.ShelfError),
+  attempts: Int,
+) -> Result(a, shelf.ShelfError) {
+  case resolve() {
+    Ok(tables) ->
+      case operation(tables) {
+        Error(shelf.TableClosed) -> retry(resolve, operation, attempts)
+        result -> result
+      }
+    Error(Nil) -> retry(resolve, operation, attempts)
+  }
+}
+
+fn retry(
+  resolve: fn() -> Result(Tables, Nil),
+  operation: fn(Tables) -> Result(a, shelf.ShelfError),
+  attempts: Int,
+) -> Result(a, shelf.ShelfError) {
+  case attempts <= 0 {
+    True -> Error(shelf.TableClosed)
+    False -> {
+      process.sleep(retry_delay_ms)
+      run_attempt(resolve, operation, attempts - 1)
+    }
+  }
+}
+
+fn optional(result: Result(a, shelf.ShelfError)) -> Result(a, Nil) {
+  case result {
+    Ok(value) -> Ok(value)
+    Error(shelf.NotFound) -> Error(Nil)
+    other -> {
+      let assert Ok(value) = other
+      Ok(value)
+    }
+  }
+}
+
+fn list_refs(
+  tables: Tables,
+  tenant: String,
+) -> Result(List(#(String, String)), shelf.ShelfError) {
+  use refs <- result.try(case bag.lookup(from: tables.refs_index, key: tenant) {
+    Ok(refs) -> Ok(refs)
+    Error(shelf.NotFound) -> Ok([])
+    Error(error) -> Error(error)
+  })
+  refs
+  |> list.try_map(fn(ref) {
+    case set.lookup(from: tables.refs, key: #(tenant, ref)) {
+      Ok(sha) -> Ok(Some(#(ref, sha)))
+      Error(shelf.NotFound) -> Ok(None)
+      Error(error) -> Error(error)
+    }
+  })
+  |> result.map(fn(values) {
+    list.filter_map(values, fn(value) {
+      case value {
+        Some(value) -> Ok(value)
+        None -> Error(Nil)
+      }
+    })
+  })
+}
+
+fn create_ref(
+  resolve: fn() -> Result(Tables, Nil),
+  tenant: String,
+  ref: String,
+  sha: String,
+  created: Bool,
+  attempts: Int,
+) -> Bool {
+  case resolve() {
+    Error(Nil) -> retry_create_ref(resolve, tenant, ref, sha, created, attempts)
+    Ok(tables) ->
+      case set.insert_new(into: tables.refs, key: #(tenant, ref), value: sha) {
+        Ok(Nil) ->
+          index_created_ref(resolve, tables, tenant, ref, sha, True, attempts)
+        Error(shelf.KeyAlreadyPresent) if created ->
+          case set.lookup(from: tables.refs, key: #(tenant, ref)) {
+            Ok(existing) if existing == sha ->
+              index_created_ref(
+                resolve,
+                tables,
+                tenant,
+                ref,
+                sha,
+                True,
+                attempts,
+              )
+            Ok(_) -> False
+            Error(shelf.TableClosed) ->
+              retry_create_ref(resolve, tenant, ref, sha, True, attempts)
+            other -> {
+              let assert Ok(_) = other
+              False
+            }
+          }
+        Error(shelf.KeyAlreadyPresent) -> False
+        Error(shelf.TableClosed) ->
+          retry_create_ref(resolve, tenant, ref, sha, True, attempts)
+        other -> {
+          let assert Ok(Nil) = other
+          False
+        }
+      }
+  }
+}
+
+fn index_created_ref(
+  resolve: fn() -> Result(Tables, Nil),
+  tables: Tables,
+  tenant: String,
+  ref: String,
+  sha: String,
+  created: Bool,
+  attempts: Int,
+) -> Bool {
+  case bag.insert(into: tables.refs_index, key: tenant, value: ref) {
+    Ok(Nil) -> created
+    Error(shelf.TableClosed) ->
+      retry_create_ref(resolve, tenant, ref, sha, created, attempts)
+    other -> {
+      let assert Ok(Nil) = other
+      False
+    }
+  }
+}
+
+fn retry_create_ref(
+  resolve: fn() -> Result(Tables, Nil),
+  tenant: String,
+  ref: String,
+  sha: String,
+  created: Bool,
+  attempts: Int,
+) -> Bool {
+  case attempts <= 0 {
+    True -> panic as "shelf storage unavailable"
+    False -> {
+      process.sleep(retry_delay_ms)
+      create_ref(resolve, tenant, ref, sha, created, attempts - 1)
+    }
+  }
 }
 
 fn open_tables(data_dir: String) -> Tables {
@@ -327,25 +532,25 @@ fn open(
   make_table_public(table)
 }
 
-/// Populate the ref index from the refs table, when it is empty and refs are
-/// not.
+/// Fill missing ref-index entries from the authoritative refs table.
 ///
-/// This is the upgrade path: a DETS directory written before the index existed
-/// has refs but no index file, and without this every pre-existing tenant would
-/// list no refs at all. It is the one-time version of exactly the scan the index
-/// removes from the hot path, so it is paid once at startup rather than on every
-/// request. On a fresh install both sides are empty and it does nothing.
+/// This repairs both a missing pre-index file and a partially written index.
+/// Document ops no longer need a shared index because they live in `doc_store`.
 fn backfill_indexes(tables: Tables) -> Nil {
-  case bag.size(of: tables.refs_index) {
-    Ok(0) ->
-      set.to_list(from: tables.refs)
-      |> result.unwrap([])
+  let assert Ok(ref_count) = set.size(of: tables.refs)
+  let assert Ok(ref_index_count) = bag.size(of: tables.refs_index)
+  case ref_index_count < ref_count {
+    True -> {
+      let assert Ok(refs) = set.to_list(from: tables.refs)
+      refs
       |> list.each(fn(entry) {
         let #(#(tenant, ref), _sha) = entry
-        let _ = bag.insert(into: tables.refs_index, key: tenant, value: ref)
+        let assert Ok(Nil) =
+          bag.insert(into: tables.refs_index, key: tenant, value: ref)
         Nil
       })
-    _ -> Nil
+    }
+    False -> Nil
   }
 }
 
@@ -401,3 +606,9 @@ fn make_table_public(table: PSet(k, v)) -> PSet(k, v)
 /// the identical record layout to `PSet`, so a bag stays a bag.
 @external(erlang, "floodgate_shelf_ffi", "make_table_public")
 fn make_bag_public(table: PBag(k, v)) -> PBag(k, v)
+
+@external(erlang, "floodgate_shelf_ffi", "publish_tables")
+fn publish_tables(name: process.Name(Msg), tables: Tables) -> Nil
+
+@external(erlang, "floodgate_shelf_ffi", "lookup_tables")
+fn lookup_tables(name: process.Name(Msg)) -> Result(Tables, Nil)

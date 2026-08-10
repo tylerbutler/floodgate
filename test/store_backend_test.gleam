@@ -12,8 +12,10 @@ import gleam/erlang/process
 import gleam/json
 import gleam/list
 import gleam/option.{Some}
+import gleam/otp/static_supervisor
 import gleeunit/should
 import shelf
+import shelf/bag
 import shelf/set
 
 /// A fresh, unique on-disk data directory so each run starts from empty DETS
@@ -84,6 +86,61 @@ pub fn supervised_memory_backend_restarts_after_a_crash_test() {
   store.has_document(backend, topic) |> should.be_true
 }
 
+pub fn supervised_shelf_backend_restarts_and_rehydrates_test() {
+  let dir = unique_dir()
+  let name = shelf_store.new_name()
+  let backend = shelf_store.from_name(name, dir)
+  let tenant = "shelf-restart"
+  let topic = store.topic(tenant, "doc")
+  let assert Ok(#(_channels, sess)) =
+    floodgate.start_with_backend(tenant, "shelf-restart-secret", backend)
+
+  session.create(sess, topic) |> should.be_false
+  session.join(sess, topic, "c1") |> should.be_true
+  let assert session.Assigned(1, _) =
+    session.submit(sess, topic, "c1", 1, 0, "durable-op")
+  store.put_summary(backend, topic, "summary-1", 1)
+  store.put_obj(backend, topic, "blob-1", "blob-body")
+  store.create_ref(backend, tenant, "refs/heads/main", "blob-1")
+  |> should.be_true
+
+  let assert Ok(pid) = process.subject_owner(process.named_subject(name))
+  process.kill(pid)
+
+  // Document data stays available from doc_store while the shared owner restarts.
+  store.get_ops(backend, topic) |> should.equal([#(1, "durable-op")])
+  let restarted_pid = await_shelf_restart(name, pid, 500)
+  { restarted_pid == pid } |> should.be_false
+
+  session.sequence_number(sess, topic) |> should.equal(1)
+  store.get_summary(backend, topic) |> should.equal(#("summary-1", 1))
+  store.get_obj(backend, topic, "blob-1") |> should.equal(Ok("blob-body"))
+  store.list_refs(backend, tenant)
+  |> should.equal([#("refs/heads/main", "blob-1")])
+  store.create_ref(backend, tenant, "refs/heads/main", "replacement")
+  |> should.be_false
+  store.create_ref(backend, tenant, "refs/heads/next", "blob-1")
+  |> should.be_true
+}
+
+pub fn supervised_shelf_backends_use_independent_names_test() {
+  let first = shelf_store.from_name(shelf_store.new_name(), unique_dir())
+  let second = shelf_store.from_name(shelf_store.new_name(), unique_dir())
+  let assert Ok(_) =
+    static_supervisor.new(static_supervisor.OneForOne)
+    |> store.supervise(first)
+    |> store.supervise(second)
+    |> static_supervisor.start
+
+  store.put_document(first, "document:first:doc")
+  store.put_document(second, "document:second:doc")
+
+  store.has_document(first, "document:first:doc") |> should.be_true
+  store.has_document(first, "document:second:doc") |> should.be_false
+  store.has_document(second, "document:first:doc") |> should.be_false
+  store.has_document(second, "document:second:doc") |> should.be_true
+}
+
 fn await_restart(
   name: process.Name(memory_store.Msg),
   old: process.Pid,
@@ -102,28 +159,56 @@ fn await_restart(
   }
 }
 
-/// Refs are served through a bag index rather than a full table scan. A DETS
-/// directory written before that index existed has no index file, so opening it
-/// must rebuild it — otherwise every pre-existing tenant would list no refs.
-///
-/// Ops used to be indexed the same way and are covered here no longer: they
-/// live in their document's own file now, where finding one document's ops
-/// needs no index. See `floodgate/doc_store`.
-pub fn shelf_backend_rebuilds_missing_ref_index_on_open_test() {
+fn await_shelf_restart(
+  name: process.Name(shelf_store.Msg),
+  old: process.Pid,
+  attempts: Int,
+) -> process.Pid {
+  case attempts <= 0 {
+    True -> panic as "shelf store was not restarted"
+    False ->
+      case process.subject_owner(process.named_subject(name)) {
+        Ok(pid) if pid != old -> pid
+        _ -> {
+          process.sleep(10)
+          await_shelf_restart(name, old, attempts - 1)
+        }
+      }
+  }
+}
+
+/// Refs are served through a bag index rather than a full table scan. Opening
+/// must fill a missing or partial index left by an older version or interrupted
+/// startup. Ops need no shared index now that they live in `doc_store`.
+pub fn shelf_backend_rebuilds_partial_ref_index_on_open_test() {
   let dir = unique_dir()
   let tenant = "reindex"
 
-  // Write the refs table the way a pre-index floodgate did — no index file at
-  // all — then close it so the reopen below is a genuine cold start.
   ensure_dir(dir)
   let refs = open_table(dir, "floodgate_refs", "refs.dets", string_pair_key())
   let assert Ok(Nil) =
     set.insert(into: refs, key: #(tenant, "refs/heads/main"), value: "main-sha")
+  let assert Ok(Nil) =
+    set.insert(into: refs, key: #(tenant, "refs/heads/next"), value: "next-sha")
   let assert Ok(Nil) = set.close(refs)
+  let refs_index =
+    open_bag_table(
+      dir,
+      "floodgate_refs_index",
+      "refs_index.dets",
+      decode.string,
+      decode.string,
+    )
+  let assert Ok(Nil) =
+    bag.insert(into: refs_index, key: tenant, value: "refs/heads/main")
+  let assert Ok(Nil) = bag.close(refs_index)
 
   let reopened = shelf_store.new(dir)
   store.list_refs(reopened, tenant)
-  |> should.equal([#("refs/heads/main", "main-sha")])
+  |> should.equal([
+    #("refs/heads/main", "main-sha"),
+    #("refs/heads/next", "next-sha"),
+  ])
 }
 
 /// Reading a document that was never written must not bring it into existence.
@@ -275,6 +360,20 @@ fn open_table(
     |> shelf.write_mode(mode: shelf.WriteThrough)
   let assert Ok(table) =
     set.open_config(config: config, key: key, value: decode.string)
+  table
+}
+
+fn open_bag_table(
+  dir: String,
+  name: String,
+  path: String,
+  key: decode.Decoder(k),
+  value: decode.Decoder(v),
+) -> bag.PBag(k, v) {
+  let config =
+    shelf.config(name: name, path: path, base_directory: dir)
+    |> shelf.write_mode(mode: shelf.WriteThrough)
+  let assert Ok(table) = bag.open_config(config: config, key: key, value: value)
   table
 }
 

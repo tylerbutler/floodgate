@@ -259,9 +259,8 @@ pub fn from_name(
 
 /// Start the registry owner under `name`.
 ///
-/// `store.open` is a no-op for both backends — tables and backing actors are
-/// created when the `Backend` value is constructed — so the storage lifecycle
-/// sits outside this actor's crash domain and a restart cannot disturb it.
+/// `store.open` is a no-op for both backends. Their lifecycle is started before
+/// this actor by `store.supervise`, so a session restart cannot disturb it.
 fn start_owner(
   name: process.Name(OwnerMsg),
   storage: store.Backend,

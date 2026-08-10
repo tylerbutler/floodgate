@@ -1,7 +1,8 @@
-# ADR-005: Floodgate storage — shelf with WriteThrough and no storage process
+# ADR-005: Floodgate storage — shelf WriteThrough with a lifecycle owner
 
 - **Status:** Accepted
 - **Date:** 2026-07-14
+- **Updated:** 2026-08-10
 - **Related:** [ADR-001](001-ets-public-access.md) (public ETS access),
   [ADR-004](004-coexisting-client-stacks.md) (Levee and Floodgate are decoupled,
   independently supported server stacks)
@@ -21,8 +22,7 @@ Two existing constraints shaped the design:
   Floodgate storage must not couple into `levee_storage`.
 - Floodgate models storage as a **value** — `store.Backend`, a record of
   closures — deliberately "not a process-global selection" (per `store.gleam`).
-  Floodgate runs session actors but has **no dedicated storage process**, unlike
-  Levee's `Levee.Storage.GleamETS` GenServer.
+  Storage operations must not be serialized through one global mailbox.
 
 ## Decision
 
@@ -31,19 +31,21 @@ Two existing constraints shaped the design:
    Floodgate's topic/tenant key model and the existing closure seam. It does not
    wire into `levee_storage` and does not introduce a shared storage library.
 
-2. **Storage stays a value, not a process.** No storage GenServer/actor. The
-   `store.Backend` closures capture shelf table handles; writes go directly to
-   public ETS tables from session actors and REST handler processes.
+2. **Storage stays a value; table ownership is supervised.** A lifecycle-only
+   owner opens the shelf tables and publishes the current handles through a
+   named public ETS registry. `store.Backend` closures resolve that registry on
+   each operation, so the same value survives an owner restart. Reads and writes
+   still execute directly in session actors and REST handler processes; the
+   owner is not an operation-serving storage actor or serialization point.
 
 3. **Public tables via Floodgate's own FFI.** shelf creates `protected` tables;
    `floodgate_shelf_ffi:make_table_public/1` swaps each to `public`. This
    mirrors ADR-001's approach for `levee_storage` but is an **independent copy**
    — Floodgate does not share levee's `storage_ffi_helpers`.
 
-4. **WriteThrough, not WriteBack.** Because there is no storage process to own a
-   periodic/shutdown save lifecycle, tables open in `WriteThrough` mode so every
-   write reaches DETS immediately. This delivers cross-restart durability
-   without a save loop.
+4. **WriteThrough, not WriteBack.** The lifecycle owner has no periodic save
+   loop. Tables open in `WriteThrough` mode so every write reaches DETS
+   immediately and can be reloaded when the owner restarts.
 
 ## Why this is acceptable
 
@@ -57,6 +59,11 @@ Two existing constraints shaped the design:
 - **Durable with no crash window.** WriteThrough persists every write, so
   Floodgate does not risk losing recent writes on a hard crash (which WriteBack
   would, since recent writes would live only in ETS until the next flush).
+- **Restartable handles.** The registry is named after the owner's existing
+  `process.Name`, so it costs no new dynamic atom and is recreated under the
+  same name after a crash. Calls retry a missing registry or `TableClosed` for
+  five seconds, then fail loudly rather than returning absent data or apparent
+  write success.
 
 ## Consequences
 
@@ -68,6 +75,8 @@ Two existing constraints shaped the design:
   `priv/floodgate_data`), gitignored along with the test data dirs.
 - `memory_store` remains for tests and embedding; `session.start()` defaults to
   it (ephemeral), while the standalone runtime (`serve`/`main`) uses shelf.
+- `shelf_store.new/1` is internal and test-only. Supported standalone and
+  embedded shelf runtimes use `shelf_store.supervised/1`.
 
 ## Known risks
 
@@ -75,10 +84,9 @@ Two existing constraints shaped the design:
    tuple to swap the ETS reference — the same fragility as ADR-001, tracked in
    [shelf#49](https://github.com/tylerbutler/shelf/issues/49). If shelf adds a
    configurable access mode, this workaround can be removed.
-2. **Cross-restart durability is not unit-tested.** The `store.Backend` closure
-   interface has no `close()`, so a close-then-reopen cannot be driven cleanly
-   in a test. Backend correctness is covered by the shared contract test;
-   persistence is inherited from shelf's WriteThrough guarantee.
+2. **Bounded recovery window.** Reopening large DETS tables may take longer than
+   five seconds. A call that outlasts the recovery window fails its caller
+   rather than blocking forever or returning a false default.
 3. **No save lifecycle.** Fine under WriteThrough, but it is the reason
    WriteBack is not available today.
 
@@ -97,14 +105,15 @@ dependency to govern.
 
 **Rejected:** couples the two server stacks, contrary to ADR-004.
 
-### Storage GenServer/actor + WriteBack
+### Operation-serving storage actor + WriteBack
 
 The way to reclaim memory-speed, batched writes: an owner process holds the
 tables and flushes ETS→DETS periodically and on shutdown (mirroring
 `GleamETS`'s 30s `:periodic_save` + `terminate`). **Rejected for now** — it adds
-a supervised process and a save loop for a throughput problem we do not have
-yet, and re-introduces a serialization point the session layer already provides.
-Documented as the future upgrade path if writes become disk-bound; it trades a
+a save loop for a throughput problem we do not have yet, and routes every
+operation through a serialization point the session layer already provides.
+The lifecycle-only owner selected above does not have that cost. A WriteBack
+actor remains the future upgrade path if writes become disk-bound; it trades a
 small crash-durability window for write throughput.
 
 ## Follow-ups

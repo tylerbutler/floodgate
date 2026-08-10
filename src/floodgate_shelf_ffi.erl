@@ -1,5 +1,5 @@
 -module(floodgate_shelf_ffi).
--export([ensure_dir/1, file_exists/1, log_open_failure/2, make_table_public/1]).
+-export([ensure_dir/1, file_exists/1, log_open_failure/2, make_table_public/1, publish_tables/2, lookup_tables/1]).
 
 %% Ensure a directory exists (mkdir -p semantics). filelib:ensure_dir/1 creates
 %% all parent directories of the given path, so join a sentinel child to make
@@ -33,3 +33,21 @@ make_table_public(PSet) ->
   ets:foldl(fun(Entry, _) -> ets:insert(NewEts, Entry) end, ok, OldEts),
   ets:delete(OldEts),
   setelement(2, PSet, NewEts).
+
+publish_tables(Name, Tables) ->
+  case ets:whereis(Name) of
+    undefined ->
+      ets:new(Name, [named_table, set, public, {read_concurrency, true}]);
+    _ ->
+      ok
+  end,
+  ets:insert(Name, {tables, Tables}),
+  nil.
+
+lookup_tables(Name) ->
+  try ets:lookup(Name, tables) of
+    [{tables, Tables}] -> {ok, Tables};
+    [] -> {error, nil}
+  catch
+    error:badarg -> {error, nil}
+  end.
