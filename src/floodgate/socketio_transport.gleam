@@ -19,7 +19,6 @@ import beryl/wire/codec.{type Inbound, Event, Heartbeat, Join}
 import dewdrop/events
 import floodgate/origin
 import floodgate/server_codec
-import floodgate/socketio
 import floodgate/store
 import gleam/bit_array
 import gleam/bool
@@ -34,6 +33,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import mist.{type Connection, type ResponseData, type WebsocketConnection}
+import spillway/socketio
 
 const ping_interval_ms = 25_000
 

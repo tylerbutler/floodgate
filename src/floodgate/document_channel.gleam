@@ -7,12 +7,9 @@ import beryl/channel.{type Channel, JoinError, JoinOk, NoReply, Push}
 import beryl/socket.{type Socket}
 import dewdrop/events
 import floodgate/auth
-import floodgate/connect_document
 import floodgate/git
 import floodgate/presence_worker
 import floodgate/session.{type Session}
-import floodgate/session_logic
-import floodgate/signals
 import floodgate/store
 import gleam/bool
 import gleam/dict
@@ -27,6 +24,9 @@ import gleam/otp/actor
 import gleam/result
 import gleam/string
 import signet/types.{type TokenClaims}
+import spillway/connect_document
+import spillway/session_logic
+import spillway/signals
 
 pub type DocAssigns {
   DocAssigns(
@@ -1379,9 +1379,24 @@ fn legacy_submitted_signals(
   }
   decode.run(payload, decoder)
   |> result.map(
-    list.map(_, fn(content) { signals.untargeted(dynamic.string(content)) }),
+    list.map(_, fn(content) { untargeted(dynamic.string(content)) }),
   )
   |> result.replace_error(Nil)
+}
+
+/// A signal carrying content and no targeting — the legacy
+/// `{signals: ["...", ...]}` shape has nowhere to put targeting fields, so
+/// those signals go to the whole topic.
+fn untargeted(content: Dynamic) -> signals.NormalizedSignal {
+  signals.NormalizedSignal(
+    content: content,
+    signal_type: None,
+    client_connection_number: None,
+    reference_sequence_number: None,
+    target_client_id: None,
+    targeted_clients: None,
+    ignored_clients: None,
+  )
 }
 
 fn sequenced_op_json(
