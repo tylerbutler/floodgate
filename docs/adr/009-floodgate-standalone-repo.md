@@ -1,6 +1,7 @@
 # ADR-009: Extracting Floodgate into its own repository
 
-- **Status:** Accepted (preparation); extraction not yet performed
+- **Status:** Accepted (preparation); blocking coupling resolved 2026-08-10
+  (see "Resolution" below); extraction not yet performed
 - **Date:** 2026-08-05
 - **Supersedes:** nothing
 - **Related:** [ADR-004](004-coexisting-client-stacks.md), [ADR-005](005-floodgate-storage-backend.md), [ADR-008](008-floodgate-phoenix-endpoint.md)
@@ -71,6 +72,26 @@ ways to resolve it, in order of preference:
 Option 1 is a three-repo change (spillway → floodgate → levee), the same
 cascade noted for the beryl-main migration in ADR-008, and is deliberately left
 out of this ADR's scope.
+
+### Resolution (2026-08-10)
+
+Option 1 was executed (tylerbutler/spillway#9 plus the two follow-up commits
+in this repo). Three of the six modules — `socketio`, `connect_document`,
+`rest` — moved into spillway; the other three (`session_logic`, `signals`,
+`nack`) turned out to be pure re-export wrappers over modules spillway already
+had, so callers now import spillway directly and the wrappers were deleted.
+`spillway/socketio` declares the four Routerlicious event names locally
+instead of importing `dewdrop/events`, because dewdrop depends on beryl — a
+server runtime spillway must stay independent of; windsock (stdlib + json
+only) is spillway's one new dependency.
+
+`Levee.Floodgate` became `Levee.Spillway`, calling `:spillway@*` through the
+`levee_bridge` package. `floodgate` was removed from `mix.exs` `gleam_projects`,
+`application.ex`'s load/boot-check lists, the Levee `Dockerfile`, and
+`rel/env.sh.eex`. Levee no longer compiles or boot-checks Floodgate; nothing
+in the Levee server build references `server/floodgate/` anymore. All gates
+held at baseline: Levee 375/0, floodgate 185/0, dual-mode 38 + 7, drop-in
+parity 52 passed with only the two known 401-not-403 auth-status failures.
 
 ## Drop-in parity: what was verified
 
