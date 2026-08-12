@@ -64,7 +64,8 @@ const httpSurface = [
 	<ul class="log" aria-label="Sibling libraries">
 		{composedFrom.map((lib, i) => (
 			<li style={`--i:${i}`}>
-				<span class="log__tag">[lib]</span> <strong>{lib.name}</strong>
+				<span class="log__tag">[lib]</span>{" "}
+				<strong><a href={`https://${lib.name}.tylerbutler.com`}>{lib.name}</a></strong>
 				<span class="note"> — {lib.role}</span>
 			</li>
 		))}
