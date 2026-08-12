@@ -1,0 +1,43 @@
+---
+import DocsNode from "../../layouts/DocsNode.astro";
+---
+
+<DocsNode
+	slug="development"
+	description="Build, test, and format Floodgate, plus the conformance suites that check it against Levee."
+>
+	<span class="rule-label">build, test, format, run</span>
+	<ul class="log log--static" aria-label="Build and test commands">
+		<li><code>just build</code><span class="note"> — or: gleam build --target erlang</span></li>
+		<li><code>just test</code><span class="note"> — or: gleam test</span></li>
+		<li><code>just format</code></li>
+		<li><code>just run</code></li>
+	</ul>
+
+	<span class="rule-label">conformance suites</span>
+	<p>
+		These live in the Levee repository's client workspace and run against a
+		live server:
+	</p>
+	<ul class="log log--static" aria-label="Conformance suite commands">
+		<li><code>just test-floodgate-dual-mode</code><span class="note"> — both wire protocols, one process</span></li>
+		<li><code>just test-levee-suite-vs-floodgate</code><span class="note"> — Levee's own suites, repointed at Floodgate</span></li>
+	</ul>
+	<p>
+		<code>test-levee-suite-vs-floodgate</code> runs Levee's{" "}
+		<strong>unmodified</strong> integration suites (<code>levee-driver</code>,{" "}
+		<code>levee-client</code>, <code>levee-example</code>) against a
+		containerised Floodgate, repointed only via{" "}
+		<code>LEVEE_HTTP_URL</code>/<code>LEVEE_SOCKET_URL</code>/
+		<code>LEVEE_TENANT_KEY</code>. Nothing in those suites is
+		Floodgate-aware, so a failure there is a real behavioral difference
+		between the servers.
+	</p>
+
+	<span class="rule-label">architecture</span>
+	<p>
+		Floodgate composes several sibling libraries rather than implementing
+		the protocol itself — see <a href="/architecture">architecture</a> for
+		the process tree and what each one owns.
+	</p>
+</DocsNode>

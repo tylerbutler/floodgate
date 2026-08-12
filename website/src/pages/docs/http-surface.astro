@@ -1,0 +1,53 @@
+---
+import DocsNode from "../../layouts/DocsNode.astro";
+
+const routes = [
+	{ method: "GET", path: "/health", desc: "readiness probe — {\"status\":\"ok\"}" },
+	{ method: "GET", path: "/admin/*", desc: "shared Lustre admin SPA" },
+	{ method: "GET", path: "/auth/github", desc: "begin GitHub OAuth" },
+	{ method: "GET", path: "/auth/github/callback", desc: "complete GitHub OAuth" },
+	{ method: "GET", path: "/api/auth/config", desc: "UI auth capabilities" },
+	{ method: "GET", path: "/api/auth/me", desc: "current cookie/bearer admin" },
+	{ method: "POST", path: "/api/auth/logout", desc: "end the admin session" },
+	{ method: "POST", path: "/api/tenants/:tenant/token-mint", desc: "mint a document token (dev/integration)" },
+	{ method: "GET", path: "/api/tenants", desc: "list tenants (admin session or key)" },
+	{ method: "POST", path: "/api/tenants", desc: "create a tenant (admin session or key)" },
+	{ method: "GET", path: "/api/tenants/:id", desc: "show a tenant with its secrets (admin session or key)" },
+	{ method: "DELETE", path: "/api/tenants/:id", desc: "delete a tenant (admin session or key)" },
+	{ method: "POST", path: "/api/tenants/:id/secrets/:slot", desc: "regenerate secret slot 1 or 2 (admin session or key)" },
+	{ method: "POST", path: "/documents/:tenant", desc: "create a document (id from body, or generated)" },
+	{ method: "POST", path: "/documents/:tenant/:id", desc: "create a document with an explicit id" },
+	{ method: "GET", path: "/documents/:tenant/:id", desc: "document metadata" },
+	{ method: "GET", path: "/documents/:tenant/session/:id", desc: "session discovery" },
+	{ method: "GET", path: "/documents/:tenant/:id/deltas", desc: "ops catch-up" },
+	{ method: "GET", path: "/deltas/:tenant/:id", desc: "ops catch-up (Levee-style path)" },
+	{ method: "GET", path: "/repos/:tenant/commits", desc: "commit history" },
+	{ method: "GET", path: "/repos/:tenant/git/refs", desc: "list refs" },
+	{ method: "POST", path: "/repos/:tenant/git/refs", desc: "create a ref" },
+	{ method: "GET", path: "/repos/:tenant/git/refs/*path", desc: "read a ref" },
+	{ method: "PATCH", path: "/repos/:tenant/git/refs/*path", desc: "update a ref" },
+	{ method: "POST", path: "/repos/:tenant/git/{blobs,trees,commits}", desc: "create a git object" },
+	{ method: "GET", path: "/repos/:tenant/git/{blobs,trees,commits}/:sha", desc: "read a git object" },
+];
+---
+
+<DocsNode
+	slug="http-surface"
+	description="The full Floodgate HTTP endpoint reference — health, admin, auth, tenants, documents, and git-like storage."
+>
+	<p>
+		Every route below is served by the same process as the WebSocket
+		endpoints — see <a href="/architecture">architecture</a> for how the
+		transports and this HTTP surface share one coordinator and storage
+		layer.
+	</p>
+
+	<ul class="log log--static tree-list" aria-label="HTTP endpoints">
+		{routes.map((r) => (
+			<li>
+				<span class="log__tag">{r.method}</span> <code>{r.path}</code>
+				<span class="note"> — {r.desc}</span>
+			</li>
+		))}
+	</ul>
+</DocsNode>

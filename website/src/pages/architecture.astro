@@ -1,0 +1,104 @@
+---
+import Terminal from "../layouts/Terminal.astro";
+
+const tree = [
+	{ prefix: "", name: "floodgate", desc: null },
+	{ prefix: "├─", name: "socketio_transport", desc: "official Fluid/Routerlicious wire format" },
+	{ prefix: "├─", name: "phx_transport", desc: "Phoenix Channels wire format (levee-driver compatible)" },
+	{ prefix: "├─", name: "beryl", desc: "coordinator" },
+	{ prefix: "│ ├─", name: "session_logic", desc: "feature/version negotiation, sequenced ops, summaries" },
+	{ prefix: "│ ├─", name: "signals", desc: "v1/v2 normalization, recipient targeting" },
+	{ prefix: "│ ├─", name: "presence_v1", desc: "server-backed roster, per document" },
+	{ prefix: "│ └─", name: "nack", desc: "rejection construction" },
+	{ prefix: "├─", name: "storage", desc: "per-tenant backend" },
+	{ prefix: "│ ├─", name: "shelf (dets)", desc: "default \u2014 persistent, one file per document" },
+	{ prefix: "│ ├─", name: "ets", desc: "in-memory, process-local" },
+	{ prefix: "│ └─", name: "memory", desc: "ephemeral, used by tests" },
+	{ prefix: "└─", name: "spillway", desc: "protocol: message types, sequencing, validation" },
+];
+
+const composedFrom = [
+	{ name: "spillway", role: "Fluid protocol: message types, sequencing, validation, signals, nacks" },
+	{ name: "beryl", role: "session coordination and presence registry" },
+	{ name: "dewdrop", role: "supporting protocol utilities" },
+	{ name: "signet", role: "JWT signing and verification" },
+	{ name: "silt", role: "typed ETS access" },
+	{ name: "windsock", role: "supporting runtime utilities" },
+];
+
+const httpSurface = [
+	{ method: "GET", path: "/health", desc: "readiness probe" },
+	{ method: "POST", path: "/documents/:tenant", desc: "create a document" },
+	{ method: "GET", path: "/documents/:tenant/:id", desc: "document metadata" },
+	{ method: "GET", path: "/documents/:tenant/:id/deltas", desc: "ops catch-up" },
+	{ method: "GET", path: "/repos/:tenant/git/refs", desc: "list refs" },
+	{ method: "POST", path: "/repos/:tenant/git/{blobs,trees,commits}", desc: "create a git object" },
+	{ method: "GET", path: "/api/tenants", desc: "list tenants (admin session or key)" },
+];
+---
+
+<Terminal
+	title="Floodgate architecture — how the process is composed"
+	description="How Floodgate composes spillway, beryl, and sibling Gleam libraries into one dual-mode Fluid Framework server."
+	path="/architecture"
+>
+	<p class="prompt">pstree floodgate</p>
+	<ul class="log tree-list" aria-label="Process tree">
+		{tree.map((node, i) => (
+			<li style={`--i:${i}`}>
+				{node.prefix && <span class="log__tag">{node.prefix} </span>}
+				<strong>{node.name}</strong>
+				{node.desc && <span class="note"> — {node.desc}</span>}
+			</li>
+		))}
+	</ul>
+
+	<p>
+		Floodgate doesn't implement the Fluid protocol itself. It composes a
+		handful of sibling Gleam libraries — each one a supervised part of the
+		same process tree — and adds the transports, storage wiring, and admin
+		surface around them.
+	</p>
+
+	<span class="rule-label">composed from</span>
+	<ul class="log" aria-label="Sibling libraries">
+		{composedFrom.map((lib, i) => (
+			<li style={`--i:${i}`}>
+				<span class="log__tag">[lib]</span> <strong>{lib.name}</strong>
+				<span class="note"> — {lib.role}</span>
+			</li>
+		))}
+	</ul>
+
+	<span class="rule-label">how a document survives a crash</span>
+	<p>
+		Each document session is its own BEAM process, supervised with a{" "}
+		<code>one_for_one</code> restart strategy. If a session process crashes,
+		it restarts and reloads its state from storage — the rest of the node,
+		including every other document's session, is unaffected. This is the
+		same isolation model the BEAM has run telecom switches on for decades;
+		Floodgate's sequencing and validation logic on top of it is written in
+		Gleam, so a whole class of protocol bugs is caught by the compiler
+		before the process ever starts.
+	</p>
+
+	<span class="rule-label">dual-mode, one process</span>
+	<p>
+		<code>socketio_transport</code> and <code>phx_transport</code> are two
+		wire-format adapters in front of the same <code>beryl</code> coordinator,
+		session state, and storage. A Fluid client on <code>/socket.io/</code>{" "}
+		and a Phoenix Channels client on <code>/socket/websocket</code> can
+		collaborate on the same document at the same time; neither transport
+		knows the other exists.
+	</p>
+
+	<span class="rule-label">http surface (excerpt)</span>
+	<ul class="log tree-list" aria-label="HTTP surface excerpt">
+		{httpSurface.map((route, i) => (
+			<li style={`--i:${i}`}>
+				<span class="log__tag">{route.method}</span> <code>{route.path}</code>
+				<span class="note"> — {route.desc}</span>
+			</li>
+		))}
+	</ul>
+</Terminal>

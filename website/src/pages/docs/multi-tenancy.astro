@@ -1,0 +1,79 @@
+---
+import DocsNode from "../../layouts/DocsNode.astro";
+---
+
+<DocsNode
+	slug="multi-tenancy"
+	description="Tenants, rotating secret slots, the admin UI, and the tenant management API."
+>
+	<p>
+		Floodgate supports any number of tenants, each with its own pair of
+		rotating JWT secrets — dynamic tenant management, not just the one
+		tenant/secret pair the environment configures. Tenants ride the same
+		storage backend selection as documents
+		(<code>FLOODGATE_STORAGE_BACKEND</code>): <code>shelf</code> persists
+		them in DETS alongside document data, <code>memory</code> keeps them in
+		the same ephemeral store used by tests.
+	</p>
+
+	<span class="rule-label">startup tenant compatibility</span>
+	<p>
+		<code>FLOODGATE_TENANT_ID</code> + <code>FLOODGATE_JWT_SECRET</code> still
+		work exactly as before: at boot, that tenant is created if it does not
+		already exist, with <code>FLOODGATE_JWT_SECRET</code> as its first
+		secret slot. If the tenant already exists — a restart against
+		persistent shelf storage, or one already created via the admin API
+		below — the boot step leaves it untouched; it will not roll back a
+		secret the admin API has since rotated. To rotate the startup tenant's
+		own secret deliberately, use the admin API rather than editing the env
+		var and restarting.
+	</p>
+
+	<span class="rule-label">two secret slots and rotation</span>
+	<p>
+		Every tenant has two secret slots. JWT verification tries both; token
+		minting always uses slot 1. Regenerating one slot leaves the other
+		valid, so a client can be migrated to a freshly rotated secret without
+		an outage.
+	</p>
+
+	<span class="rule-label">admin UI and authentication</span>
+	<p>
+		Floodgate serves the same Gleam/Lustre admin SPA as Levee at{" "}
+		<code>/admin</code>; it does not use Phoenix, Elixir, or Mix. The
+		container builds both Floodgate's Erlang shipment and the SPA's
+		JavaScript output with the Gleam compiler.
+	</p>
+	<p>
+		Create a GitHub OAuth App with the callback{" "}
+		<code>https://your-floodgate.example/auth/github/callback</code>, then
+		set <code>FLOODGATE_GITHUB_CLIENT_ID</code>,{" "}
+		<code>FLOODGATE_GITHUB_CLIENT_SECRET</code>, and{" "}
+		<code>FLOODGATE_ADMIN_GITHUB_USERS</code>. The allow-list is required:
+		an unset or empty list denies all new OAuth users, avoiding a
+		first-login-wins bootstrap race. Users and opaque sessions persist in
+		the selected storage backend. Sessions use an HttpOnly, SameSite=Lax
+		cookie, with Secure enabled for HTTPS. OAuth state is expiring and
+		single-use.
+	</p>
+
+	<span class="rule-label">tenant management API</span>
+	<p>
+		Accepts either a valid Floodgate admin session or{" "}
+		<code>FLOODGATE_ADMIN_KEY</code> (<code>Authorization</code>, compared
+		in constant time). The key remains available for automation and
+		headless deployments.
+	</p>
+	<ul class="log log--static tree-list" aria-label="Tenant management API">
+		<li><span class="log__tag">GET</span> <code>/api/tenants</code><span class="note"> — list tenants, no secrets</span></li>
+		<li><span class="log__tag">POST</span> <code>/api/tenants</code><span class="note"> — create, body {`{"name"}`}</span></li>
+		<li><span class="log__tag">GET</span> <code>/api/tenants/:id</code><span class="note"> — show, with both secret slots</span></li>
+		<li><span class="log__tag">DELETE</span> <code>/api/tenants/:id</code><span class="note"> — delete registration/secrets only, not the tenant's documents</span></li>
+		<li><span class="log__tag">POST</span> <code>/api/tenants/:id/secrets/:slot</code><span class="note"> — regenerate slot 1 or 2</span></li>
+	</ul>
+	<p>
+		These shapes match what <code>server/levee_admin</code>'s Lustre admin
+		UI already expects, so the same frontend that manages Levee's tenants
+		can call Floodgate's API without any decoder changes.
+	</p>
+</DocsNode>

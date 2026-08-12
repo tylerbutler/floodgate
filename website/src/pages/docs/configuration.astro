@@ -1,0 +1,81 @@
+---
+import DocsNode from "../../layouts/DocsNode.astro";
+
+const core = [
+	{ name: "FLOODGATE_JWT_SECRET", def: "(required)", desc: "Verifies every REST and socket JWT for the startup tenant" },
+	{ name: "PORT / FLOODGATE_PORT", def: "3000", desc: "Listen port (PORT wins)" },
+	{ name: "FLOODGATE_BIND", def: "localhost", desc: "Listen interface; containers need 0.0.0.0" },
+	{ name: "FLOODGATE_TENANT_ID", def: "fluid", desc: "Id of the tenant seeded at startup from FLOODGATE_JWT_SECRET" },
+	{ name: "FLOODGATE_GITHUB_CLIENT_ID", def: "(unset)", desc: "GitHub OAuth App client id. OAuth stays disabled when unset" },
+	{ name: "FLOODGATE_GITHUB_CLIENT_SECRET", def: "(unset)", desc: "GitHub OAuth App client secret" },
+	{ name: "FLOODGATE_GITHUB_REDIRECT_URI", def: "<public-url>/auth/github/callback", desc: "Explicit OAuth callback URI" },
+	{ name: "FLOODGATE_ADMIN_GITHUB_USERS", def: "(unset)", desc: "Comma-separated GitHub usernames permitted to become admins. Unset denies OAuth login" },
+	{ name: "FLOODGATE_ADMIN_SESSION_TTL_SECONDS", def: "604800", desc: "Admin browser session lifetime" },
+	{ name: "FLOODGATE_ADMIN_STATIC_DIR", def: "priv/static/admin", desc: "Built Lustre admin UI directory" },
+	{ name: "FLOODGATE_ADMIN_KEY", def: "(unset)", desc: "Bearer key for the tenant management API. Unset disables that API entirely" },
+	{ name: "FLOODGATE_TOKEN_MINT_SECRET", def: "(unset)", desc: "Enables the token-mint endpoint" },
+	{ name: "FLOODGATE_TOKEN_MINT_USER_ID", def: "floodgate-token-mint", desc: "User id in minted tokens" },
+	{ name: "FLOODGATE_TOKEN_MINT_USER_NAME", def: "Floodgate Token Mint", desc: "User name in minted tokens" },
+	{ name: "FLOODGATE_STORAGE_BACKEND", def: "shelf", desc: "shelf/ets (persistent DETS) or memory — also selects where tenants persist" },
+	{ name: "FLOODGATE_DATA_DIR", def: "priv/floodgate_data", desc: "Shelf DETS directory; one file per document" },
+	{ name: "FLOODGATE_DOC_IDLE_MS", def: "300000", desc: "Drop an idle, disconnected document's cache and open file after this long. 0 disables" },
+	{ name: "FLOODGATE_MAX_OPEN_DOCUMENTS", def: "1024", desc: "Document files open at once; least-recently-used is closed at the cap. 0 disables" },
+	{ name: "FLOODGATE_PUBLIC_URL", def: "http://localhost:<port>", desc: "Externally reachable base URL" },
+	{ name: "FLOODGATE_ALLOWED_ORIGINS", def: "(same-origin)", desc: "Comma-separated allow-list, or * — see Limits below" },
+];
+
+const limits = [
+	{ name: "FLOODGATE_MAX_FRAME_BYTES", def: "16777216 (16 MiB)", desc: "Inbound frame ceiling; also maxMessageSize and Engine.IO's maxPayload" },
+	{ name: "FLOODGATE_MAX_CONNECTIONS_PER_IP", def: "256", desc: "Concurrent sockets per peer address" },
+	{ name: "FLOODGATE_MAX_CONNECTIONS", def: "4096", desc: "Concurrent sockets node-wide" },
+	{ name: "FLOODGATE_MESSAGE_RATE / _BURST", def: "1000 / 2000", desc: "Per-socket inbound frames per second" },
+	{ name: "FLOODGATE_JOIN_RATE / _BURST", def: "100 / 200", desc: "Per-socket joins per second" },
+	{ name: "FLOODGATE_HEARTBEAT_INTERVAL_MS", def: "30000", desc: "Suggested client ping cadence; informational only" },
+	{ name: "FLOODGATE_HEARTBEAT_TIMEOUT_MS", def: "60000", desc: "Server-side staleness window; a silent socket is evicted and closed" },
+];
+---
+
+<DocsNode
+	slug="configuration"
+	description="Every Floodgate environment variable: core config, storage, and connection limits."
+>
+	<p>
+		<code>FLOODGATE_ALLOWED_ORIGINS</code> applies to <strong>both</strong> socket
+		endpoints. Non-browser clients — including the official Fluid drivers —
+		send no <code>Origin</code> and are admitted under the default
+		same-origin policy; the allow-list is only needed for browser clients
+		served from another origin. Set any limit below to <code>0</code> to
+		disable it — defaults are deliberately generous, since the conformance
+		suites open several concurrent sockets from one address and burst ops
+		during sync tests.
+	</p>
+
+	<span class="rule-label">core</span>
+	<ul class="log log--static" aria-label="Core configuration variables">
+		{core.map((v) => (
+			<li>
+				<code>{v.name}</code>
+				<span class="log__tag"> [{v.def}]</span>
+				<span class="note"> — {v.desc}</span>
+			</li>
+		))}
+	</ul>
+
+	<span class="rule-label">limits</span>
+	<ul class="log log--static" aria-label="Connection and rate limits">
+		{limits.map((v) => (
+			<li>
+				<code>{v.name}</code>
+				<span class="log__tag"> [{v.def}]</span>
+				<span class="note"> — {v.desc}</span>
+			</li>
+		))}
+	</ul>
+
+	<p>
+		The per-IP limit uses the real socket peer address and deliberately
+		ignores <code>X-Forwarded-For</code>, which a client can set freely;
+		behind a proxy every connection shares the proxy's address, so enforce
+		per-client limits there instead.
+	</p>
+</DocsNode>

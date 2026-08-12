@@ -1,0 +1,65 @@
+---
+import DocsNode from "../../layouts/DocsNode.astro";
+---
+
+<DocsNode
+	slug="presence"
+	description="Server-backed presence_v1 on both wire protocols, on top of beryl's presence registry."
+>
+	<p>
+		Floodgate speaks <strong>server-backed presence</strong>{" "}
+		(<code>presence_v1</code>) on both socket endpoints, on top of beryl's
+		presence registry. Because the server binds presence to the
+		authenticated connection, a late joiner gets the whole roster at once
+		and a dropped socket stops being present immediately — neither needs a
+		client heartbeat or a TTL.
+	</p>
+
+	<p>
+		It is advertised in <code>connect_document_success</code>:
+	</p>
+	<pre><code>{`{ "supportedFeatures": { "presence_v1": true } }`}</code></pre>
+	<p>
+		Clients that ignore the key are unaffected; a client that reads it opts
+		in per document by sending <code>joinPresence</code>.
+	</p>
+
+	<ul class="log log--static tree-list" aria-label="Presence commands">
+		<li><code>joinPresence</code> <span class="note">{`{"meta": {...}}`} → presence_state to that socket, then presence_diff to the topic</span></li>
+		<li><code>updatePresence</code> <span class="note">{`{"meta": {...}}`} → presence_diff carrying the leave, then one carrying the join</span></li>
+		<li><code>leavePresence</code> <span class="note">{`{}`} → presence_diff carrying the leave</span></li>
+	</ul>
+
+	<p>
+		Server→client frames are Phoenix-shaped, so a standard Phoenix Presence
+		client can consume them:
+	</p>
+	<pre><code>{`// presence_state
+{ "user:alice": { "metas": [{ "phx_ref": "…", "client_id": "…", "panel": "sudoku" }] } }
+// presence_diff
+{ "joins": { … }, "leaves": {} }
+// presence_error
+{ "code": "invalid_meta", "message": "…" }`}</code></pre>
+
+	<p>
+		Identity is derived server-side and cannot be claimed: <code>key</code>{" "}
+		is the token's user id, <code>client_id</code> is the server-assigned
+		client id, <code>phx_ref</code> is beryl's. A command naming{" "}
+		<code>key</code>, <code>session_id</code>, <code>clientId</code>,{" "}
+		<code>phx_ref</code>, or <code>phx_ref_prev</code> at the top level is
+		rejected with <code>invalid_meta</code>; the same names inside{" "}
+		<code>meta</code> are stripped. Presence commands are pushes with no
+		reply, so every rejection (<code>unauthenticated</code>,{" "}
+		<code>invalid_meta</code>, <code>not_joined</code>) comes back as a{" "}
+		<code>presence_error</code> frame.
+	</p>
+
+	<p>
+		Presence is per document connection: one registration per connection,
+		and a reconnect is a new client id and therefore a new session.
+		Cross-node replication turns itself on when the BEAM node is
+		distributed (a named node) and stays off on an undistributed one, where
+		the only reachable peers would be other runtimes in the same OS
+		process.
+	</p>
+</DocsNode>

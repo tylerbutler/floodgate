@@ -1,0 +1,36 @@
+---
+import "../styles/global.css";
+
+interface Props {
+	title: string;
+	description: string;
+	path: string;
+}
+
+const { title, description, path } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>{title}</title>
+		<meta name="description" content={description} />
+		<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23050805'/%3E%3Ctext x='2' y='12' font-family='monospace' font-size='12' fill='%233dff88'%3E%3E%3C/text%3E%3C/svg%3E" />
+	</head>
+	<body>
+		<div class="term-bar">
+			<span class="term-bar__dot" aria-hidden="true"></span>
+			<span class="term-bar__path">floodgate@localhost:{path}</span>
+			<nav aria-label="Site">
+				<a href="/" aria-current={path === "/" ? "page" : undefined}>~</a>
+				<a href="/architecture" aria-current={path === "/architecture" ? "page" : undefined}>architecture</a>
+				<a href="/docs" aria-current={path.startsWith("/docs") ? "page" : undefined}>docs</a>
+			</nav>
+		</div>
+		<main>
+			<slot />
+		</main>
+	</body>
+</html>

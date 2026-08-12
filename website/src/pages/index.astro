@@ -1,0 +1,89 @@
+---
+import Terminal from "../layouts/Terminal.astro";
+
+const bootLines = [
+	{ text: "loading spillway protocol engine…", tag: "boot" },
+	{ text: "loading beryl coordinator…", tag: "boot" },
+	{ text: "binding 0.0.0.0:3000", tag: "net" },
+	{ text: "listening — official Fluid/Routerlicious drivers", tag: "socket.io", ok: true },
+	{ text: "listening — Phoenix Channels (levee-driver, levee-client)", tag: "phx", ok: true },
+	{ text: "floodgate is up. two protocols, one process.", tag: "ready", ok: true },
+];
+
+const whyBeam = [
+	{ text: "restart_strategy: one_for_one", tag: "sup" },
+	{ text: "each document session is its own isolated process", tag: "sup" },
+	{ text: "a crashed session does not take the node down", tag: "sup" },
+	{ text: "protocol logic is compiled and type-checked before it ever runs", tag: "gleam" },
+];
+
+const capabilities = [
+	{ label: "dual-mode wire protocols", detail: "Socket.IO + Phoenix Channels, from one process" },
+	{ label: "presence_v1", detail: "server-backed roster, both endpoints, no client heartbeat needed" },
+	{ label: "git-like storage", detail: "blobs, trees, commits, refs — per tenant" },
+	{ label: "multi-tenancy", detail: "dynamic tenants, two rotating JWT secret slots each" },
+	{ label: "self-hosted", detail: "single binary or `docker compose up`" },
+];
+---
+
+<Terminal
+	title="Floodgate — a Fluid Framework server on the BEAM"
+	description="Floodgate is a Fluid Framework server written in Gleam, running on the BEAM. Dual-mode wire protocols, one process, fault-tolerant by construction."
+	path="/"
+>
+	<p class="prompt">floodgate --start</p>
+	<ul class="log" aria-label="Startup log">
+		{bootLines.map((line, i) => (
+			<li style={`--i:${i}`}>
+				<span class="log__tag">[{line.tag}]</span>{" "}
+				<span class={line.ok ? "log__ok" : undefined}>{line.text}</span>
+			</li>
+		))}
+	</ul>
+	<p>
+		<span aria-hidden="true">_</span><span class="cursor" aria-hidden="true"></span>
+	</p>
+
+	<p style="font-size: 1.6rem; margin-top: 2.5rem;">
+		A <strong>Fluid Framework</strong> server written in Gleam, running on the BEAM.
+		One process speaks the official Fluid wire protocol and Phoenix Channels at
+		once, so it's also a drop-in replacement for the sibling Levee Elixir server.
+	</p>
+
+	<span class="rule-label">why the BEAM</span>
+	<ul class="log" aria-label="Runtime properties">
+		{whyBeam.map((line, i) => (
+			<li style={`--i:${i}`}>
+				<span class="log__tag">[{line.tag}]</span> {line.text}
+			</li>
+		))}
+	</ul>
+	<p>
+		Gleam compiles to the same virtual machine that has run telecom switches
+		for decades. Every document gets its own supervised process: one
+		session crashing and restarting is normal operation, not an incident,
+		and the sequencing logic that decides what happened next is checked by
+		the compiler before it ships.
+	</p>
+
+	<span class="rule-label">capabilities</span>
+	<ul class="log" aria-label="Capabilities">
+		{capabilities.map((cap, i) => (
+			<li style={`--i:${i}`}>
+				<span class="log__tag">[cap]</span> <strong>{cap.label}</strong>
+				<span class="note"> — {cap.detail}</span>
+			</li>
+		))}
+	</ul>
+
+	<hr />
+
+	<p class="prompt">view source</p>
+	<p class="note">
+		Floodgate doesn't have its own repository yet — it lives inside the
+		Levee monorepo today.
+	</p>
+	<a class="cta" href="https://github.com/tylerbutler/levee/tree/main/server/floodgate">
+		view source at tylerbutler/levee/server/floodgate
+	</a>
+</Terminal>

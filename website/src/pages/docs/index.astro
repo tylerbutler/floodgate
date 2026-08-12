@@ -1,0 +1,36 @@
+---
+import Terminal from "../../layouts/Terminal.astro";
+import { docNodes } from "../../data/docs-nodes";
+---
+
+<Terminal
+	title="Floodgate docs — (dir)"
+	description="Floodgate documentation: getting started, configuration, multi-tenancy, presence, the HTTP surface, and development."
+	path="/docs"
+>
+	<div class="node__head">
+		<span>File: <strong>floodgate.info</strong>,</span>
+		<span>Node: <strong>(dir)</strong></span>
+	</div>
+	<h1>(dir)</h1>
+	<p>
+		Floodgate documentation, top node. Pick a topic below — each one links
+		forward and back to its neighbors, so once you're inside a topic you
+		can read straight through or jump anywhere from here.
+	</p>
+
+	<span class="rule-label">* Menu:</span>
+	<ul class="log log--static dir-menu" aria-label="Documentation topics">
+		{docNodes.map((node) => (
+			<li>
+				<span class="log__tag">*</span>{" "}
+				<a href={node.href}>{node.title}</a>
+				<span class="note"> — {node.summary}</span>
+			</li>
+		))}
+	</ul>
+
+	<div class="node__foot">
+		<a href="/">&uarr; Up: ~</a>
+	</div>
+</Terminal>

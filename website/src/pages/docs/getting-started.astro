@@ -1,0 +1,34 @@
+---
+import DocsNode from "../../layouts/DocsNode.astro";
+---
+
+<DocsNode
+	slug="getting-started"
+	description="Build and run Floodgate locally with gleam run, or as a container with docker compose."
+>
+	<p>
+		Floodgate refuses to start without an explicit JWT secret — there is no
+		default that would quietly leave a deployment unauthenticated.
+	</p>
+
+	<span class="rule-label">run directly</span>
+	<pre class="prompt"><code>FLOODGATE_JWT_SECRET=dev-secret gleam run</code></pre>
+
+	<span class="rule-label">or as a container</span>
+	<ul class="log log--static" aria-label="Docker Compose commands">
+		<li><code>docker compose up -d --wait</code><span class="note"> — starts on http://localhost:3000</span></li>
+		<li><code>docker compose logs -f floodgate</code></li>
+		<li><code>docker compose down -v</code></li>
+	</ul>
+
+	<p>
+		<code>FLOODGATE_JWT_SECRET</code> also seeds the startup tenant
+		(<code>FLOODGATE_TENANT_ID</code>, default <code>fluid</code>) with that
+		value as its first secret slot — see{" "}
+		<a href="/docs/multi-tenancy">Multi-tenancy</a> for what that tenant can
+		do beyond boot. Once it's up, <code>GET /health</code> answers{" "}
+		<code>{`{"status":"ok"}`}</code>, and the full set of knobs for the
+		listen address, storage backend, and connection limits lives in{" "}
+		<a href="/docs/configuration">Configuration</a>.
+	</p>
+</DocsNode>
