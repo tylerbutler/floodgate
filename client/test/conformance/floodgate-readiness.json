@@ -2,7 +2,7 @@
 	"$comment": "Repo-tracked Floodgate release-readiness gate. See docs/adr/003-floodgate-release-readiness.md and ADR-004. This file is read by floodgate-readiness.ts/.test.ts, which fail the build if it drifts from reality without a deliberate update.",
 	"adr": "docs/adr/003-floodgate-release-readiness.md",
 	"architectureDecision": "docs/adr/004-coexisting-client-stacks.md",
-	"conformanceSuite": "client/packages/levee-driver/test/integration/floodgate-routerlicious.test.ts",
+	"conformanceSuite": "client/test/conformance/floodgate-routerlicious.test.ts",
 	"requiredReleaseTarget": "floodgate-direct",
 	"conformanceTargetsTracked": ["floodgate-direct", "levee-proxy"],
 	"requiredLiveStorageBackends": ["ets", "memory"],

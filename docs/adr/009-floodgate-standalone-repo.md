@@ -1,7 +1,6 @@
 # ADR-009: Extracting Floodgate into its own repository
 
-- **Status:** Accepted (preparation); blocking coupling resolved 2026-08-10
-  (see "Resolution" below); extraction not yet performed
+- **Status:** Completed
 - **Date:** 2026-08-05
 - **Supersedes:** nothing
 - **Related:** [ADR-004](004-coexisting-client-stacks.md), [ADR-005](005-floodgate-storage-backend.md), [ADR-008](008-floodgate-phoenix-endpoint.md)
@@ -177,5 +176,8 @@ pass on the freshly resolved tree.
   container.
 - Floodgate carries its own `README.md`, `justfile`, and CI workflow, so the
   extraction is a directory move plus a remote, not a reconstruction.
-- Until the coupling above is resolved, `server/floodgate/` must stay in this
-  repository.
+- Floodgate was extracted to `tylerbutler/floodgate` from Levee source commit
+  `bd956de060979c18e93b3592062c383c308c88b9` with filtered history.
+- Levee and Floodgate retain independent copies of the Lustre admin UI.
+- Shared protocol logic remains in `spillway`; neither server has a runtime or
+  build dependency on the other repository.

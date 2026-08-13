@@ -128,9 +128,8 @@ Users and opaque sessions persist in the selected storage backend. Sessions
 use an HttpOnly, SameSite=Lax cookie, with Secure enabled for HTTPS. OAuth
 state is expiring and single-use.
 
-For local monorepo development, root `just build-admin` copies the shared SPA
-into both Levee and Floodgate. `server/floodgate/justfile` also has a
-Gleam-only `build-admin` recipe.
+The repository-level `just build-admin` recipe builds the Floodgate-owned SPA
+from `admin/` and copies it into `priv/static/admin`.
 
 ### Tenant management API
 
@@ -147,9 +146,7 @@ DELETE /api/tenants/:id                    Delete — {"message":"Tenant unregis
 POST   /api/tenants/:id/secrets/:slot      Regenerate slot 1 or 2 — {"secret":"<new value>"}
 ```
 
-These shapes match what `server/levee_admin`'s Lustre admin UI already expects
-(`server/levee_admin/src/levee_admin/api.gleam`), so the same frontend that
-manages Levee's tenants can call Floodgate's API without any decoder changes.
+These shapes match the Lustre frontend in `admin/src/levee_admin/api.gleam`.
 
 ## Presence
 

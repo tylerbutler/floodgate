@@ -1,7 +1,7 @@
 name = "levee_admin"
 version = "0.1.0"
 target = "javascript"
-description = "Admin UI for Levee tenant management"
+description = "Admin UI for Floodgate tenant management"
 
 [dependencies]
 gleam_stdlib = ">= 0.44.0 and < 1.0.0"

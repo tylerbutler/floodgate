@@ -17,10 +17,10 @@
  * `server/lib/levee_web/socket_io_websock.ex` plus the REST controllers in
  * `server/lib/levee_web/controllers/`, and the standalone `floodgate/` Gleam
  * service via Mist and `floodgate/socketio_transport.gleam`, started by
- * `serve/1`/`main()` in `server/floodgate/src/floodgate.gleam`.
+ * `serve/1`/`main()` in `src/floodgate.gleam`.
  * Standalone Floodgate's REST surface implements document create/discovery,
  * delta catch-up, and Historian blob/tree/commit/ref storage (see
- * `server/floodgate/src/floodgate.gleam`'s `rest/2` route match). Tests that
+ * `src/floodgate.gleam`'s `rest/2` route match). Tests that
  * need target-specific behavior gate on `isLeveeProxyTarget` and pair with an
  * `it.todo` explaining the standalone-only gap, rather than skipping
  * silently or assuming the route is universally unimplemented.
@@ -37,7 +37,7 @@ import type {
 	ISignalMessage,
 } from "@fluidframework/protocol-definitions";
 import { describe, expect, it } from "vitest";
-import { FloodgateClient } from "../../../floodgate-client/src/index.js";
+import { FloodgateClient } from "../../packages/floodgate-client/src/index.js";
 import {
 	CONNECTED_RESPONSE_REQUIRED_FIELDS,
 	FLOODGATE_AUTH_SCOPES,

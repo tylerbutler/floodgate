@@ -57,7 +57,7 @@ tenants, each with two rotating JWT secret slots.
 
 ## Capabilities and Constraints
 
-- Confirmed capabilities (source: `server/floodgate/README.md`):
+- Confirmed capabilities (source: `README.md`):
   dual-mode wire protocols; server-backed presence (`presence_v1`) on both
   endpoints; git-like blob/tree/commit/ref storage; multi-tenancy with
   secret rotation; admin UI (shared Lustre SPA) with GitHub OAuth; per-tenant
@@ -66,7 +66,7 @@ tenants, each with two rotating JWT secret slots.
 - Built from sibling Gleam libraries (`spillway`, `beryl`, `dewdrop`,
   `signet`, `silt`, `windsock`) rather than implementing the protocol itself
   — relevant to how "how it works" content should be framed.
-- Currently lives inside the `levee` monorepo at `server/floodgate/`;
+- Lives in the standalone `tylerbutler/floodgate` repository;
   extraction into its own repository is prepared but not yet performed
   (see `docs/adr/009-floodgate-standalone-repo.md`). The site should not
   claim a standalone repo/install path that doesn't exist yet.
@@ -74,7 +74,7 @@ tenants, each with two rotating JWT secret slots.
 
 ## Evidence on Hand
 
-Only `server/floodgate/README.md` and the `server/floodgate/src` source are
+Only `README.md` and the `src` source are
 available as source material. No logo, brand name treatment, color palette,
 benchmark numbers, or testimonials exist yet. Do not fabricate performance
 claims, customer names, or logos — use only what the README/code states as

@@ -1,6 +1,8 @@
 *.beam
 *.ez
 /build
+/admin/build
+/priv/static/admin
 erl_crash.dump
 
 # Shelf DETS files (default FLOODGATE_DATA_DIR + test data dirs)

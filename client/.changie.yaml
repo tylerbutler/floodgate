@@ -9,20 +9,6 @@ versionFormat: '## {{.Version}} - {{.Time.Format "2006-01-02"}}'
 kindFormat: '### {{.Kind}}'
 changeFormat: '- {{.Body}}'
 projects:
-    - label: levee-driver
-      key: levee-driver
-      changelog: packages/levee-driver/CHANGELOG.md
-      replacements:
-          - path: packages/levee-driver/package.json
-            find: '"version": ".*"'
-            replace: '"version": "{{.VersionNoPrefix}}"'
-    - label: levee-client
-      key: levee-client
-      changelog: packages/levee-client/CHANGELOG.md
-      replacements:
-          - path: packages/levee-client/package.json
-            find: '"version": ".*"'
-            replace: '"version": "{{.VersionNoPrefix}}"'
     - label: floodgate-client
       key: floodgate-client
       changelog: packages/floodgate-client/CHANGELOG.md

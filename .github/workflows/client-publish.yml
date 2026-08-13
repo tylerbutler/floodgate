@@ -1,0 +1,43 @@
+name: Client npm Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: Space-separated tags to publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+        working-directory: client
+      - run: pnpm build
+        working-directory: client
+      - run: pnpm --filter @tylerbu/floodgate-client publish --access public --provenance --no-git-checks
+        working-directory: client
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Create GitHub releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAGS: ${{ inputs.tags }}
+        run: |
+          for tag in $TAGS; do
+            gh release create "$tag" --title "$tag" --generate-notes
+          done

@@ -38,7 +38,7 @@ As of this update:
 
 ## Decision
 
-1. **`client/packages/levee-driver/test/integration/floodgate-readiness.json`**
+1. **`client/test/conformance/floodgate-readiness.json`**
    is the single source of truth for Floodgate release readiness. It records:
    - the required conformance categories (create/load/sync/reconnect/
      summaries/signals),
@@ -108,7 +108,6 @@ suite against each backend in turn, stopping the first server before starting
 the second:
 
 ```bash
-cd server/floodgate
 FLOODGATE_STORAGE_BACKEND=ets \
 FLOODGATE_JWT_SECRET=floodgate-routerlicious-compat-secret \
 FLOODGATE_TOKEN_MINT_SECRET=floodgate-routerlicious-mint-secret \
@@ -124,7 +123,6 @@ just test-floodgate-routerlicious
 Repeat with the actor-memory backend:
 
 ```bash
-cd server/floodgate
 FLOODGATE_STORAGE_BACKEND=memory \
 FLOODGATE_JWT_SECRET=floodgate-routerlicious-compat-secret \
 FLOODGATE_TOKEN_MINT_SECRET=floodgate-routerlicious-mint-secret \

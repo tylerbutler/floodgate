@@ -1,8 +1,6 @@
 # Docker Compose for the standalone Floodgate server.
 #
-# Mirrors client/packages/levee-driver/docker-compose.yml (which runs the Levee
-# Elixir server on :4000) so the same integration suites can be pointed at
-# either stack. Floodgate serves both wire protocols from this one process:
+# Floodgate serves both wire protocols from this one process:
 #
 #   HTTP:              http://localhost:3000
 #   Socket.IO:         http://localhost:3000/socket.io/     (official Fluid drivers)
@@ -17,8 +15,8 @@ services:
   floodgate:
     image: floodgate:local
     build:
-      context: ../..
-      dockerfile: server/floodgate/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "3000:3000"
     environment:

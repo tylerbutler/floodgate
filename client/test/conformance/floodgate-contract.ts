@@ -143,7 +143,7 @@ export const FLOODGATE_REQUIRED_SCOPES = {
  * in-memory (ETS) backend now and a PostgreSQL-backed one later without
  * changing the wire contract above. The executable boundary is
  * `floodgate/store.Backend`; ETS and actor-memory runtime/session/Historian
- * observations are compared by `server/floodgate/test/store_backend_test.gleam`.
+ * observations are compared by `test/store_backend_test.gleam`.
  * Full HTTP and Socket.IO invariance is established by running this live suite
  * against both selectable runtime backends. PostgreSQL remains future work.
  */

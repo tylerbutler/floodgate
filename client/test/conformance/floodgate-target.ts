@@ -7,7 +7,7 @@
  *
  *   | Target                          | FLOODGATE_HTTP_URL / FLOODGATE_SOCKET_URL       |
  *   |---------------------------------|--------------------------------------------|
- *   | Floodgate (Gleam service) direct   | `http://localhost:3000` (default; `server/floodgate/src/floodgate.gleam`'s `main()`/`serve/1` starts a Mist listener on port 3000) |
+ *   | Floodgate (Gleam service) direct   | `http://localhost:3000` (default; `src/floodgate.gleam` starts a Mist listener on port 3000) |
  *   | Levee proxying/mounting Floodgate  | `http://localhost:4000` (Phoenix)           |
  *
  * The standalone `floodgate/` service *does* expose its own HTTP/WS listener
@@ -30,7 +30,7 @@
  *   1. Levee proxy:    start Levee (`just server`, port 4000, the default
  *      env), then `FLOODGATE_ROUTERLICIOUS_COMPAT=1 pnpm test:floodgate-routerlicious`.
  *   2. Floodgate direct: start the standalone service on port 3000 with
- *      `cd server/floodgate && FLOODGATE_JWT_SECRET=floodgate-routerlicious-compat-secret
+ *      `FLOODGATE_JWT_SECRET=floodgate-routerlicious-compat-secret
  *      FLOODGATE_TOKEN_MINT_SECRET=floodgate-routerlicious-mint-secret gleam run`,
  *      then run with
  *      `FLOODGATE_ROUTERLICIOUS_COMPAT=1 FLOODGATE_HTTP_URL=http://localhost:3000
@@ -52,10 +52,7 @@ import type {
 import { RouterliciousDocumentServiceFactory } from "@fluidframework/routerlicious-driver/internal";
 import { SignJWT } from "jose";
 import { v4 as uuid } from "uuid";
-import {
-	InsecureLeveeTokenProvider,
-	RemoteLeveeTokenProvider,
-} from "../../src/tokenProvider.js";
+import { RemoteFloodgateTokenProvider } from "../../packages/floodgate-client/src/index.js";
 import { FLOODGATE_REST_ENDPOINTS } from "./floodgate-contract.js";
 
 export const FLOODGATE_HTTP_URL = (
@@ -77,6 +74,46 @@ export const FLOODGATE_JWT_SECRET =
 export const FLOODGATE_TOKEN_MINT_SECRET =
 	process.env["FLOODGATE_TOKEN_MINT_SECRET"] ??
 	"floodgate-routerlicious-mint-secret";
+
+class InsecureFloodgateTokenProvider implements ITokenProvider {
+	public constructor(
+		private readonly key: string,
+		private readonly user: { id: string; name: string },
+	) {}
+
+	public async fetchOrdererToken(
+		tenantId: string,
+		documentId = "",
+	): Promise<ITokenResponse> {
+		return { jwt: await this.generateToken(tenantId, documentId) };
+	}
+
+	public async fetchStorageToken(
+		tenantId: string,
+		documentId: string,
+	): Promise<ITokenResponse> {
+		return { jwt: await this.generateToken(tenantId, documentId) };
+	}
+
+	private async generateToken(
+		tenantId: string,
+		documentId: string,
+	): Promise<string> {
+		const now = Math.floor(Date.now() / 1000);
+		return new SignJWT({
+			documentId,
+			tenantId,
+			scopes: ["doc:read", "doc:write", "summary:write"],
+			user: this.user,
+			ver: "1.0",
+			jti: uuid(),
+		})
+			.setProtectedHeader({ alg: "HS256" })
+			.setIssuedAt(now)
+			.setExpirationTime(now + 3600)
+			.sign(new TextEncoder().encode(this.key));
+	}
+}
 
 /**
  * Opt-in switch: live probing/tests only run when this is set, regardless of
@@ -192,12 +229,11 @@ export function createFloodgateTestClient(
 
 export function createFloodgateTokenProvider(
 	userId = "routerlicious-compat-user",
-): InsecureLeveeTokenProvider {
-	return new InsecureLeveeTokenProvider(
-		FLOODGATE_JWT_SECRET,
-		{ id: userId, name: "Routerlicious Compat User" },
-		FLOODGATE_TENANT_ID,
-	);
+): InsecureFloodgateTokenProvider {
+	return new InsecureFloodgateTokenProvider(FLOODGATE_JWT_SECRET, {
+		id: userId,
+		name: "Routerlicious Compat User",
+	});
 }
 
 export function createFloodgateServiceFactory(
@@ -232,11 +268,10 @@ export function createStaticFloodgateTokenProvider(
 }
 
 export function createFloodgateRemoteTokenProvider(
-	userId = "routerlicious-minted-user",
-): RemoteLeveeTokenProvider {
-	return new RemoteLeveeTokenProvider(
+	_userId = "routerlicious-minted-user",
+): RemoteFloodgateTokenProvider {
+	return new RemoteFloodgateTokenProvider(
 		`${FLOODGATE_HTTP_URL}${FLOODGATE_REST_ENDPOINTS.tokenMint(FLOODGATE_TENANT_ID)}`,
-		{ id: userId, name: "Routerlicious Minted User" },
 		FLOODGATE_TOKEN_MINT_SECRET,
 	);
 }

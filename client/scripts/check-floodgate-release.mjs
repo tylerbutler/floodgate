@@ -28,8 +28,8 @@ const result = spawnSync(
 		"exec",
 		"vitest",
 		"run",
-		"packages/levee-driver/test/integration/floodgate-readiness.test.ts",
-		"packages/levee-driver/test/integration/floodgate-routerlicious.test.ts",
+		"test/conformance/floodgate-readiness.test.ts",
+		"test/conformance/floodgate-routerlicious.test.ts",
 	],
 	{
 		env: {
@@ -47,16 +47,13 @@ if (result.status !== 0) {
 
 const manifest = JSON.parse(
 	readFileSync(
-		new URL(
-			"../packages/levee-driver/test/integration/floodgate-readiness.json",
-			import.meta.url,
-		),
+		new URL("../test/conformance/floodgate-readiness.json", import.meta.url),
 		"utf8",
 	),
 );
 const conformanceSource = readFileSync(
 	new URL(
-		"../packages/levee-driver/test/integration/floodgate-routerlicious.test.ts",
+		"../test/conformance/floodgate-routerlicious.test.ts",
 		import.meta.url,
 	),
 	"utf8",

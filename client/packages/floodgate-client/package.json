@@ -2,10 +2,10 @@
 	"name": "@tylerbu/floodgate-client",
 	"version": "0.0.1",
 	"description": "Routerlicious-compatible client primitives for the Floodgate collaborative document service",
-	"bugs": "https://github.com/tylerbutler/levee/issues",
+	"bugs": "https://github.com/tylerbutler/floodgate/issues",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/tylerbutler/levee.git",
+		"url": "git+https://github.com/tylerbutler/floodgate.git",
 		"directory": "client/packages/floodgate-client"
 	},
 	"license": "MIT",

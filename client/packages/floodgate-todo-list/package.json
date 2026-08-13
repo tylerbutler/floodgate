@@ -3,10 +3,10 @@
 	"version": "0.0.1",
 	"private": true,
 	"description": "Collaborative todo-list example using Floodgate (Routerlicious) client and Fluid Framework SharedTree",
-	"bugs": "https://github.com/tylerbutler/levee/issues",
+	"bugs": "https://github.com/tylerbutler/floodgate/issues",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/tylerbutler/levee.git",
+		"url": "git+https://github.com/tylerbutler/floodgate.git",
 		"directory": "client/packages/floodgate-todo-list"
 	},
 	"license": "MIT",

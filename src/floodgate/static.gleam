@@ -1,4 +1,4 @@
-//// Static file serving for the shared `server/levee_admin` Lustre SPA under
+//// Static file serving for the `admin/` Lustre SPA under
 //// `/admin` and `/admin/*`.
 ////
 //// Serves the same build artifact Levee's `Plug.Static` does — `gleam build
@@ -55,7 +55,7 @@ fn serve_index(dir: String) -> Response(mist.ResponseData) {
         mist.Bytes(bytes_tree.from_string(
           "Floodgate: admin UI assets not found under "
           <> dir
-          <> ". Build them first — see server/floodgate/README.md's Admin UI section.",
+          <> ". Build them first — see README.md's Admin UI section.",
         )),
       )
   }

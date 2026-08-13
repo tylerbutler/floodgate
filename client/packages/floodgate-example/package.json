@@ -3,10 +3,10 @@
 	"version": "0.0.1",
 	"private": true,
 	"description": "Fluid Framework DiceRoller example using Floodgate (Routerlicious) client",
-	"bugs": "https://github.com/tylerbutler/levee/issues",
+	"bugs": "https://github.com/tylerbutler/floodgate/issues",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/tylerbutler/levee.git",
+		"url": "git+https://github.com/tylerbutler/floodgate.git",
 		"directory": "client/packages/floodgate-example"
 	},
 	"license": "MIT",

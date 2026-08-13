@@ -17,6 +17,11 @@ priv/floodgate_data
 
 # Docs and tooling that do not affect the build
 *.md
+client
+docs
+scripts
+website
+.github
 Dockerfile
 docker-compose*.yml
 .dockerignore
