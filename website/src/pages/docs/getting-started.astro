@@ -1,4 +1,5 @@
 ---
+import Cmd from "../../components/Cmd.astro";
 import DocsNode from "../../layouts/DocsNode.astro";
 ---
 
@@ -11,15 +12,16 @@ import DocsNode from "../../layouts/DocsNode.astro";
 		default that would quietly leave a deployment unauthenticated.
 	</p>
 
-	<span class="rule-label">run directly</span>
-	<pre class="prompt"><code>FLOODGATE_JWT_SECRET=dev-secret gleam run</code></pre>
+	<h2 class="rule-label">run directly</h2>
+	<Cmd command="FLOODGATE_JWT_SECRET=dev-secret gleam run" />
 
-	<span class="rule-label">or as a container</span>
-	<ul class="log log--static" aria-label="Docker Compose commands">
-		<li><code>docker compose up -d --wait</code><span class="note"> — starts on http://localhost:3000</span></li>
-		<li><code>docker compose logs -f floodgate</code></li>
-		<li><code>docker compose down -v</code></li>
-	</ul>
+	<h2 class="rule-label">or as a container</h2>
+	<Cmd command="docker compose up -d --wait" />
+	<p class="note">starts on http://localhost:3000</p>
+	<Cmd command="docker compose logs -f floodgate" />
+	<p class="note">follow the server log</p>
+	<Cmd command="docker compose down -v" />
+	<p class="note">stop and remove the data volume</p>
 
 	<p>
 		<code>FLOODGATE_JWT_SECRET</code> also seeds the startup tenant

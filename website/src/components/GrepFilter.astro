@@ -1,0 +1,64 @@
+---
+interface Props {
+	label: string;
+}
+
+const { label } = Astro.props;
+---
+
+<p class="grep" data-grep-root hidden>
+	<span class="grep__prompt" aria-hidden="true">$ grep</span>
+	<input
+		type="search"
+		data-grep
+		placeholder="pattern"
+		aria-label={label}
+		autocomplete="off"
+		autocorrect="off"
+		autocapitalize="off"
+		spellcheck="false"
+	/>
+	<span class="grep__count" data-grep-count aria-live="polite"></span>
+</p>
+<p class="note" data-grep-empty hidden>
+	no matches — clear the pattern to see everything again.
+</p>
+
+<script>
+	const input = document.querySelector<HTMLInputElement>("[data-grep]");
+	const count = document.querySelector<HTMLElement>("[data-grep-count]");
+	const empty = document.querySelector<HTMLElement>("[data-grep-empty]");
+	const sections = document.querySelectorAll<HTMLElement>("[data-grep-section]");
+
+	// The filter line ships hidden so a no-JS page never shows an inert input.
+	const root = document.querySelector<HTMLElement>("[data-grep-root]");
+
+	if (root && input && count && empty && sections.length > 0) {
+		root.hidden = false;
+		const rows = Array.from(sections).flatMap((s) =>
+			Array.from(s.querySelectorAll("li")),
+		);
+		const total = rows.length;
+
+		const apply = () => {
+			const q = input.value.trim().toLowerCase();
+			let shown = 0;
+			for (const section of sections) {
+				let sectionShown = 0;
+				for (const li of section.querySelectorAll("li")) {
+					const hit = !q || (li.textContent ?? "").toLowerCase().includes(q);
+					li.hidden = !hit;
+					if (hit) {
+						shown++;
+						sectionShown++;
+					}
+				}
+				section.hidden = sectionShown === 0;
+			}
+			count.textContent = q ? `${shown}/${total}` : "";
+			empty.hidden = shown !== 0;
+		};
+
+		input.addEventListener("input", apply);
+	}
+</script>

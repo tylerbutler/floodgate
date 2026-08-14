@@ -1,0 +1,34 @@
+---
+interface Props {
+	command: string;
+}
+
+const { command } = Astro.props;
+---
+
+<pre class="cmd"><code>{command}</code><button
+		class="cmd__copy"
+		type="button"
+		data-copy={command}
+		aria-label={`Copy command: ${command}`}
+		aria-live="polite"
+		hidden
+	>[copy]</button></pre>
+
+<script>
+	// Buttons ship hidden so a no-JS page never shows a control that can't work.
+	for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-copy]")) {
+		btn.hidden = false;
+		btn.addEventListener("click", async () => {
+			try {
+				await navigator.clipboard.writeText(btn.dataset.copy ?? "");
+				btn.textContent = "[ok]";
+			} catch {
+				btn.textContent = "[copy failed]";
+			}
+			setTimeout(() => {
+				btn.textContent = "[copy]";
+			}, 1600);
+		});
+	}
+</script>

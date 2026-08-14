@@ -1,0 +1,51 @@
+---
+import Terminal from "../layouts/Terminal.astro";
+---
+
+<Terminal
+	title="404 — no such node"
+	description="Nothing lives at this path. Links back to the Floodgate docs, architecture, and home."
+	path="/404"
+>
+	<p class="prompt">open <span data-404-path>this path</span></p>
+	<ul class="log" aria-label="Error output">
+		<li style="--i:0">
+			<span class="log__tag">[err]</span> open: no such file or directory
+		</li>
+		<li style="--i:1">
+			<span class="log__tag">[hint]</span> the node may have moved, or the
+			path was mistyped.
+		</li>
+	</ul>
+
+	<h1 class="page-title">not found</h1>
+	<p>
+		Nothing lives at this path. If you followed a shared link to a config
+		variable or route, the entry it pointed at is still in the reference —
+		start from the docs menu and grep for it.
+	</p>
+
+	<ul class="log log--static" aria-label="Where to go instead">
+		<li>
+			<span class="log__tag">[dir]</span>{" "}
+			<a href="/docs">docs</a>
+			<span class="note"> — every documentation node, with a grep filter</span>
+		</li>
+		<li>
+			<span class="log__tag">[dir]</span>{" "}
+			<a href="/architecture">architecture</a>
+			<span class="note"> — how the process is composed</span>
+		</li>
+		<li>
+			<span class="log__tag">[dir]</span>{" "}
+			<a href="/">~</a>
+			<span class="note"> — home</span>
+		</li>
+	</ul>
+</Terminal>
+
+<script>
+	// Echo the path that actually failed; the static fallback still reads fine.
+	const el = document.querySelector("[data-404-path]");
+	if (el) el.textContent = location.pathname;
+</script>

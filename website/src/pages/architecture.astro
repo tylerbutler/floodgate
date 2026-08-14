@@ -42,6 +42,7 @@ const httpSurface = [
 	description="How Floodgate composes spillway, beryl, and sibling Gleam libraries into one dual-mode Fluid Framework server."
 	path="/architecture"
 >
+	<h1 class="page-title">architecture</h1>
 	<p class="prompt">pstree floodgate</p>
 	<ul class="log tree-list" aria-label="Process tree">
 		{tree.map((node, i) => (
@@ -60,7 +61,7 @@ const httpSurface = [
 		surface around them.
 	</p>
 
-	<span class="rule-label">composed from</span>
+	<h2 class="rule-label">composed from</h2>
 	<ul class="log" aria-label="Sibling libraries">
 		{composedFrom.map((lib, i) => (
 			<li style={`--i:${i}`}>
@@ -71,19 +72,18 @@ const httpSurface = [
 		))}
 	</ul>
 
-	<span class="rule-label">how a document survives a crash</span>
+	<h2 class="rule-label">how a document survives a crash</h2>
 	<p>
 		Each document session is its own BEAM process, supervised with a{" "}
 		<code>one_for_one</code> restart strategy. If a session process crashes,
 		it restarts and reloads its state from storage — the rest of the node,
-		including every other document's session, is unaffected. This is the
-		same isolation model the BEAM has run telecom switches on for decades;
-		Floodgate's sequencing and validation logic on top of it is written in
-		Gleam, so a whole class of protocol bugs is caught by the compiler
-		before the process ever starts.
+		including every other document's session, is unaffected. The isolation
+		comes from the runtime, not from Floodgate code; the sequencing and
+		validation logic on top of it is written in Gleam, so a whole class of
+		protocol bugs is caught by the compiler before the process ever starts.
 	</p>
 
-	<span class="rule-label">dual-mode, one process</span>
+	<h2 class="rule-label">dual-mode, one process</h2>
 	<p>
 		<code>socketio_transport</code> and <code>phx_transport</code> are two
 		wire-format adapters in front of the same <code>beryl</code> coordinator,
@@ -93,7 +93,7 @@ const httpSurface = [
 		knows the other exists.
 	</p>
 
-	<span class="rule-label">http surface (excerpt)</span>
+	<h2 class="rule-label">http surface (excerpt)</h2>
 	<ul class="log tree-list" aria-label="HTTP surface excerpt">
 		{httpSurface.map((route, i) => (
 			<li style={`--i:${i}`}>
@@ -102,4 +102,7 @@ const httpSurface = [
 			</li>
 		))}
 	</ul>
+	<p class="note">
+		full endpoint reference: <a href="/docs/http-surface">HTTP surface</a>
+	</p>
 </Terminal>

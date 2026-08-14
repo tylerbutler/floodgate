@@ -1,10 +1,11 @@
 ---
+import Cmd from "../components/Cmd.astro";
 import Terminal from "../layouts/Terminal.astro";
 
 const bootLines = [
 	{ text: "loading spillway protocol engine…", tag: "boot" },
 	{ text: "loading beryl coordinator…", tag: "boot" },
-	{ text: "binding 0.0.0.0:3000", tag: "net" },
+	{ text: "binding localhost:3000", tag: "net" },
 	{ text: "listening — official Fluid/Routerlicious drivers", tag: "socket.io", ok: true },
 	{ text: "listening — Phoenix Channels (levee-driver, levee-client)", tag: "phx", ok: true },
 	{ text: "floodgate is up. two protocols, one process.", tag: "ready", ok: true },
@@ -31,7 +32,7 @@ const capabilities = [
 	description="Floodgate is a Fluid Framework server written in Gleam, running on the BEAM. Dual-mode wire protocols, one process, fault-tolerant by construction."
 	path="/"
 >
-	<p class="prompt">floodgate --start</p>
+	<p class="prompt">FLOODGATE_JWT_SECRET=dev-secret gleam run</p>
 	<ul class="log" aria-label="Startup log">
 		{bootLines.map((line, i) => (
 			<li style={`--i:${i}`}>
@@ -44,16 +45,19 @@ const capabilities = [
 		<span aria-hidden="true">_</span><span class="cursor" aria-hidden="true"></span>
 	</p>
 
-	<p style="font-size: 1.6rem; margin-top: 2.5rem;">
-		A <strong>Fluid Framework</strong> server written in Gleam, running on the BEAM.
-		One process speaks the official Fluid wire protocol and Phoenix Channels at
-		once, so it's also a drop-in replacement for the sibling Levee Elixir server.
+	<h1 class="page-title">floodgate</h1>
+	<p class="lede">
+		A <a href="https://fluidframework.com"><strong>Fluid Framework</strong></a>{" "}
+		server written in Gleam, running on the BEAM. One process speaks the
+		official Fluid wire protocol and Phoenix Channels at once, so it's also a
+		drop-in replacement for <a href="/docs/development">Levee</a>, the sibling
+		Elixir server it's conformance-tested against.
 	</p>
 
-	<span class="rule-label">why the BEAM</span>
-	<ul class="log" aria-label="Runtime properties">
-		{whyBeam.map((line, i) => (
-			<li style={`--i:${i}`}>
+	<h2 class="rule-label">why the BEAM</h2>
+	<ul class="log log--static" aria-label="Runtime properties">
+		{whyBeam.map((line) => (
+			<li>
 				<span class="log__tag">[{line.tag}]</span> {line.text}
 			</li>
 		))}
@@ -66,10 +70,10 @@ const capabilities = [
 		the compiler before it ships.
 	</p>
 
-	<span class="rule-label">capabilities</span>
-	<ul class="log" aria-label="Capabilities">
-		{capabilities.map((cap, i) => (
-			<li style={`--i:${i}`}>
+	<h2 class="rule-label">capabilities</h2>
+	<ul class="log log--static" aria-label="Capabilities">
+		{capabilities.map((cap) => (
+			<li>
 				<span class="log__tag">[cap]</span> <strong>{cap.label}</strong>
 				<span class="note"> — {cap.detail}</span>
 			</li>
@@ -78,12 +82,22 @@ const capabilities = [
 
 	<hr />
 
-	<p class="prompt">view source</p>
+	<h2 class="rule-label">try it</h2>
+	<Cmd command="docker compose up -d --wait" />
 	<p class="note">
-		Floodgate doesn't have its own repository yet — it lives inside the
-		Levee monorepo today.
+		starts on http://localhost:3000 — full steps in{" "}
+		<a href="/docs/getting-started">getting started</a>.
 	</p>
-	<a class="cta" href="https://github.com/tylerbutler/floodgate">
-		view source at tylerbutler/floodgate
-	</a>
+	<p>
+		No benchmarks to show yet — instead, Levee's <strong>unmodified</strong>{" "}
+		integration suites (<code>levee-driver</code>, <code>levee-client</code>,{" "}
+		<code>levee-example</code>) run against a containerised Floodgate,
+		repointed only by environment variable. Nothing in those suites is
+		Floodgate-aware, so any failure is a real behavioral difference between
+		the servers. <a href="/docs/development">How the conformance suites work.</a>
+	</p>
+	<a class="cta" href="/docs/getting-started">read the docs</a>
+	<p class="note">
+		<a href="https://github.com/tylerbutler/floodgate">view source at tylerbutler/floodgate</a>
+	</p>
 </Terminal>

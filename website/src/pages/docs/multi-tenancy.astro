@@ -8,7 +8,7 @@ import DocsNode from "../../layouts/DocsNode.astro";
 >
 	<p>
 		Floodgate supports any number of tenants, each with its own pair of
-		rotating JWT secrets — dynamic tenant management, not just the one
+		rotating JWT secrets: dynamic tenant management, not just the one
 		tenant/secret pair the environment configures. Tenants ride the same
 		storage backend selection as documents
 		(<code>FLOODGATE_STORAGE_BACKEND</code>): <code>shelf</code> persists
@@ -16,20 +16,20 @@ import DocsNode from "../../layouts/DocsNode.astro";
 		the same ephemeral store used by tests.
 	</p>
 
-	<span class="rule-label">startup tenant compatibility</span>
+	<h2 class="rule-label">startup tenant compatibility</h2>
 	<p>
 		<code>FLOODGATE_TENANT_ID</code> + <code>FLOODGATE_JWT_SECRET</code> still
 		work exactly as before: at boot, that tenant is created if it does not
 		already exist, with <code>FLOODGATE_JWT_SECRET</code> as its first
-		secret slot. If the tenant already exists — a restart against
+		secret slot. If the tenant already exists (a restart against
 		persistent shelf storage, or one already created via the admin API
-		below — the boot step leaves it untouched; it will not roll back a
+		below), the boot step leaves it untouched; it will not roll back a
 		secret the admin API has since rotated. To rotate the startup tenant's
 		own secret deliberately, use the admin API rather than editing the env
 		var and restarting.
 	</p>
 
-	<span class="rule-label">two secret slots and rotation</span>
+	<h2 class="rule-label">two secret slots and rotation</h2>
 	<p>
 		Every tenant has two secret slots. JWT verification tries both; token
 		minting always uses slot 1. Regenerating one slot leaves the other
@@ -37,7 +37,7 @@ import DocsNode from "../../layouts/DocsNode.astro";
 		an outage.
 	</p>
 
-	<span class="rule-label">admin UI and authentication</span>
+	<h2 class="rule-label">admin UI and authentication</h2>
 	<p>
 		Floodgate serves the same Gleam/Lustre admin SPA as Levee at{" "}
 		<code>/admin</code>; it does not use Phoenix, Elixir, or Mix. The
@@ -57,7 +57,7 @@ import DocsNode from "../../layouts/DocsNode.astro";
 		single-use.
 	</p>
 
-	<span class="rule-label">tenant management API</span>
+	<h2 class="rule-label">tenant management API</h2>
 	<p>
 		Accepts either a valid Floodgate admin session or{" "}
 		<code>FLOODGATE_ADMIN_KEY</code> (<code>Authorization</code>, compared

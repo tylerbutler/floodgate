@@ -6,7 +6,7 @@ import DocsNode from "../../layouts/DocsNode.astro";
 	slug="development"
 	description="Build, test, and format Floodgate, plus the conformance suites that check it against Levee."
 >
-	<span class="rule-label">build, test, format, run</span>
+	<h2 class="rule-label">build, test, format, run</h2>
 	<ul class="log log--static" aria-label="Build and test commands">
 		<li><code>just build</code><span class="note"> — or: gleam build --target erlang</span></li>
 		<li><code>just test</code><span class="note"> — or: gleam test</span></li>
@@ -14,7 +14,7 @@ import DocsNode from "../../layouts/DocsNode.astro";
 		<li><code>just run</code></li>
 	</ul>
 
-	<span class="rule-label">conformance suites</span>
+	<h2 class="rule-label">conformance suites</h2>
 	<p>
 		These live in the Levee repository's client workspace and run against a
 		live server:
@@ -34,7 +34,7 @@ import DocsNode from "../../layouts/DocsNode.astro";
 		between the servers.
 	</p>
 
-	<span class="rule-label">architecture</span>
+	<h2 class="rule-label">architecture</h2>
 	<p>
 		Floodgate composes several sibling libraries rather than implementing
 		the protocol itself — see <a href="/architecture">architecture</a> for

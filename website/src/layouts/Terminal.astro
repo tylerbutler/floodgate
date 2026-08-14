@@ -47,5 +47,11 @@ const canonical = new URL(path, Astro.site ?? Astro.url);
 		<main>
 			<slot />
 		</main>
+		<footer class="term-foot">
+			<span><span aria-hidden="true">[exit 0]</span> floodgate</span>
+			<a href="https://github.com/tylerbutler/floodgate">source: tylerbutler/floodgate</a>
+			<a href="https://github.com/tylerbutler/floodgate/blob/main/LICENSE">MIT license</a>
+			<span>Tyler Butler</span>
+		</footer>
 	</body>
 </html>

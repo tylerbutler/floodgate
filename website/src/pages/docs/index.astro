@@ -4,7 +4,7 @@ import { docNodes } from "../../data/docs-nodes";
 ---
 
 <Terminal
-	title="Floodgate docs — (dir)"
+	title="Floodgate documentation"
 	description="Floodgate documentation: getting started, configuration, multi-tenancy, presence, the HTTP surface, and development."
 	path="/docs"
 >
@@ -12,20 +12,23 @@ import { docNodes } from "../../data/docs-nodes";
 		<span>File: <strong>floodgate.info</strong>,</span>
 		<span>Node: <strong>(dir)</strong></span>
 	</div>
-	<h1>(dir)</h1>
+	<h1>Documentation</h1>
 	<p>
 		Floodgate documentation, top node. Pick a topic below — each one links
 		forward and back to its neighbors, so once you're inside a topic you
 		can read straight through or jump anywhere from here.
 	</p>
 
-	<span class="rule-label">* Menu:</span>
+	<h2 class="rule-label rule-label--bare">* Menu:</h2>
 	<ul class="log log--static dir-menu" aria-label="Documentation topics">
 		{docNodes.map((node) => (
 			<li>
 				<span class="log__tag">*</span>{" "}
 				<a href={node.href}>{node.title}</a>
 				<span class="note"> — {node.summary}</span>
+				{node.slug === "getting-started" && (
+					<span class="log__ok dir-menu__start"> ← start here</span>
+				)}
 			</li>
 		))}
 	</ul>

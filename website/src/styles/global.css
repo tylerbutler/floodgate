@@ -160,8 +160,18 @@ pre code {
 	gap: 1.25em;
 }
 
+/* Padding + negative margin expands the touch target to ~44px without
+   moving the visible text — the `~` link is a single character. */
 .term-bar nav a {
 	color: var(--phosphor-dim);
+	padding: 0.7em 0.45em;
+	margin: -0.7em -0.45em;
+}
+
+/* Explicit: the 0-2-1 selector above outranks the global a:hover rule. */
+.term-bar nav a:hover,
+.term-bar nav a:focus-visible {
+	color: var(--phosphor);
 }
 
 .term-bar nav a[aria-current="page"] {
@@ -176,10 +186,16 @@ pre code {
 	white-space: pre-wrap;
 }
 
+/* Hanging indent: a wrapped continuation must never sit at the left
+   margin, where it would impersonate a new entry. */
+/* 70ms per line keeps the longest reveal (the 13-line process tree)
+   under a second; the boot rhythm survives, the repeat-visit tax doesn't. */
 .log li {
+	padding-left: 4ch;
+	text-indent: -4ch;
 	opacity: 0;
 	animation: line-in 0.01s linear forwards;
-	animation-delay: calc(var(--i, 0) * 0.28s);
+	animation-delay: calc(var(--i, 0) * 0.07s);
 }
 
 .log__tag {
@@ -261,6 +277,17 @@ strong {
 	color: var(--phosphor-amber);
 }
 
+/* Explicit: same specificity as the global a:hover but later in source. */
+.dir-menu a:hover,
+.dir-menu a:focus-visible {
+	color: var(--phosphor);
+}
+
+/* Wraps as one unit instead of splitting mid-phrase. */
+.dir-menu__start {
+	white-space: nowrap;
+}
+
 .dir-menu .log__tag {
 	color: var(--phosphor-dim);
 }
@@ -280,14 +307,35 @@ strong {
 	color: var(--phosphor-dim);
 }
 
+/* Section headings render as comment lines: the `#` sigil stays dim,
+   the label itself sits at full phosphor so it leads the text below it. */
 .rule-label {
 	display: block;
-	color: var(--phosphor-dim);
+	font-size: 1.5rem;
+	font-weight: 400;
+	line-height: 1.3;
+	color: var(--phosphor);
 	margin: 3rem 0 1rem;
 }
 
 .rule-label::before {
 	content: "# ";
+	color: var(--phosphor-dim);
+}
+
+/* The docs (dir) node's `* Menu:` is already an info idiom — no `#`. */
+.rule-label--bare::before {
+	content: none;
+}
+
+/* Page titles for the terminal pages that aren't info nodes. */
+.page-title {
+	font-size: 2.15rem;
+	font-weight: 400;
+	line-height: 1.2;
+	margin: 2.5rem 0 1rem;
+	color: var(--phosphor);
+	text-shadow: 0 0 10px rgba(61, 255, 136, 0.5);
 }
 
 .cta {
@@ -310,6 +358,150 @@ strong {
 .note {
 	color: var(--phosphor-dim);
 	font-size: 1.1rem;
+}
+
+/* Opening value-prop paragraph, one step above body size. */
+.lede {
+	font-size: 1.6rem;
+}
+
+[hidden] {
+	display: none !important;
+}
+
+/* Site identity line — reads as the shell giving control back. */
+.term-foot {
+	/* 78ch here must match main's, so the font-size step lives on the children. */
+	max-width: 78ch;
+	margin: 0 auto;
+	padding: 1.25rem clamp(1.25rem, 5vw, 2rem) 2.5rem;
+	border-top: var(--rule);
+	color: var(--phosphor-dim);
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.25rem 1.5rem;
+}
+
+.term-foot > * {
+	font-size: 1.1rem;
+}
+
+.term-foot a {
+	color: var(--phosphor-dim);
+}
+
+.term-foot a:hover,
+.term-foot a:focus-visible {
+	color: var(--phosphor);
+}
+
+/* Self-links: every reference entry is an anchor you can hand to a
+   colleague. Quiet until asked for. */
+a.self {
+	text-decoration: none;
+}
+
+a.self:hover,
+a.self:focus-visible {
+	text-decoration: underline;
+	text-decoration-thickness: 1px;
+	text-underline-offset: 3px;
+}
+
+li:target,
+section:target {
+	scroll-margin-top: 1.5rem;
+	background: var(--screen-bg-raised);
+	outline: 1px solid var(--phosphor-faint);
+	outline-offset: 2px;
+}
+
+/* `$ grep` filter line on the reference pages. */
+.grep {
+	display: flex;
+	align-items: baseline;
+	gap: 1ch;
+	margin: 1.5rem 0 2rem;
+	max-width: var(--measure);
+}
+
+.grep__prompt {
+	color: var(--phosphor-dim);
+	white-space: nowrap;
+	flex: none;
+}
+
+.grep input {
+	flex: 1;
+	min-width: 0;
+	background: transparent;
+	border: none;
+	border-bottom: 1px solid var(--phosphor-faint);
+	border-radius: 0;
+	color: var(--phosphor);
+	font: inherit;
+	letter-spacing: inherit;
+	text-shadow: inherit;
+	caret-color: var(--phosphor);
+	padding: 0 0 0.1em;
+}
+
+.grep input::placeholder {
+	color: var(--phosphor-faint);
+	opacity: 1;
+}
+
+.grep input:focus-visible {
+	outline: none;
+	border-bottom-color: var(--phosphor-amber);
+}
+
+.grep__count {
+	color: var(--phosphor-dim);
+	font-size: 1.1rem;
+	white-space: nowrap;
+	flex: none;
+	min-width: 5ch;
+	text-align: right;
+}
+
+/* Runnable command blocks with a copy affordance. */
+.cmd {
+	display: flex;
+	align-items: baseline;
+	gap: 1ch;
+}
+
+.cmd::before {
+	content: "$ ";
+	color: var(--phosphor-dim);
+	flex: none;
+}
+
+.cmd code {
+	flex: 1;
+	min-width: 0;
+	color: var(--phosphor);
+}
+
+.cmd + .note {
+	margin-top: -1rem;
+	margin-bottom: 1.5rem;
+}
+
+.cmd__copy {
+	background: none;
+	border: none;
+	padding: 0 0.25em;
+	flex: none;
+	font: inherit;
+	font-size: 1.1rem;
+	color: var(--phosphor-amber);
+	cursor: pointer;
+}
+
+.cmd__copy:hover {
+	color: var(--phosphor);
 }
 
 @keyframes line-in {
