@@ -1,0 +1,125 @@
+<!doctype html>
+<!-- Source for public/og.png. Regenerate by serving this directory over HTTP
+     and screenshotting this page at exactly 1200x630 CSS pixels, e.g.:
+       npx playwright screenshot --viewport-size=1200,630 http://localhost:8799/og-image.html public/og.png -->
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  @font-face {
+    font-family: "VT323";
+    src: url("public/fonts/vt323-latin.woff2") format("woff2");
+  }
+  * { margin: 0; box-sizing: border-box; }
+  html, body { width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    background: #050805;
+    color: #3dff88;
+    font-family: "VT323", monospace;
+    text-shadow: 0 0 8px rgba(61, 255, 136, 0.35);
+    display: flex;
+    flex-direction: column;
+  }
+  /* scanlines */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.16) 0,
+      rgba(0, 0, 0, 0.16) 2px,
+      transparent 2px,
+      transparent 6px
+    );
+    mix-blend-mode: multiply;
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  /* soft vignette like CRT glass */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 51;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.45) 100%);
+    pointer-events: none;
+  }
+  .term-bar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 28px;
+    border-bottom: 2px solid #1c7d49;
+    background: #0a100a;
+    color: #2fbf6d;
+    font-size: 26px;
+    letter-spacing: 0.03em;
+  }
+  .dot {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #1c7d49;
+  }
+  main {
+    flex: 1;
+    padding: 40px 64px 48px;
+    display: flex;
+    flex-direction: column;
+  }
+  .log {
+    font-size: 30px;
+    line-height: 1.45;
+  }
+  .tag { color: #2fbf6d; }
+  .ok { color: #ffd166; text-shadow: 0 0 8px rgba(255, 209, 102, 0.35); }
+  .prompt::before { content: "$ "; color: #2fbf6d; }
+  h1 {
+    margin-top: 44px;
+    font-weight: 400;
+    font-size: 148px;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    color: #3dff88;
+    text-shadow: 0 0 26px rgba(61, 255, 136, 0.8), 0 0 4px rgba(61, 255, 136, 0.9);
+  }
+  .tagline {
+    margin-top: 22px;
+    font-size: 44px;
+    line-height: 1.2;
+    color: #3dff88;
+  }
+  .tagline .dim { color: #2fbf6d; }
+  .cursor {
+    display: inline-block;
+    width: 0.55em;
+    height: 0.95em;
+    background: #3dff88;
+    vertical-align: text-bottom;
+    margin-left: 0.18em;
+    box-shadow: 0 0 14px rgba(61, 255, 136, 0.7);
+  }
+</style>
+</head>
+<body>
+  <div class="term-bar">
+    <span class="dot"></span>
+    <span>floodgate@localhost:/</span>
+  </div>
+  <main>
+    <div class="log">
+      <div class="prompt">floodgate --start</div>
+      <div><span class="tag">[socket.io]</span> <span class="ok">listening — official Fluid/Routerlicious drivers</span></div>
+      <div><span class="tag">[phx]</span> <span class="ok">listening — Phoenix Channels</span></div>
+      <div><span class="tag">[ready]</span> two protocols, one process.</div>
+    </div>
+    <h1>FLOODGATE</h1>
+    <p class="tagline">
+      A <strong>Fluid Framework</strong> server on the BEAM<span class="cursor"></span><br />
+      <span class="dim">written in Gleam — fault-tolerant by construction</span>
+    </p>
+  </main>
+</body>
+</html>

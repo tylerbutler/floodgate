@@ -8,6 +8,9 @@ interface Props {
 }
 
 const { title, description, path } = Astro.props;
+
+const ogImage = new URL("/og.png", Astro.site ?? Astro.url);
+const canonical = new URL(path, Astro.site ?? Astro.url);
 ---
 
 <!doctype html>
@@ -17,6 +20,18 @@ const { title, description, path } = Astro.props;
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<title>{title}</title>
 		<meta name="description" content={description} />
+		<meta property="og:type" content="website" />
+		<meta property="og:title" content={title} />
+		<meta property="og:description" content={description} />
+		<meta property="og:url" content={canonical} />
+		<meta property="og:image" content={ogImage} />
+		<meta property="og:image:width" content="1200" />
+		<meta property="og:image:height" content="630" />
+		<meta property="og:image:alt" content="A green-phosphor terminal showing Floodgate's startup log: FLOODGATE — a Fluid Framework server on the BEAM, written in Gleam." />
+		<meta name="twitter:card" content="summary_large_image" />
+		<meta name="twitter:title" content={title} />
+		<meta name="twitter:description" content={description} />
+		<meta name="twitter:image" content={ogImage} />
 		<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23050805'/%3E%3Ctext x='2' y='12' font-family='monospace' font-size='12' fill='%233dff88'%3E%3E%3C/text%3E%3C/svg%3E" />
 	</head>
 	<body>
