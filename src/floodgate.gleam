@@ -555,9 +555,9 @@ fn rest(
       }
     }
     http.Get, ["documents", tenant, document_id, "deltas"] ->
-      deltas_response(document_session, config, req, tenant, document_id)
+      deltas_response(document_session, config, req, tenant, document_id, False)
     http.Get, ["deltas", tenant, document_id] ->
-      deltas_response(document_session, config, req, tenant, document_id)
+      deltas_response(document_session, config, req, tenant, document_id, True)
     http.Get, ["documents", tenant, document_id] -> {
       case
         authorize_read(req, config, tenant, document_id),
@@ -1049,12 +1049,39 @@ fn decode_sha(body: String) -> Result(String, Nil) {
   |> result.replace_error(Nil)
 }
 
+/// Identifies a `/deltas/{tenant}/{doc}` request as speaking the
+/// Routerlicious dialect (bare-array response), as opposed to Levee's
+/// `{"value": [...]}` envelope. Levee's own driver always authenticates
+/// using the bearer scheme and never sends `fetchReason`; the official
+/// routerlicious-driver always authenticates using the Basic scheme (a
+/// base64 `user:jwt` pair), and supplies `fetchReason` only from newer
+/// versions. So either marker — `fetchReason` present, or a Basic auth
+/// scheme — identifies Routerlicious, covering both the historical (Basic,
+/// no `fetchReason`) and modern (Basic + `fetchReason`) drivers without
+/// misclassifying Levee's bearer-authenticated from/to catch-up requests.
+/// Mirrors Undertow's `IsRouterliciousDeltaFetch` so both servers speak the
+/// same stable dialect contract.
+pub fn is_routerlicious_delta_fetch(
+  authorization: option.Option(String),
+  query: List(#(String, String)),
+) -> Bool {
+  let has_fetch_reason = list.key_find(query, "fetchReason") |> result.is_ok
+  let is_basic_scheme =
+    authorization
+    |> option.map(fn(value) {
+      value |> string.lowercase |> string.starts_with("basic ")
+    })
+    |> option.unwrap(False)
+  has_fetch_reason || is_basic_scheme
+}
+
 fn deltas_response(
   document_session: session.Session,
   config: AuthConfig,
   req: request.Request(mist.Connection),
   tenant: String,
   document_id: String,
+  levee_envelope_by_default: Bool,
 ) -> response.Response(mist.ResponseData) {
   case
     authorize_read(req, config, tenant, document_id),
@@ -1081,7 +1108,16 @@ fn deltas_response(
         |> list.take(2000)
       let messages =
         json.preprocessed_array(list.map(ops, session.stored_message_to_json))
-      messages |> json.to_string |> json_response(200)
+      let authorization =
+        request.get_header(req, "authorization") |> option.from_result
+      let envelope =
+        levee_envelope_by_default
+        && !is_routerlicious_delta_fetch(authorization, query)
+      let body = case envelope {
+        True -> json.object([#("value", messages)])
+        False -> messages
+      }
+      body |> json.to_string |> json_response(200)
     }
   }
 }

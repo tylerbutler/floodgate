@@ -104,6 +104,44 @@ pub fn unknown_tenant_error_matches_401_contract_test() {
   |> should.equal("Unknown tenant 'ghost-tenant'")
 }
 
+/// `GET /deltas/{tenant}/{doc}` must pick the same dialect Undertow's
+/// `IsRouterliciousDeltaFetch` does: bare array for Routerlicious (Basic
+/// auth, or `fetchReason` present, or both), Levee's `{"value": [...]}`
+/// envelope otherwise. See `is_routerlicious_delta_fetch`'s doc comment for
+/// the full rationale.
+pub fn is_routerlicious_delta_fetch_matches_undertow_dialect_test() {
+  // Levee: bearer auth, no fetchReason -> not Routerlicious (gets the envelope).
+  floodgate.is_routerlicious_delta_fetch(Some("Bearer test-token"), [])
+  |> should.be_false
+
+  // Historical Routerlicious: Basic auth, no fetchReason -> bare array.
+  floodgate.is_routerlicious_delta_fetch(Some("Basic dXNlcjpqd3Q="), [])
+  |> should.be_true
+
+  // Modern Routerlicious: Basic auth + fetchReason -> bare array.
+  floodgate.is_routerlicious_delta_fetch(Some("Basic dXNlcjpqd3Q="), [
+    #("fetchReason", "PostDocumentOpen_fetch"),
+  ])
+  |> should.be_true
+
+  // fetchReason alone, even over bearer auth, is still a Routerlicious
+  // marker -> bare array.
+  floodgate.is_routerlicious_delta_fetch(Some("Bearer test-token"), [
+    #("fetchReason", "PostDocumentOpen_fetch"),
+  ])
+  |> should.be_true
+
+  // No Authorization header at all (should not happen post-`authorize_read`,
+  // but the helper must not crash) -> defaults to the Levee envelope.
+  floodgate.is_routerlicious_delta_fetch(None, [])
+  |> should.be_false
+
+  // The scheme check is case-insensitive, matching how ASP.NET Core /
+  // Routerlicious drivers may format the header.
+  floodgate.is_routerlicious_delta_fetch(Some("BASIC dXNlcjpqd3Q="), [])
+  |> should.be_true
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tenant admin API — response shapes must match the Lustre UI's decoders in
 // server/levee_admin/src/levee_admin/api.gleam exactly.

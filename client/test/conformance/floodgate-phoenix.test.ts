@@ -220,7 +220,7 @@ describe.runIf(phoenixAvailable)(
 		// lives in floodgate's own tests (test/phoenix_channel_test.gleam) rather
 		// than here, where the driver could not drive them.
 
-		it("serves the Levee-dialect delta endpoint with a value envelope", async () => {
+		it("serves the Levee-dialect delta endpoint with a value envelope containing the submitted op", async () => {
 			const documentId = uniqueDocId("phoenix-deltas");
 			await createDocument(documentId);
 
@@ -238,13 +238,21 @@ describe.runIf(phoenixAvailable)(
 				FLOODGATE_JWT_SECRET,
 				TEST_USER,
 			).fetchOrdererToken(FLOODGATE_TENANT_ID, documentId);
+			// levee-driver always authenticates catch-up fetches with the bearer
+			// scheme and never sends `fetchReason` -- the exact request shape that
+			// must still get Levee's `{"value": [...]}` envelope, not a bare array.
 			const response = await fetch(
 				`${FLOODGATE_HTTP_URL}/deltas/${FLOODGATE_TENANT_ID}/${documentId}`,
 				{ headers: { Authorization: `Bearer ${token.jwt}` } },
 			);
 			expect(response.ok).toBe(true);
-			const body = (await response.json()) as { value?: unknown };
+			const body = (await response.json()) as {
+				value?: Array<{ contents?: unknown }>;
+			};
 			expect(Array.isArray(body.value)).toBe(true);
+			// A real submitted op, not just the envelope shape around an empty
+			// array -- this is the regression a bare-array response would hide.
+			expect(body.value?.some((op) => op.contents === marker)).toBe(true);
 		});
 
 		it("uses the same event vocabulary as the Socket.IO endpoint", () => {
