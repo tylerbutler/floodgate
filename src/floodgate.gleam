@@ -555,9 +555,9 @@ fn rest(
       }
     }
     http.Get, ["documents", tenant, document_id, "deltas"] ->
-      deltas_response(document_session, config, req, tenant, document_id, False)
+      deltas_response(document_session, config, req, tenant, document_id)
     http.Get, ["deltas", tenant, document_id] ->
-      deltas_response(document_session, config, req, tenant, document_id, True)
+      deltas_response(document_session, config, req, tenant, document_id)
     http.Get, ["documents", tenant, document_id] -> {
       case
         authorize_read(req, config, tenant, document_id),
@@ -1055,7 +1055,6 @@ fn deltas_response(
   req: request.Request(mist.Connection),
   tenant: String,
   document_id: String,
-  envelope: Bool,
 ) -> response.Response(mist.ResponseData) {
   case
     authorize_read(req, config, tenant, document_id),
@@ -1082,11 +1081,7 @@ fn deltas_response(
         |> list.take(2000)
       let messages =
         json.preprocessed_array(list.map(ops, session.stored_message_to_json))
-      let body = case envelope {
-        True -> json.object([#("value", messages)])
-        False -> messages
-      }
-      body |> json.to_string |> json_response(200)
+      messages |> json.to_string |> json_response(200)
     }
   }
 }

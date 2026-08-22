@@ -165,7 +165,8 @@ pub type Msg {
     client_id: String,
     csn: Int,
     rsn: Int,
-    build: fn(Int, Int, Int) -> #(String, String, Option(String)),
+    build: fn(Int, Int, Int, List(#(String, String))) ->
+      #(String, String, Option(String)),
     reply: Subject(SubmitSummaryMessagesResult),
   )
   Clients(topic: String, reply: Subject(List(String)))
@@ -645,7 +646,8 @@ pub fn submit_summary_messages(
   client_id: String,
   csn: Int,
   rsn: Int,
-  build: fn(Int, Int, Int) -> #(String, String, Option(String)),
+  build: fn(Int, Int, Int, List(#(String, String))) ->
+    #(String, String, Option(String)),
 ) -> SubmitSummaryMessagesResult {
   call_doc(session, topic, 1000, SubmitSummaryMessages(
     topic,
@@ -1307,7 +1309,7 @@ fn handle(
           let seq =
             sequencing.SequenceState(..seq, sequence_number: response_sn)
           let #(summary_message, response_message, handle) =
-            build(summary_sn, response_sn, msn)
+            build(summary_sn, response_sn, msn, dict.to_list(document.presence))
           persist_op(storage, topic, summary_sn, summary_message)
           persist_op(storage, topic, response_sn, response_message)
           case handle {

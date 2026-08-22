@@ -8,17 +8,15 @@
 import floodgate/store
 import gleam/json
 import gleam/result
+import gleam/string
 import silt/object
 import silt/rest
 
 /// Store an object's raw body, returning its content-addressed id.
 ///
-/// Objects are stored per **document**, not per tenant: a blob belongs to the
-/// document whose summary tree reaches it. Callers on the tenant-scoped
-/// Historian routes take `document_id` from their token claims, which is the
-/// only place the association is recorded. The cost is that two documents in a
-/// tenant uploading identical bytes store them twice; the gain is that a
-/// document's storage is self-contained.
+/// Objects are stored per tenant, matching Historian's content-addressed object
+/// namespace. Routerlicious drivers cache uploaded hashes across documents and
+/// may reuse an existing object without uploading it again.
 pub fn create(
   storage: store.Backend,
   topic: String,
@@ -26,18 +24,28 @@ pub fn create(
   body: String,
 ) -> Result(String, Nil) {
   use sha <- result.try(object.object_id(kind, body))
-  use Nil <- result.try(store.put_object(storage, topic, sha, body))
+  use Nil <- result.try(store.put_object(
+    storage,
+    object_namespace(topic),
+    sha,
+    body,
+  ))
   Ok(sha)
 }
 
-/// Fetch an object's raw body by SHA, within a document. An object written
-/// under a different document is not visible here — see `create`.
+/// Fetch an object's raw body by SHA within a tenant.
+///
+/// The document-scoped fallback preserves objects written by older Floodgate
+/// releases while new writes use the Routerlicious-compatible tenant scope.
 pub fn fetch(
   storage: store.Backend,
   topic: String,
   sha: String,
 ) -> Result(String, Nil) {
-  store.get_object(storage, topic, sha)
+  case store.get_object(storage, object_namespace(topic), sha) {
+    Ok(body) -> Ok(body)
+    Error(Nil) -> store.get_object(storage, topic, sha)
+  }
 }
 
 pub fn put_ref(
@@ -177,10 +185,16 @@ pub fn ref_response(
   rest.ref_response(base_url, tenant, ref, sha)
 }
 
-/// A `silt.Fetch` closing over this stack's store and document, so `silt` can
+/// A `silt.Fetch` closing over this stack's store and tenant, so `silt` can
 /// walk child objects (recursive trees, commit history) without owning
-/// persistence. The walk stays inside one document, which is exactly the set of
-/// objects that document's storage holds.
+/// persistence.
 fn fetcher(storage: store.Backend, topic: String) -> rest.Fetch {
-  fn(sha) { store.get_object(storage, topic, sha) }
+  fn(sha) { fetch(storage, topic, sha) }
+}
+
+fn object_namespace(topic: String) -> String {
+  case string.split(topic, ":") {
+    ["document", tenant, ..] -> tenant
+    _ -> topic
+  }
 }

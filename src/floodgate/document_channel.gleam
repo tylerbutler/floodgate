@@ -293,15 +293,6 @@ fn connect_core(
           client_join_data(client_id, client),
           now_seconds() * 1000,
         )
-      // `initialSignals` is always empty, matching levee's
-      // `build_connected_response`. This used to return the client's own
-      // presence-join signal, which closed containers with assert 0x4b2: the
-      // container-loader seeds its audience with the IClient object it *sent*
-      // (original key order) and `Audience.addMember` demands byte-identity
-      // with any later add for the same client id — but every payload this
-      // server echoes has been through an Erlang map, which stores keys in
-      // term order, so the self add could never match the seed. Peers are
-      // unaffected: every copy *they* see is Erlang-map-ordered alike.
       case recovery {
         [] -> Nil
         recovery ->
@@ -350,6 +341,10 @@ fn connect_core(
           summary_sequence_number,
           current_sequence_number,
           beryl.max_inbound_frame_bytes(channels),
+          case membership {
+            session.Reader -> [presence_join(client_id, client)]
+            session.Writer(_, _) -> []
+          },
         ),
         DocAssigns(
           client_id: client_id,
@@ -696,6 +691,7 @@ fn connected_response(
   summary_sequence_number: Int,
   current_sequence_number: Int,
   max_message_size: Int,
+  initial_signals: List(json.Json),
 ) -> json.Json {
   json.object([
     #("claims", claims_to_json(claims)),
@@ -716,8 +712,9 @@ fn connected_response(
     ),
     #("initialClients", initial_clients_json(roster)),
     #("initialMessages", ops_to_json(initial_ops)),
-    // Always empty, matching levee. See the 0x4b2 note in `connect_core`.
-    #("initialSignals", json.preprocessed_array([])),
+    // Read clients do not receive a sequenced join op, so their own join signal
+    // must be present before the loader can transition to connected.
+    #("initialSignals", json.preprocessed_array(initial_signals)),
     // Capability negotiation is one-directional: a client that has never heard
     // of a feature ignores the key, and one that has opts in per document by
     // sending its own command (`joinPresence`). Watershed's gate is strict —
@@ -725,7 +722,10 @@ fn connected_response(
     // unsupported and silently downgrade every client to heartbeat presence.
     #(
       "supportedFeatures",
-      json.object([#(presence_worker.feature_presence_v1, json.bool(True))]),
+      json.object([
+        #(presence_worker.feature_presence_v1, json.bool(True)),
+        #("submit_signals_v2", json.bool(True)),
+      ]),
     ),
     #("supportedVersions", json.array(["^0.1.0", "^1.0.0"], json.string)),
     #("version", json.string("1.0.0")),
@@ -1050,7 +1050,7 @@ fn submit_summary_op(
       assigns.client_id,
       op.client_sequence_number,
       op.reference_sequence_number,
-      fn(summary_sn, response_sn, msn) {
+      fn(summary_sn, response_sn, msn, _roster) {
         let outcome = case summarize_contents(op.contents) {
           Error(reason) -> #(None, reason)
           Ok(contents) ->
@@ -1059,6 +1059,9 @@ fn submit_summary_op(
                 session.storage(document_session),
                 assigns.topic,
                 contents,
+                op.reference_sequence_number,
+                msn,
+                session.since(document_session, assigns.topic, 0),
               )
             {
               Ok(commit_sha) -> #(Some(commit_sha), "")
@@ -1123,7 +1126,17 @@ fn submit_summary_op(
 
 fn summarize_contents(contents: Dynamic) -> Result(SummarizeContents, String) {
   case decode.run(contents, decode.dict(decode.string, decode.dynamic)) {
-    Error(_) -> Error("Summary contents must be an object")
+    Error(_) -> {
+      use serialized <- result.try(
+        decode.run(contents, decode.string)
+        |> result.replace_error("Summary contents must be an object"),
+      )
+      use parsed <- result.try(
+        json.parse(serialized, decode.dynamic)
+        |> result.replace_error("Summary contents must be an object"),
+      )
+      summarize_contents(parsed)
+    }
     Ok(fields) ->
       case session_logic.validate_summarize_contents(fields) {
         Error(reason) -> Error("Invalid summarize op: " <> reason)
@@ -1173,13 +1186,21 @@ fn persist_summary(
   storage: store.Backend,
   topic: String,
   contents: SummarizeContents,
+  reference_sequence_number: Int,
+  minimum_sequence_number: Int,
+  history: List(#(Int, String)),
 ) -> Result(String, String) {
-  // Objects are keyed by topic, so the tenant/document split `topic_ids` used to
-  // do here is no longer needed: a malformed topic simply misses, which is the
-  // same "tree does not exist" answer it produced before.
   case git.fetch(storage, topic, contents.handle) {
     Error(_) -> Error("Summary tree does not exist")
     Ok(_) -> {
+      use tree <- result.try(summary_tree_handle(
+        storage,
+        topic,
+        contents,
+        reference_sequence_number,
+        minimum_sequence_number,
+        history,
+      ))
       let author =
         json.object([
           #("name", json.string("Floodgate")),
@@ -1188,7 +1209,7 @@ fn persist_summary(
         ])
       let commit =
         json.object([
-          #("tree", json.string(contents.handle)),
+          #("tree", json.string(tree)),
           #("parents", json.array(contents.parents, json.string)),
           #("message", json.string(contents.message)),
           #("author", author),
@@ -1200,6 +1221,236 @@ fn persist_summary(
       git.create(storage, topic, "commits", commit)
       |> result.replace_error("Could not store summary commit")
     }
+  }
+}
+
+fn summary_tree_handle(
+  storage: store.Backend,
+  topic: String,
+  contents: SummarizeContents,
+  reference_sequence_number: Int,
+  minimum_sequence_number: Int,
+  history: List(#(Int, String)),
+) -> Result(String, String) {
+  case contents.parents {
+    [] -> Ok(contents.handle)
+    [parent, ..] -> {
+      use parent_body <- result.try(
+        git.fetch(storage, topic, parent)
+        |> result.replace_error("Parent summary commit does not exist"),
+      )
+      use parent_tree <- result.try(
+        json.parse(
+          parent_body,
+          decode.field("tree", decode.string, decode.success),
+        )
+        |> result.replace_error("Parent summary commit is invalid"),
+      )
+      use tree_body <- result.try(
+        git.fetch(storage, topic, parent_tree)
+        |> result.replace_error("Parent summary tree does not exist"),
+      )
+      use entries <- result.try(
+        json.parse(
+          tree_body,
+          decode.field(
+            "tree",
+            decode.list(summary_tree_entry_decoder()),
+            decode.success,
+          ),
+        )
+        |> result.replace_error("Parent summary tree is invalid"),
+      )
+      case
+        list.find_map(entries, fn(entry) {
+          case entry {
+            #(".protocol", _, "tree", sha) -> Ok(sha)
+            _ -> Error(Nil)
+          }
+        })
+      {
+        Error(_) -> Ok(contents.handle)
+        Ok(protocol_sha) -> {
+          use protocol_sha <- result.try(update_protocol_tree(
+            storage,
+            topic,
+            protocol_sha,
+            reference_sequence_number,
+            minimum_sequence_number,
+            history,
+          ))
+          json.object([
+            #(
+              "tree",
+              json.preprocessed_array([
+                summary_tree_entry(".app", contents.handle),
+                summary_tree_entry(".protocol", protocol_sha),
+              ]),
+            ),
+          ])
+          |> json.to_string
+          |> git.create(storage, topic, "trees", _)
+          |> result.replace_error("Could not store combined summary tree")
+        }
+      }
+    }
+  }
+}
+
+fn summary_tree_entry_decoder() -> decode.Decoder(
+  #(String, String, String, String),
+) {
+  use path <- decode.field("path", decode.string)
+  use mode <- decode.field("mode", decode.string)
+  use kind <- decode.field("type", decode.string)
+  use sha <- decode.field("sha", decode.string)
+  decode.success(#(path, mode, kind, sha))
+}
+
+fn summary_tree_entry(path: String, sha: String) -> json.Json {
+  json.object([
+    #("path", json.string(path)),
+    #("mode", json.string("040000")),
+    #("type", json.string("tree")),
+    #("sha", json.string(sha)),
+  ])
+}
+
+fn update_protocol_tree(
+  storage: store.Backend,
+  topic: String,
+  protocol_sha: String,
+  reference_sequence_number: Int,
+  minimum_sequence_number: Int,
+  history: List(#(Int, String)),
+) -> Result(String, String) {
+  use protocol_body <- result.try(
+    git.fetch(storage, topic, protocol_sha)
+    |> result.replace_error("Parent protocol tree does not exist"),
+  )
+  use entries <- result.try(
+    json.parse(
+      protocol_body,
+      decode.field(
+        "tree",
+        decode.list(summary_tree_entry_decoder()),
+        decode.success,
+      ),
+    )
+    |> result.replace_error("Parent protocol tree is invalid"),
+  )
+  let attributes =
+    json.object([
+      #("minimumSequenceNumber", json.int(minimum_sequence_number)),
+      #("sequenceNumber", json.int(reference_sequence_number)),
+    ])
+    |> json.to_string
+  let blob =
+    json.object([
+      #("content", json.string(attributes)),
+      #("encoding", json.string("utf-8")),
+    ])
+    |> json.to_string
+  use attributes_sha <- result.try(
+    git.create(storage, topic, "blobs", blob)
+    |> result.replace_error("Could not store protocol attributes"),
+  )
+  let members =
+    json.to_string(quorum_members(history, reference_sequence_number))
+    |> protocol_blob_body
+  use members_sha <- result.try(
+    git.create(storage, topic, "blobs", members)
+    |> result.replace_error("Could not store protocol members"),
+  )
+  let entries =
+    list.map(entries, fn(entry) {
+      case entry {
+        #("attributes", mode, kind, _) ->
+          git_tree_entry(#("attributes", mode, kind, attributes_sha))
+        #("quorumMembers", mode, kind, _) ->
+          git_tree_entry(#("quorumMembers", mode, kind, members_sha))
+        _ -> git_tree_entry(entry)
+      }
+    })
+  json.object([#("tree", json.preprocessed_array(entries))])
+  |> json.to_string
+  |> git.create(storage, topic, "trees", _)
+  |> result.replace_error("Could not store updated protocol tree")
+}
+
+fn git_tree_entry(entry: #(String, String, String, String)) -> json.Json {
+  let #(path, mode, kind, sha) = entry
+  json.object([
+    #("path", json.string(path)),
+    #("mode", json.string(mode)),
+    #("type", json.string(kind)),
+    #("sha", json.string(sha)),
+  ])
+}
+
+fn protocol_blob_body(content: String) -> String {
+  json.object([
+    #("content", json.string(content)),
+    #("encoding", json.string("utf-8")),
+  ])
+  |> json.to_string
+}
+
+fn quorum_members(
+  history: List(#(Int, String)),
+  reference_sequence_number: Int,
+) -> json.Json {
+  history
+  |> list.filter(fn(op) { op.0 <= reference_sequence_number })
+  |> list.fold(dict.new(), fn(members, op) {
+    case membership_change(op) {
+      Ok(MemberJoined(client_id, client, sequence_number)) ->
+        dict.insert(members, client_id, #(client, sequence_number))
+      Ok(MemberLeft(client_id)) -> dict.delete(members, client_id)
+      Error(_) -> members
+    }
+  })
+  |> dict.to_list
+  |> list.map(fn(member) {
+    let #(client_id, #(client, sequence_number)) = member
+    json.preprocessed_array([
+      json.string(client_id),
+      json.object([
+        #("client", dynamic_to_json(client)),
+        #("sequenceNumber", json.int(sequence_number)),
+      ]),
+    ])
+  })
+  |> json.preprocessed_array
+}
+
+type MembershipChange {
+  MemberJoined(client_id: String, client: Dynamic, sequence_number: Int)
+  MemberLeft(client_id: String)
+}
+
+fn membership_change(op: #(Int, String)) -> Result(MembershipChange, Nil) {
+  use event <- result.try(
+    json.parse(op.1, {
+      use kind <- decode.field("type", decode.string)
+      use data <- decode.field("data", decode.string)
+      decode.success(#(kind, data))
+    })
+    |> result.replace_error(Nil),
+  )
+  case event {
+    #("join", data) ->
+      json.parse(data, {
+        use client_id <- decode.field("clientId", decode.string)
+        use client <- decode.field("detail", decode.dynamic)
+        decode.success(MemberJoined(client_id, client, op.0))
+      })
+      |> result.replace_error(Nil)
+    #("leave", data) ->
+      json.parse(data, decode.string)
+      |> result.map(MemberLeft)
+      |> result.replace_error(Nil)
+    _ -> Error(Nil)
   }
 }
 
@@ -1251,11 +1502,15 @@ fn relay_signal(
   assigns: DocAssigns,
   signal: signals.NormalizedSignal,
 ) -> Nil {
-  let message =
-    json.object([
-      #("clientId", json.string(assigns.client_id)),
-      #("content", dynamic_to_json(signal.content)),
-    ])
+  let message_fields = [
+    #("clientId", json.string(assigns.client_id)),
+    #("content", dynamic_to_json(signal.content)),
+  ]
+  let message_fields = case signal.target_client_id {
+    Some(target) -> [#("targetClientId", json.string(target)), ..message_fields]
+    None -> message_fields
+  }
+  let message = json.object(message_fields)
 
   case targeted(signal), registered_channel(registration) {
     // Untargeted, or no registration handle to push through: broadcast, which
@@ -1263,13 +1518,17 @@ fn relay_signal(
     False, _ | _, None ->
       beryl.broadcast(channels, assigns.topic, events.signal, message)
     True, Some(registered) ->
-      session_logic.determine_signal_recipients(
-        assigns.client_id,
-        signal.targeted_clients,
-        signal.ignored_clients,
-        signal.target_client_id,
-        session.clients(document_session, assigns.topic),
-      )
+      case signal.target_client_id {
+        Some(target) if target == assigns.client_id -> [target]
+        _ ->
+          session_logic.determine_signal_recipients(
+            assigns.client_id,
+            signal.targeted_clients,
+            signal.ignored_clients,
+            signal.target_client_id,
+            session.clients(document_session, assigns.topic),
+          )
+      }
       // The Fluid client id *is* the beryl socket id — `join` assigns
       // `socket.id(sock)` as the client id — so a recipient addresses a socket
       // directly, with no mapping to maintain.
@@ -1358,45 +1617,16 @@ fn submitted_signals(
   }
 }
 
-/// The `{signals: ["...", ...]}` shape carries content strings only — no
-/// targeting — so these normalize to untargeted signals and take the broadcast
-/// path.
 fn legacy_submitted_signals(
   payload: Dynamic,
 ) -> Result(List(signals.NormalizedSignal), Nil) {
-  let signal_decoder = {
-    use content <- decode.field("content", decode.string)
-    decode.success(content)
-  }
-  let signals_decoder =
-    decode.one_of(decode.list(signal_decoder), [
-      decode.list(decode.list(decode.string))
-      |> decode.map(list.flatten),
-    ])
   let decoder = {
-    use signals <- decode.field("signals", signals_decoder)
+    use signals <- decode.field("signals", decode.dynamic)
     decode.success(signals)
   }
   decode.run(payload, decoder)
-  |> result.map(
-    list.map(_, fn(content) { untargeted(dynamic.string(content)) }),
-  )
+  |> result.map(signals.normalize_signal_batch)
   |> result.replace_error(Nil)
-}
-
-/// A signal carrying content and no targeting — the legacy
-/// `{signals: ["...", ...]}` shape has nowhere to put targeting fields, so
-/// those signals go to the whole topic.
-fn untargeted(content: Dynamic) -> signals.NormalizedSignal {
-  signals.NormalizedSignal(
-    content: content,
-    signal_type: None,
-    client_connection_number: None,
-    reference_sequence_number: None,
-    target_client_id: None,
-    targeted_clients: None,
-    ignored_clients: None,
-  )
 }
 
 fn sequenced_op_json(

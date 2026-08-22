@@ -442,15 +442,17 @@ describe.runIf(floodgateAvailable)(
 			);
 
 			try {
-				// initialSignals is always empty, matching levee. Returning the
-				// client's own presence-join here used to close containers with
-				// assert 0x4b2: the container-loader seeds its audience with the
-				// IClient object it sent (original key order) and demands
-				// byte-identity with any later self add, which a payload that has
-				// been through an Erlang map (term-ordered keys) can never satisfy.
 				const initialSignals = Reflect.get(connection, "details")
 					.initialSignals as ISignalMessage[];
-				expect(initialSignals).toHaveLength(0);
+				expect(initialSignals).toHaveLength(1);
+				expect(initialSignals[0]?.clientId).toBeNull();
+				expect(JSON.parse(initialSignals[0]?.content ?? "")).toMatchObject({
+					type: "join",
+					content: {
+						clientId: connection.clientId,
+						client: { mode: "read" },
+					},
+				});
 
 				const nack = waitForNack(connection);
 				connection.submit([message(1, 0, "not-allowed")]);
@@ -1069,8 +1071,8 @@ describe.runIf(floodgateAvailable)(
 
 				expect(response.status).toBe(200);
 				const body = await response.json();
-				expect(Array.isArray(body.value)).toBe(true);
-				expect(body.value).toHaveLength(0);
+				expect(Array.isArray(body)).toBe(true);
+				expect(body).toHaveLength(0);
 			},
 		);
 
@@ -1106,7 +1108,7 @@ describe.runIf(floodgateAvailable)(
 
 				expect(response.status).toBe(200);
 				const body = await response.json();
-				expect(body.value).toMatchObject([
+				expect(body).toMatchObject([
 					{ sequenceNumber: 2, contents: "first-delta", type: "op" },
 					{ sequenceNumber: 3, contents: "second-delta", type: "op" },
 				]);

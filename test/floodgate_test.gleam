@@ -790,9 +790,11 @@ pub fn git_create_fetch_roundtrip_test() {
   sha |> should.equal("32f95c0d1244a78b2be1bab8de17906fabb2c4a8")
   git.fetch(storage, topic, sha) |> should.equal(Ok(body))
   git.fetch(storage, topic, "nope") |> should.equal(Error(Nil))
-  // Objects are document-scoped: the same tenant, a different document, does
-  // not see it. This is what makes a document's storage self-contained.
+  // Historian objects are tenant-scoped, so drivers can safely reuse a
+  // content-addressed object hash across documents.
   git.fetch(storage, store.topic("t", "other"), sha)
+  |> should.equal(Ok(body))
+  git.fetch(storage, store.topic("other-tenant", "doc"), sha)
   |> should.equal(Error(Nil))
 }
 

@@ -29,13 +29,14 @@ import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
+import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import mist.{type Connection, type ResponseData, type WebsocketConnection}
 import spillway/socketio
 
-const ping_interval_ms = 25_000
+const ping_interval_ms = 10_000
 
 const ping_timeout_ms = 20_000
 
@@ -302,27 +303,51 @@ fn handle_text(
   text: String,
   connection: WebsocketConnection,
 ) -> mist.Next(ConnectionState, SendRequest) {
-  case socketio.classify(text) {
-    socketio.EnginePing -> {
-      transport.route_decoded(
-        state.channels,
-        state.socket_id,
-        codec.inbound(None, None, "", Heartbeat, dynamic.nil()),
-      )
-      mist.continue(state)
-    }
-    socketio.EnginePong -> {
-      transport.route_decoded(
-        state.channels,
-        state.socket_id,
-        codec.inbound(None, None, "", Heartbeat, dynamic.nil()),
-      )
-      mist.continue(state)
-    }
-    socketio.SocketConnect ->
-      send_text(connection, state, socketio.encode_connect_ack(state.socket_id))
-    socketio.FluidEvent(event, args) -> handle_fluid_event(state, event, args)
-    socketio.Unrecognized(_) -> mist.continue(state)
+  case socket_ping_ack_id(text) {
+    Some(id) -> send_text(connection, state, "43" <> id <> "[]")
+    None ->
+      case socketio.classify(text) {
+        socketio.EnginePing -> {
+          transport.route_decoded(
+            state.channels,
+            state.socket_id,
+            codec.inbound(None, None, "", Heartbeat, dynamic.nil()),
+          )
+          mist.continue(state)
+        }
+        socketio.EnginePong -> {
+          transport.route_decoded(
+            state.channels,
+            state.socket_id,
+            codec.inbound(None, None, "", Heartbeat, dynamic.nil()),
+          )
+          mist.continue(state)
+        }
+        socketio.SocketConnect ->
+          send_text(
+            connection,
+            state,
+            socketio.encode_connect_ack(state.socket_id),
+          )
+        socketio.FluidEvent(event, args) ->
+          handle_fluid_event(state, event, args)
+        socketio.Unrecognized(_) -> mist.continue(state)
+      }
+  }
+}
+
+fn socket_ping_ack_id(text: String) -> Option(String) {
+  case
+    string.starts_with(text, "42"),
+    string.contains(text, "[\"ping\""),
+    string.split(string.drop_start(text, 2), "[")
+  {
+    True, True, [id, ..] if id != "" ->
+      case int.parse(id) {
+        Ok(_) -> Some(id)
+        Error(_) -> None
+      }
+    _, _, _ -> None
   }
 }
 
