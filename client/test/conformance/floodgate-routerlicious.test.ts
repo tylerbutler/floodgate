@@ -1103,7 +1103,12 @@ describe.runIf(floodgateAvailable)(
 						FLOODGATE_TENANT_ID,
 						documentId,
 					)}?from=1&to=3`,
-					{ documentId },
+					{
+						// Handcrafted REST call should match the official
+						// Routerlicious driver's delta-storage auth scheme.
+						authorizationScheme: "Basic",
+						documentId,
+					},
 				);
 
 				expect(response.status).toBe(200);

@@ -308,9 +308,12 @@ export async function generateFloodgateToken(
 }
 
 /** Authenticated fetch against the configured Floodgate/Levee target. */
+type FloodgateAuthorizationScheme = "Basic" | "Bearer";
+
 export async function floodgateFetch(
 	path: string,
 	options: {
+		authorizationScheme?: FloodgateAuthorizationScheme;
 		method?: string;
 		body?: unknown;
 		documentId?: string;
@@ -323,7 +326,7 @@ export async function floodgateFetch(
 	);
 
 	const headers: Record<string, string> = {
-		Authorization: `Bearer ${token}`,
+		Authorization: `${options.authorizationScheme ?? "Bearer"} ${token}`,
 	};
 
 	let body: string | undefined;
