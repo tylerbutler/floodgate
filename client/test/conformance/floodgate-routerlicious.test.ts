@@ -1071,8 +1071,8 @@ describe.runIf(floodgateAvailable)(
 
 				expect(response.status).toBe(200);
 				const body = await response.json();
-				expect(Array.isArray(body)).toBe(true);
-				expect(body).toHaveLength(0);
+				expect(Array.isArray(body.value)).toBe(true);
+				expect(body.value).toHaveLength(0);
 			},
 		);
 
