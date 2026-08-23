@@ -24,11 +24,21 @@ const { command } = Astro.props;
 				await navigator.clipboard.writeText(btn.dataset.copy ?? "");
 				btn.textContent = "[ok]";
 			} catch {
-				btn.textContent = "[copy failed]";
+				const code = btn.closest(".cmd")?.querySelector("code");
+				if (code) {
+					const selection = window.getSelection();
+					const range = document.createRange();
+					range.selectNodeContents(code);
+					selection?.removeAllRanges();
+					selection?.addRange(range);
+					btn.textContent = "[selected — copy manually]";
+				} else {
+					btn.textContent = "[copy unavailable]";
+				}
 			}
 			setTimeout(() => {
 				btn.textContent = "[copy]";
-			}, 1600);
+			}, 3000);
 		});
 	}
 </script>
