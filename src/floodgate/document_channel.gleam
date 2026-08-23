@@ -21,6 +21,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
+import gleam/pair
 import gleam/result
 import gleam/string
 import signet/types.{type TokenClaims}
@@ -320,15 +321,23 @@ fn connect_core(
               session.stored_message_to_json(#(sn, message)),
             ]),
           )
-        session.Reader ->
-          beryl.broadcast_from(
-            channels,
-            client_id,
-            topic,
-            events.signal,
-            presence_join(client_id, client),
-          )
+        session.Reader -> Nil
       }
+      // Routerlicious announces *every* connection with a room join signal, not
+      // just a read-only one: an audience that is fed only by signals — Fluid
+      // 1.4.0's is, and it always loads in write mode — never learns about a
+      // writer otherwise. Clients that also track the quorum ignore the join
+      // signal for a write client, so the extra signal cannot double-count.
+      //
+      // The joining socket cannot be broadcast to yet (beryl subscribes it once
+      // this returns), so its own join rides along in `initialSignals`.
+      beryl.broadcast_from(
+        channels,
+        client_id,
+        topic,
+        events.signal,
+        presence_join(client_id, client),
+      )
       Ok(#(
         connected_response(
           claims,
@@ -341,10 +350,7 @@ fn connect_core(
           summary_sequence_number,
           current_sequence_number,
           beryl.max_inbound_frame_bytes(channels),
-          case membership {
-            session.Reader -> [presence_join(client_id, client)]
-            session.Writer(_, _) -> []
-          },
+          [presence_join(client_id, client)],
         ),
         DocAssigns(
           client_id: client_id,
@@ -393,16 +399,18 @@ fn on_leave(
         ]),
       )
     }
-    session.Read -> {
+    session.Read ->
       session.leave_presence(document_session, assigns.topic, assigns.client_id)
-      beryl.broadcast(
-        channels,
-        assigns.topic,
-        events.signal,
-        presence_leave(assigns.client_id),
-      )
-    }
   }
+  // The mirror of the unconditional join signal in `connect_core`: routerlicious
+  // announces every disconnect to the room, so an audience built from signals
+  // alone still drops a writer that left.
+  beryl.broadcast(
+    channels,
+    assigns.topic,
+    events.signal,
+    presence_leave(assigns.client_id),
+  )
 }
 
 fn presence_join(client_id: String, client: json.Json) -> json.Json {
@@ -1053,20 +1061,25 @@ fn submit_summary_op(
       fn(summary_sn, response_sn, msn, _roster) {
         let outcome = case summarize_contents(op.contents) {
           Error(reason) -> #(None, reason)
-          Ok(contents) ->
+          Ok(contents) -> {
+            let history = session.since(document_session, assigns.topic, 0)
             case
               persist_summary(
                 session.storage(document_session),
                 assigns.topic,
                 contents,
                 op.reference_sequence_number,
-                msn,
-                session.since(document_session, assigns.topic, 0),
+                protocol_minimum_sequence_number(
+                  history,
+                  op.reference_sequence_number,
+                ),
+                history,
               )
             {
               Ok(commit_sha) -> #(Some(commit_sha), "")
               Error(reason) -> #(None, reason)
             }
+          }
         }
         let response = case outcome.0 {
           Some(handle) ->
@@ -1396,6 +1409,43 @@ fn protocol_blob_body(content: String) -> String {
   |> json.to_string
 }
 
+/// The minimum sequence number a summary's `.protocol/attributes` records.
+///
+/// Scribe snapshots the protocol state *as of the summary's reference sequence
+/// number*: it replays pending ops up to that point and reads the handler back,
+/// so the attributes carry the MSN of the last op at or before the reference,
+/// paired with the reference itself. The document's MSN when the summarize op
+/// was sequenced is a later, higher value — writing that one gives a container
+/// loading the summary a starting MSN ahead of the very ops it then reads, and
+/// the client rejects the first of them with "Invalid MinimumSequenceNumber
+/// from service - document may have been restored to previous state".
+pub fn protocol_minimum_sequence_number(
+  history: List(#(Int, String)),
+  reference_sequence_number: Int,
+) -> Int {
+  history
+  |> list.fold(#(0, 0), fn(latest, op) {
+    let #(seen, _) = latest
+    case op.0 <= reference_sequence_number && op.0 >= seen {
+      False -> latest
+      True ->
+        case message_minimum_sequence_number(op.1) {
+          Ok(value) -> #(op.0, value)
+          Error(Nil) -> latest
+        }
+    }
+  })
+  |> pair.second
+}
+
+fn message_minimum_sequence_number(message: String) -> Result(Int, Nil) {
+  json.parse(
+    message,
+    decode.field("minimumSequenceNumber", decode.int, decode.success),
+  )
+  |> result.replace_error(Nil)
+}
+
 fn quorum_members(
   history: List(#(Int, String)),
   reference_sequence_number: Int,
@@ -1597,36 +1647,66 @@ fn optional_dynamic_field(
   decode.optional_field(name, None, decode.optional(decode.dynamic), next)
 }
 
-/// Signal payloads arrive in two shapes: floodgate's Socket.IO clients send
-/// `{signals: [...]}`, while `levee-driver` sends
-/// `{contentBatches: [[{content, targetClientId?}]]}`. Batches go through
-/// spillway's v1/v2 normalization — the same path levee's
-/// `Bridge.normalize_signal_batch` takes — rather than a third ad-hoc parser.
+/// Signal payloads arrive in three shapes. Floodgate's Socket.IO clients send
+/// `{signals: [...]}`, `levee-driver` sends
+/// `{contentBatches: [[{content, targetClientId?}]]}`, and any driver that
+/// predates the `submit_signals_v2` feature — Fluid 1.4.0, 2.0.0-internal.5.4.2
+/// and 2.0.9 among them — sends a *batch of contents* per entry, i.e.
+/// `[["<json string>"]]`.
+///
+/// Routerlicious' nexus lambda makes the same split: an entry that is an array
+/// is a v1 content batch whose items relay verbatim, anything else is a single
+/// `ISentSignalMessage`. Entries that are objects go through spillway's v1/v2
+/// normalization — the same path levee's `Bridge.normalize_signal_batch` takes —
+/// rather than a third ad-hoc parser.
 ///
 /// Normalized signals keep their targeting fields, which `relay_signal` honours.
 fn submitted_signals(
   payload: Dynamic,
 ) -> Result(List(signals.NormalizedSignal), Nil) {
-  let batches_decoder = {
-    use batches <- decode.field("contentBatches", decode.list(decode.dynamic))
-    decode.success(batches)
+  let field = fn(name) {
+    use raw <- decode.field(name, decode.dynamic)
+    decode.success(raw)
   }
-  case decode.run(payload, batches_decoder) {
-    Ok(batches) -> Ok(list.flat_map(batches, signals.normalize_signal_batch))
-    Error(_) -> legacy_submitted_signals(payload)
+  case decode.run(payload, field("contentBatches")) {
+    Ok(raw) -> Ok(normalize_submitted(raw))
+    Error(_) ->
+      decode.run(payload, field("signals"))
+      |> result.map(normalize_submitted)
+      |> result.replace_error(Nil)
   }
 }
 
-fn legacy_submitted_signals(
-  payload: Dynamic,
-) -> Result(List(signals.NormalizedSignal), Nil) {
-  let decoder = {
-    use signals <- decode.field("signals", decode.dynamic)
-    decode.success(signals)
+fn normalize_submitted(raw: Dynamic) -> List(signals.NormalizedSignal) {
+  case decode.run(raw, decode.list(decode.dynamic)) {
+    Ok(entries) -> list.flat_map(entries, normalize_submitted_entry)
+    Error(_) -> normalize_submitted_entry(raw)
   }
-  decode.run(payload, decoder)
-  |> result.map(signals.normalize_signal_batch)
-  |> result.replace_error(Nil)
+}
+
+fn normalize_submitted_entry(entry: Dynamic) -> List(signals.NormalizedSignal) {
+  case decode.run(entry, decode.list(decode.dynamic)) {
+    Ok(contents) -> list.map(contents, normalize_submitted_content)
+    Error(_) -> [normalize_submitted_content(entry)]
+  }
+}
+
+fn normalize_submitted_content(content: Dynamic) -> signals.NormalizedSignal {
+  case decode.run(content, decode.dict(decode.string, decode.dynamic)) {
+    Ok(fields) -> signals.normalize_signal(fields)
+    // A pre-v2 driver's content is an opaque payload — in practice the JSON
+    // string the container stringified — and relays exactly as it arrived.
+    Error(_) ->
+      signals.NormalizedSignal(
+        content: content,
+        signal_type: None,
+        client_connection_number: None,
+        reference_sequence_number: None,
+        target_client_id: None,
+        targeted_clients: None,
+        ignored_clients: None,
+      )
+  }
 }
 
 fn sequenced_op_json(

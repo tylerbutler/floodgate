@@ -666,3 +666,138 @@ pub fn phoenix_join_honours_secret_rotation_test() {
   let assert Ok(reply_after) = process.receive(sent_after, 1000)
   reply_after |> string.contains("\"status\":\"ok\"") |> should.be_true
 }
+
+/// Routerlicious announces a write client's arrival with a room join signal as
+/// well as the sequenced join op. Fluid 1.4.0 builds its audience from
+/// `initialSignals` plus join/leave signals only — never from the quorum — and
+/// always loads in write mode, so without this it never sees itself or a peer.
+pub fn write_mode_join_is_announced_as_a_signal_test() {
+  let doc = "phx-join-signal"
+  let token = token_for(doc, ["doc:read", "doc:write"])
+  let assert Ok(#(channels, _sess)) =
+    floodgate.start_with_backend(tenant, secret, memory_store.new())
+
+  let first = attach(channels, "s-js-first")
+  connect(channels, doc, token, "s-js-first")
+  drain(first)
+
+  let second = attach(channels, "s-js-second")
+  connect(channels, doc, token, "s-js-second")
+
+  // The joining socket cannot be broadcast to yet, so its own join arrives in
+  // the connected response instead.
+  let assert Ok(connected) = collect_until(second, "connect_document_success")
+  connected |> string.contains("initialSignals") |> should.be_true
+  connected |> string.contains("\\\"type\\\":\\\"join\\\"") |> should.be_true
+  connected |> string.contains("s-js-second") |> should.be_true
+
+  // The peer learns about it over the wire.
+  let assert Ok(join_signal) = collect_until(first, "\\\"type\\\":\\\"join\\\"")
+  join_signal |> string.contains("\"signal\"") |> should.be_true
+  join_signal |> string.contains("s-js-second") |> should.be_true
+}
+
+/// The mirror image: a write client's departure is announced as a leave signal,
+/// not only as the sequenced leave op.
+pub fn write_mode_leave_is_announced_as_a_signal_test() {
+  let doc = "phx-leave-signal"
+  let token = token_for(doc, ["doc:read", "doc:write"])
+  let assert Ok(#(channels, _sess)) =
+    floodgate.start_with_backend(tenant, secret, memory_store.new())
+
+  let first = attach(channels, "s-ls-first")
+  connect(channels, doc, token, "s-ls-first")
+  let second = attach(channels, "s-ls-second")
+  connect(channels, doc, token, "s-ls-second")
+  drain(first)
+  drain(second)
+
+  process.send(
+    beryl.coordinator_subject(channels),
+    coordinator.SocketDisconnected("s-ls-second"),
+  )
+
+  let assert Ok(leave_signal) =
+    collect_until(first, "\\\"type\\\":\\\"leave\\\"")
+  leave_signal |> string.contains("\"signal\"") |> should.be_true
+  leave_signal |> string.contains("s-ls-second") |> should.be_true
+}
+
+/// Every driver that predates the `submit_signals_v2` feature — Fluid 1.4.0,
+/// 2.0.0-internal.5.4.2 and 2.0.9 among them — sends a *batch of contents* per
+/// entry rather than an `ISentSignalMessage`. Floodgate used to fail to decode
+/// the nested array and silently drop the signal, so not even the sender's own
+/// echo came back.
+pub fn legacy_signal_batches_reach_every_client_including_the_sender_test() {
+  let doc = "phx-signal-v1"
+  let token = token_for(doc, ["doc:read", "doc:write"])
+  let assert Ok(#(channels, _sess)) =
+    floodgate.start_with_backend(tenant, secret, memory_store.new())
+
+  let sender = attach(channels, "s-v1-sender")
+  let peer = attach(channels, "s-v1-peer")
+  connect(channels, doc, token, "s-v1-sender")
+  connect(channels, doc, token, "s-v1-peer")
+  drain(sender)
+  drain(peer)
+
+  route(
+    channels,
+    "s-v1-sender",
+    phoenix_event(
+      doc,
+      "submitSignal",
+      "{\"clientId\":\"s-v1-sender\",\"signals\":[[\"{\\\"type\\\":\\\"ping\\\"}\"]]}",
+    ),
+  )
+
+  // The content relays verbatim — it is an opaque JSON string the client
+  // stringified, and the client parses it back on receipt.
+  let assert Ok(to_peer) = collect_until(peer, "\\\"type\\\":\\\"ping\\\"")
+  to_peer |> string.contains("\"signal\"") |> should.be_true
+  to_peer |> string.contains("s-v1-sender") |> should.be_true
+  let assert Ok(_) = collect_until(sender, "\\\"type\\\":\\\"ping\\\"")
+}
+
+/// Read the frames a socket has queued until one contains `needle`.
+fn collect_until(
+  sent: process.Subject(String),
+  needle: String,
+) -> Result(String, Nil) {
+  case process.receive(sent, 1000) {
+    Ok(frame) ->
+      case string.contains(frame, needle) {
+        True -> Ok(frame)
+        False -> collect_until(sent, needle)
+      }
+    Error(Nil) -> Error(Nil)
+  }
+}
+
+/// A summary's `.protocol/attributes` must record the minimum sequence number
+/// as of the summary's *reference* sequence number, which is the MSN carried by
+/// the last op at or before it — not the document's MSN when the summarize op
+/// was sequenced. Recording the later value hands a loading container a
+/// starting MSN ahead of the ops it then reads, and the client rejects the
+/// first of those with "Invalid MinimumSequenceNumber from service".
+pub fn protocol_attributes_use_the_msn_at_the_reference_sequence_number_test() {
+  let history = [
+    #(1, "{\"sequenceNumber\":1,\"minimumSequenceNumber\":0,\"type\":\"join\"}"),
+    #(2, "{\"sequenceNumber\":2,\"minimumSequenceNumber\":0,\"type\":\"join\"}"),
+    #(3, "{\"sequenceNumber\":3,\"minimumSequenceNumber\":1,\"type\":\"op\"}"),
+    #(4, "{\"sequenceNumber\":4,\"minimumSequenceNumber\":2,\"type\":\"op\"}"),
+  ]
+
+  document_channel.protocol_minimum_sequence_number(history, 2)
+  |> should.equal(0)
+  document_channel.protocol_minimum_sequence_number(history, 3)
+  |> should.equal(1)
+  document_channel.protocol_minimum_sequence_number(history, 4)
+  |> should.equal(2)
+  // Nothing sequenced yet, and unparseable entries, both fall back to zero
+  // rather than inventing a minimum the ops cannot support.
+  document_channel.protocol_minimum_sequence_number(history, 0)
+  |> should.equal(0)
+  document_channel.protocol_minimum_sequence_number([#(1, "not json")], 1)
+  |> should.equal(0)
+}
