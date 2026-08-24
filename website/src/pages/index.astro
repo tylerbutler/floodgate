@@ -1,5 +1,6 @@
 ---
 import Cmd from "../components/Cmd.astro";
+import SupervisorLog from "../components/SupervisorLog.astro";
 import Terminal from "../layouts/Terminal.astro";
 
 const bootLines = [
@@ -19,11 +20,11 @@ const whyBeam = [
 ];
 
 const capabilities = [
-	{ label: "dual-mode wire protocols", detail: "Socket.IO + Phoenix Channels, from one process" },
-	{ label: "presence_v1", detail: "server-backed roster, both endpoints, no client heartbeat needed" },
-	{ label: "git-like storage", detail: "blobs, trees, commits, refs — per tenant" },
-	{ label: "multi-tenancy", detail: "dynamic tenants, two rotating JWT secret slots each" },
-	{ label: "self-hosted", detail: "single binary or `docker compose up`" },
+	{ tag: "proto", label: "dual-mode wire protocols", detail: "Socket.IO + Phoenix Channels, from one process" },
+	{ tag: "presence", label: "presence_v1", detail: "server-backed roster, both endpoints, no client heartbeat needed" },
+	{ tag: "storage", label: "git-like storage", detail: "blobs, trees, commits, refs — per tenant" },
+	{ tag: "tenancy", label: "multi-tenancy", detail: "dynamic tenants, two rotating JWT secret slots each" },
+	{ tag: "deploy", label: "self-hosted", detail: "single binary or `docker compose up`" },
 ];
 ---
 
@@ -33,25 +34,31 @@ const capabilities = [
 	path="/"
 >
 	<header class="hero">
-		<h1 class="page-title">
-			<span class="page-title__product">floodgate</span>
-			<span class="page-title__promise">A fault-isolated Fluid server on the BEAM.</span>
-		</h1>
-		<p class="lede">
-			Use Floodgate as the self-hosted collaboration backend for a{" "}
-			<a href="https://fluidframework.com">Fluid Framework</a> app. Each
-			document runs in its own supervised BEAM process, while one server
-			speaks the official Fluid protocol and Phoenix Channels.
-		</p>
-		<div class="hero__actions">
-			<a class="cta" href="/docs/getting-started">get Floodgate running</a>
-			<a class="text-action" href="/architecture">see how isolation works</a>
+		<div class="hero__pitch">
+			<h1 class="page-title">
+				<span class="page-title__product">floodgate</span>
+				<span class="page-title__promise">A fault-isolated Fluid server on the BEAM.</span>
+			</h1>
+			<p class="lede">
+				Use Floodgate as the self-hosted collaboration backend for a{" "}
+				<a href="https://fluidframework.com" rel="noopener external">Fluid Framework</a> app. Each
+				document runs in its own supervised BEAM process, while one server
+				speaks the official Fluid protocol and Phoenix Channels.
+			</p>
+			<div class="hero__actions">
+				<a class="cta" href="/docs/getting-started">get Floodgate running</a>
+				<a class="text-action" href="/architecture">see how isolation works</a>
+			</div>
+		</div>
+
+		<div class="hero__proof">
+			<SupervisorLog label="what a crash looks like" />
 		</div>
 	</header>
 
 	<section class="boot-proof" aria-labelledby="boot-proof-title">
 		<h2 class="rule-label" id="boot-proof-title">one server, two protocols</h2>
-		<ul class="log" aria-label="Floodgate startup log">
+		<ul class="log" data-reveal aria-label="Floodgate startup log">
 			{bootLines.map((line, i) => (
 				<li style={`--i:${i}`}>
 					<span class="log__tag">[{line.tag}]</span>{" "}
@@ -81,7 +88,7 @@ const capabilities = [
 	<ul class="log log--static" aria-label="Capabilities">
 		{capabilities.map((cap) => (
 			<li>
-				<span class="log__tag">[cap]</span> <strong>{cap.label}</strong>
+				<span class="log__tag">[{cap.tag}]</span> <strong>{cap.label}</strong>
 				<span class="note">: {cap.detail}</span>
 			</li>
 		))}

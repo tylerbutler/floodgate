@@ -1,4 +1,5 @@
 ---
+import GrepFilter from "../../components/GrepFilter.astro";
 import Terminal from "../../layouts/Terminal.astro";
 import { docNodes } from "../../data/docs-nodes";
 ---
@@ -10,7 +11,7 @@ import { docNodes } from "../../data/docs-nodes";
 >
 	<div class="node__head">
 		<span>File: <strong>floodgate.info</strong>,</span>
-		<span>Node: <strong>(dir)</strong></span>
+		<span>Node: <strong>(dir)</strong> — the top node</span>
 	</div>
 	<h1>Documentation</h1>
 	<p>
@@ -19,7 +20,10 @@ import { docNodes } from "../../data/docs-nodes";
 		can read straight through or jump anywhere from here.
 	</p>
 
+	<GrepFilter label="Filter documentation topics" />
+
 	<h2 class="rule-label rule-label--bare">* Menu:</h2>
+	<section data-grep-section>
 	<ul class="log log--static dir-menu" aria-label="Documentation topics">
 		{docNodes.map((node) => (
 			<li>
@@ -32,8 +36,9 @@ import { docNodes } from "../../data/docs-nodes";
 			</li>
 		))}
 	</ul>
+	</section>
 
 	<div class="node__foot">
-		<a href="/">&uarr; Up: ~</a>
+		<a href="/">&uarr; Up: home</a>
 	</div>
 </Terminal>

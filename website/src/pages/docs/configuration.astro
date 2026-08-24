@@ -109,15 +109,20 @@ const varId = (v: ConfigVar) => v.id ?? v.name;
 	{groups.map((group) => (
 		<section id={group.id} data-grep-section>
 			<h2 class="rule-label">{group.label}</h2>
-			<ul class="log log--static" aria-label={`${group.label} variables`}>
-				{group.vars.map((v) => (
-					<li id={varId(v)}>
-						<a class="self" href={`#${varId(v)}`}><code>{v.name}</code></a>
-						<span class="log__tag"> [{v.def}]</span>
-						<span class="note"> — {v.desc}</span>
-					</li>
-				))}
-			</ul>
+			<div class="ref-block ref-block--config">
+				<p class="ref__head ref__row" aria-hidden="true">
+					<span>variable</span><span>default</span><span>purpose</span>
+				</p>
+				<ul class="log log--static ref" aria-label={`${group.label} variables`}>
+					{group.vars.map((v) => (
+						<li id={varId(v)} class="ref__row">
+							<a class="self" href={`#${varId(v)}`}><code>{v.name}</code></a>
+							<span class="ref__def">[{v.def}]</span>
+							<span class="ref__desc">{v.desc}</span>
+						</li>
+					))}
+				</ul>
+			</div>
 		</section>
 	))}
 

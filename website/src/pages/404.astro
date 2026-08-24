@@ -29,7 +29,7 @@ import Terminal from "../layouts/Terminal.astro";
 		<li>
 			<span class="log__tag">[dir]</span>{" "}
 			<a href="/docs">docs</a>
-			<span class="note"> — every documentation node, with a grep filter</span>
+			<span class="note"> — every documentation node, with a grep filter (press /)</span>
 		</li>
 		<li>
 			<span class="log__tag">[dir]</span>{" "}
@@ -38,14 +38,18 @@ import Terminal from "../layouts/Terminal.astro";
 		</li>
 		<li>
 			<span class="log__tag">[dir]</span>{" "}
-			<a href="/">~</a>
-			<span class="note"> — home</span>
+			<a href="/">home</a>
+			<span class="note"> — the top of the site</span>
 		</li>
 	</ul>
 </Terminal>
 
 <script>
-	// Echo the path that actually failed; the static fallback still reads fine.
+	// Echo the path that actually failed, in the body and in the title bar.
+	// A shell would never report /404 as the working directory.
+	const failed = location.pathname;
 	const el = document.querySelector("[data-404-path]");
-	if (el) el.textContent = location.pathname;
+	if (el) el.textContent = failed;
+	const bar = document.querySelector("[data-term-path]");
+	if (bar) bar.textContent = failed;
 </script>

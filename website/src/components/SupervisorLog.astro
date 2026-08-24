@@ -1,0 +1,34 @@
+---
+interface Props {
+	/** Heading text; the caller owns the wording, the lines stay identical. */
+	label: string;
+	id?: string;
+}
+
+const { label, id } = Astro.props;
+
+// One source of truth for the crash story: the homepage and /architecture
+// render the same lines, so the site's central claim cannot drift.
+const lines = [
+	{ tag: "doc:a3f9", text: "ops sequenced, clients attached" },
+	{ tag: "sup", text: "doc:a3f9 exited: badarg" },
+	{ tag: "sup", text: "doc:a3f9 restarted, state reloaded from storage" },
+	{ tag: "doc:a3f9", text: "client resumed at the same sequence number" },
+	{ tag: "ok", text: "every other document session: untouched", ok: true },
+];
+---
+
+<h2 class="rule-label" id={id}>{label}</h2>
+<ul class="log crash-log" data-reveal aria-label="Supervisor output during a document crash">
+	{lines.map((line, i) => (
+		<li style={`--i:${i}`}>
+			<span class="log__tag">[{line.tag}]</span>{" "}
+			<span class={line.ok ? "log__ok" : undefined}>{line.text}</span>
+		</li>
+	))}
+</ul>
+<p class="note">
+	Illustrative supervisor output, not a benchmark — <code>one_for_one</code>{" "}
+	is the restart strategy Floodgate configures, and reloading from storage is
+	what a restarted session does.
+</p>

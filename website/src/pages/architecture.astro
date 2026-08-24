@@ -1,5 +1,7 @@
 ---
+import SupervisorLog from "../components/SupervisorLog.astro";
 import Terminal from "../layouts/Terminal.astro";
+import { routeExcerpt } from "../data/routes";
 
 const tree = [
 	{ prefix: "", name: "floodgate", desc: null },
@@ -26,15 +28,6 @@ const composedFrom = [
 	{ name: "windsock", role: "supporting runtime utilities" },
 ];
 
-const httpSurface = [
-	{ method: "GET", path: "/health", desc: "readiness probe" },
-	{ method: "POST", path: "/documents/:tenant", desc: "create a document" },
-	{ method: "GET", path: "/documents/:tenant/:id", desc: "document metadata" },
-	{ method: "GET", path: "/documents/:tenant/:id/deltas", desc: "ops catch-up" },
-	{ method: "GET", path: "/repos/:tenant/git/refs", desc: "list refs" },
-	{ method: "POST", path: "/repos/:tenant/git/{blobs,trees,commits}", desc: "create a git object" },
-	{ method: "GET", path: "/api/tenants", desc: "list tenants (admin session or key)" },
-];
 ---
 
 <Terminal
@@ -43,8 +36,21 @@ const httpSurface = [
 	path="/architecture"
 >
 	<h1 class="page-title">architecture</h1>
+
+	<SupervisorLog label="how a document survives a crash" id="crash" />
+	<p>
+		Each document session is its own BEAM process, supervised with a{" "}
+		<code>one_for_one</code> restart strategy. If a session process crashes,
+		it restarts and reloads its state from storage — the rest of the node,
+		including every other document's session, is unaffected. The isolation
+		comes from the runtime, not from Floodgate code; the sequencing and
+		validation logic on top of it is written in Gleam, so a whole class of
+		protocol bugs is caught by the compiler before the process ever starts.
+	</p>
+
+	<h2 class="rule-label">the process tree</h2>
 	<p class="prompt">pstree floodgate</p>
-	<ul class="log tree-list" aria-label="Process tree">
+	<ul class="log tree-list" data-reveal aria-label="Process tree">
 		{tree.map((node, i) => (
 			<li style={`--i:${i}`}>
 				{node.prefix && <span class="log__tag">{node.prefix} </span>}
@@ -62,26 +68,15 @@ const httpSurface = [
 	</p>
 
 	<h2 class="rule-label">composed from</h2>
-	<ul class="log" aria-label="Sibling libraries">
+	<ul class="log" data-reveal aria-label="Sibling libraries">
 		{composedFrom.map((lib, i) => (
 			<li style={`--i:${i}`}>
 				<span class="log__tag">[lib]</span>{" "}
-				<strong><a href={`https://${lib.name}.tylerbutler.com`}>{lib.name}</a></strong>
+				<strong><a href={`https://${lib.name}.tylerbutler.com`} rel="noopener external">{lib.name}</a></strong>
 				<span class="note"> — {lib.role}</span>
 			</li>
 		))}
 	</ul>
-
-	<h2 class="rule-label">how a document survives a crash</h2>
-	<p>
-		Each document session is its own BEAM process, supervised with a{" "}
-		<code>one_for_one</code> restart strategy. If a session process crashes,
-		it restarts and reloads its state from storage — the rest of the node,
-		including every other document's session, is unaffected. The isolation
-		comes from the runtime, not from Floodgate code; the sequencing and
-		validation logic on top of it is written in Gleam, so a whole class of
-		protocol bugs is caught by the compiler before the process ever starts.
-	</p>
 
 	<h2 class="rule-label">dual-mode, one process</h2>
 	<p>
@@ -94,8 +89,8 @@ const httpSurface = [
 	</p>
 
 	<h2 class="rule-label">http surface (excerpt)</h2>
-	<ul class="log tree-list" aria-label="HTTP surface excerpt">
-		{httpSurface.map((route, i) => (
+	<ul class="log tree-list" data-reveal aria-label="HTTP surface excerpt">
+		{routeExcerpt.map((route, i) => (
 			<li style={`--i:${i}`}>
 				<span class="log__tag">{route.method}</span> <code>{route.path}</code>
 				<span class="note"> — {route.desc}</span>
@@ -105,4 +100,12 @@ const httpSurface = [
 	<p class="note">
 		full endpoint reference: <a href="/docs/http-surface">HTTP surface</a>
 	</p>
+
+	<hr />
+
+	<p>
+		The fastest way to check any of this is to run it: the container builds
+		from source and answers on <code>/health</code> in three steps.
+	</p>
+	<a class="cta" href="/docs/getting-started">get Floodgate running</a>
 </Terminal>

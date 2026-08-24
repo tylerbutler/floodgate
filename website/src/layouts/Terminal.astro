@@ -37,22 +37,45 @@ const canonical = new URL(path, Astro.site ?? Astro.url);
 	<body>
 		<a class="skip-link" href="#main-content">skip to content</a>
 		<div class="term-bar">
-			<span class="term-bar__dot" aria-hidden="true"></span>
-			<span class="term-bar__path">floodgate@localhost:{path}</span>
-			<nav aria-label="Site">
-				<a href="/" aria-current={path === "/" ? "page" : undefined}>home</a>
-				<a href="/architecture" aria-current={path === "/architecture" ? "page" : undefined}>architecture</a>
-				<a href="/docs" aria-current={path.startsWith("/docs") ? "page" : undefined}>docs</a>
-			</nav>
+			<div class="term-bar__inner">
+				<span class="term-bar__dot" aria-hidden="true"></span>
+				<span class="term-bar__path"><span class="term-bar__host">floodgate@localhost:</span><span data-term-path>{path}</span></span>
+				<nav aria-label="Site">
+					<a href="/" aria-current={path === "/" ? "page" : undefined}>home</a>
+					<a href="/architecture" aria-current={path === "/architecture" ? "page" : undefined}>architecture</a>
+					<a href="/docs" aria-current={path.startsWith("/docs") ? "page" : undefined}>docs</a>
+				</nav>
+			</div>
 		</div>
 		<main id="main-content">
 			<slot />
 		</main>
 		<footer class="term-foot">
 			<span><span aria-hidden="true">[exit 0]</span> floodgate</span>
-			<a href="https://github.com/tylerbutler/floodgate">source: tylerbutler/floodgate</a>
-			<a href="https://github.com/tylerbutler/floodgate/blob/main/LICENSE">MIT license</a>
+			<a href="https://github.com/tylerbutler/floodgate" rel="noopener external">source: tylerbutler/floodgate</a>
+			<a href="https://github.com/tylerbutler/floodgate/blob/main/LICENSE" rel="noopener external">MIT license</a>
 			<span>Tyler Butler</span>
 		</footer>
+
+		<script>
+			// A log below the fold should play when the reader arrives at it,
+			// not while it is off-screen. The deferring class is added by JS
+			// only, so a no-JS page never hides a line it cannot reveal.
+			for (const log of document.querySelectorAll<HTMLElement>("[data-reveal]")) {
+				if (log.getBoundingClientRect().top < window.innerHeight) continue;
+				log.classList.add("log--defer");
+				const io = new IntersectionObserver(
+					(entries) => {
+						for (const entry of entries) {
+							if (!entry.isIntersecting) continue;
+							entry.target.classList.remove("log--defer");
+							io.disconnect();
+						}
+					},
+					{ rootMargin: "0px 0px -12% 0px" },
+				);
+				io.observe(log);
+			}
+		</script>
 	</body>
 </html>

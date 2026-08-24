@@ -1,4 +1,5 @@
 ---
+import Cmd from "../../components/Cmd.astro";
 import DocsNode from "../../layouts/DocsNode.astro";
 ---
 
@@ -7,22 +8,22 @@ import DocsNode from "../../layouts/DocsNode.astro";
 	description="Build, test, and format Floodgate, plus the conformance suites that check it against Levee."
 >
 	<h2 class="rule-label">build, test, format, run</h2>
-	<ul class="log log--static" aria-label="Build and test commands">
-		<li><code>just build</code><span class="note"> — or: gleam build --target erlang</span></li>
-		<li><code>just test</code><span class="note"> — or: gleam test</span></li>
-		<li><code>just format</code></li>
-		<li><code>just run</code></li>
-	</ul>
+	<Cmd command="just build" />
+	<p class="note">or: <code>gleam build --target erlang</code></p>
+	<Cmd command="just test" />
+	<p class="note">or: <code>gleam test</code></p>
+	<Cmd command="just format" />
+	<Cmd command="just run" />
 
 	<h2 class="rule-label">conformance suites</h2>
 	<p>
 		These live in the Levee repository's client workspace and run against a
 		live server:
 	</p>
-	<ul class="log log--static" aria-label="Conformance suite commands">
-		<li><code>just test-floodgate-dual-mode</code><span class="note"> — both wire protocols, one process</span></li>
-		<li><code>just test-levee-suite-vs-floodgate</code><span class="note"> — Levee's own suites, repointed at Floodgate</span></li>
-	</ul>
+	<Cmd command="just test-floodgate-dual-mode" />
+	<p class="note">both wire protocols, one process</p>
+	<Cmd command="just test-levee-suite-vs-floodgate" />
+	<p class="note">Levee's own suites, repointed at Floodgate</p>
 	<p>
 		<code>test-levee-suite-vs-floodgate</code> runs Levee's{" "}
 		<strong>unmodified</strong> integration suites (<code>levee-driver</code>,{" "}

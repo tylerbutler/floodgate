@@ -5,32 +5,81 @@ import DocsNode from "../../layouts/DocsNode.astro";
 
 <DocsNode
 	slug="getting-started"
-	description="Build and run Floodgate locally with gleam run, or as a container with docker compose."
+	description="Get Floodgate running with Docker Compose in three steps, then confirm it answers on /health."
 >
 	<p>
-		Floodgate refuses to start without an explicit JWT secret — there is no
-		default that would quietly leave a deployment unauthenticated.
+		Three steps to a running server. You need <strong>Docker Compose</strong>{" "}
+		and nothing else — the container builds Floodgate from the source you
+		just cloned, so no Gleam or Erlang toolchain is required. To build
+		without Docker instead, skip to{" "}
+		<a href="#from-source">build from source</a>.
 	</p>
 
-	<h2 class="rule-label">run directly</h2>
-	<Cmd command="FLOODGATE_JWT_SECRET=dev-secret gleam run" />
+	<h2 class="rule-label" id="step-1">1. get the source</h2>
+	<Cmd command="git clone https://github.com/tylerbutler/floodgate && cd floodgate" />
 
-	<h2 class="rule-label">or as a container</h2>
+	<h2 class="rule-label" id="step-2">2. start the server</h2>
 	<Cmd command="docker compose up -d --wait" />
-	<p class="note">starts on http://localhost:3000</p>
+	<p class="note">
+		The first run builds the image, so it takes a few minutes;{" "}
+		<code>--wait</code> holds until the container reports healthy. Later
+		runs start in seconds.
+	</p>
+
+	<h2 class="rule-label" id="step-3">3. confirm it answers</h2>
+	<Cmd command="curl localhost:3000/health" />
+	<pre class="out"><code>{`{"status":"ok"}`}</code></pre>
+	<p>
+		That is Floodgate serving both wire protocols from one process:{" "}
+		<code>/socket.io/</code> for the official Fluid drivers, and{" "}
+		<code>/socket/websocket</code> for Phoenix Channels clients. Point a{" "}
+		<a href="https://fluidframework.com" rel="noopener external">Fluid Framework</a> app at{" "}
+		<code>http://localhost:3000</code> and it will connect.
+	</p>
+
+	<h2 class="rule-label">what the Compose file assumes</h2>
+	<p>
+		The bundled <code>docker-compose.yml</code> is a development
+		configuration: it ships known secrets
+		(<code>FLOODGATE_JWT_SECRET=dev-tenant-secret-key</code>, a token-mint
+		secret, and an admin key), and it sets{" "}
+		<code>FLOODGATE_ALLOWED_ORIGINS=*</code> so browser clients on any
+		origin can connect. Replace all of them before this faces anything real
+		— every value is listed in <a href="/docs/configuration">Configuration</a>.
+	</p>
+
+	<h2 class="rule-label">operating it</h2>
 	<Cmd command="docker compose logs -f floodgate" />
 	<p class="note">follow the server log</p>
-	<Cmd command="docker compose down -v" />
-	<p class="note">stop and remove the data volume</p>
+	<Cmd
+		command="docker compose down -v"
+		warn="Removes the storage volume. Every document, git object, and persisted tenant on this server is deleted. Omit -v to stop the container and keep the data."
+	/>
 
+	<h2 class="rule-label" id="from-source">build from source</h2>
 	<p>
-		<code>FLOODGATE_JWT_SECRET</code> also seeds the startup tenant
-		(<code>FLOODGATE_TENANT_ID</code>, default <code>fluid</code>) with that
-		value as its first secret slot — see{" "}
+		Needs <strong>Gleam 1.13 or newer</strong> and{" "}
+		<strong>Erlang/OTP</strong>. The repository pins both in{" "}
+		<code>mise.toml</code>, so <code>mise install</code> will fetch the
+		versions Floodgate is built against.
+	</p>
+	<Cmd command="FLOODGATE_JWT_SECRET=dev-secret gleam run" />
+	<p>
+		Floodgate refuses to start without an explicit JWT secret — there is no
+		default that would quietly leave a deployment unauthenticated. That
+		secret also seeds the startup tenant (<code>FLOODGATE_TENANT_ID</code>,
+		default <code>fluid</code>) with its first secret slot; see{" "}
 		<a href="/docs/multi-tenancy">Multi-tenancy</a> for what that tenant can
-		do beyond boot. Once it's up, <code>GET /health</code> answers{" "}
-		<code>{`{"status":"ok"}`}</code>, and the full set of knobs for the
-		listen address, storage backend, and connection limits lives in{" "}
-		<a href="/docs/configuration">Configuration</a>.
+		do beyond boot.
+	</p>
+
+	<h2 class="rule-label">next</h2>
+	<p>
+		The listen address, storage backend, connection limits, and every other
+		knob live in <a href="/docs/configuration">Configuration</a>. If
+		something didn't start, <code>docker compose logs -f floodgate</code>{" "}
+		prints the reason — a missing JWT secret and a port already in use are
+		the two common ones. Anything else is worth{" "}
+		<a href="https://github.com/tylerbutler/floodgate/issues" rel="noopener external">an issue</a>.
 	</p>
 </DocsNode>

@@ -1,9 +1,17 @@
 ---
 interface Props {
 	command: string;
+	/** Marks the command destructive and states what it destroys. */
+	warn?: string;
 }
 
-const { command } = Astro.props;
+const { command, warn } = Astro.props;
+
+// Tie the copy button to its warning so a screen reader hears the consequence
+// before the action, not three rows later.
+const warnId = warn
+	? `warn-${command.replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase().slice(0, 40)}`
+	: undefined;
 ---
 
 <pre class="cmd"><code>{command}</code><button
@@ -11,9 +19,15 @@ const { command } = Astro.props;
 		type="button"
 		data-copy={command}
 		aria-label={`Copy command: ${command}`}
+		aria-describedby={warnId}
 		aria-live="polite"
 		hidden
 	>[copy]</button></pre>
+{warn && (
+	<p class="cmd-warn" id={warnId}>
+		<span class="cmd-warn__tag">[destructive]</span> {warn}
+	</p>
+)}
 
 <script>
 	// Buttons ship hidden so a no-JS page never shows a control that can't work.

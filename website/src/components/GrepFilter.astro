@@ -11,7 +11,7 @@ const { label } = Astro.props;
 	<input
 		type="search"
 		data-grep
-		placeholder="pattern"
+		placeholder="pattern — press / to focus"
 		aria-label={label}
 		autocomplete="off"
 		autocorrect="off"
@@ -21,7 +21,7 @@ const { label } = Astro.props;
 	<span class="grep__count" data-grep-count aria-live="polite"></span>
 </p>
 <p class="note" data-grep-empty hidden>
-	no matches — clear the pattern to see everything again.
+	no matches — press Esc, or clear the pattern, to see everything again.
 </p>
 
 <script>
@@ -40,17 +40,62 @@ const { label } = Astro.props;
 		);
 		const total = rows.length;
 
+		// Unwrap previous highlights before measuring or re-marking, so the
+		// row's text is whole again and `includes` sees it as the reader does.
+		const unmark = (el: HTMLElement) => {
+			const marks = el.querySelectorAll("mark");
+			if (marks.length === 0) return;
+			for (const m of marks) {
+				m.replaceWith(document.createTextNode(m.textContent ?? ""));
+			}
+			el.normalize();
+		};
+
+		// grep without a highlight is just a shorter list: the reader still has
+		// to work out why each surviving row survived.
+		const mark = (el: HTMLElement, q: string) => {
+			const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+			const hits: Text[] = [];
+			while (walker.nextNode()) {
+				const node = walker.currentNode as Text;
+				if ((node.textContent ?? "").toLowerCase().includes(q)) hits.push(node);
+			}
+			for (const node of hits) {
+				const text = node.textContent ?? "";
+				const lower = text.toLowerCase();
+				const frag = document.createDocumentFragment();
+				let at = 0;
+				let found = lower.indexOf(q, at);
+				while (found !== -1) {
+					if (found > at) {
+						frag.appendChild(document.createTextNode(text.slice(at, found)));
+					}
+					const hit = document.createElement("mark");
+					hit.textContent = text.slice(found, found + q.length);
+					frag.appendChild(hit);
+					at = found + q.length;
+					found = lower.indexOf(q, at);
+				}
+				if (at < text.length) {
+					frag.appendChild(document.createTextNode(text.slice(at)));
+				}
+				node.replaceWith(frag);
+			}
+		};
+
 		const apply = () => {
 			const q = input.value.trim().toLowerCase();
 			let shown = 0;
 			for (const section of sections) {
 				let sectionShown = 0;
 				for (const li of section.querySelectorAll("li")) {
+					unmark(li);
 					const hit = !q || (li.textContent ?? "").toLowerCase().includes(q);
 					li.hidden = !hit;
 					if (hit) {
 						shown++;
 						sectionShown++;
+						if (q) mark(li, q);
 					}
 				}
 				section.hidden = sectionShown === 0;
@@ -60,5 +105,35 @@ const { label } = Astro.props;
 		};
 
 		input.addEventListener("input", apply);
+
+		// The page is built out of shell idioms; the shell's own keys should work.
+		document.addEventListener("keydown", (event) => {
+			const target = event.target as HTMLElement | null;
+			const typing =
+				target instanceof HTMLInputElement ||
+				target instanceof HTMLTextAreaElement ||
+				target?.isContentEditable === true;
+
+			if (
+				event.key === "/" &&
+				!typing &&
+				!event.metaKey &&
+				!event.ctrlKey &&
+				!event.altKey
+			) {
+				event.preventDefault();
+				input.focus();
+				input.select();
+				return;
+			}
+
+			if (event.key === "Escape" && (!typing || target === input)) {
+				if (input.value !== "") {
+					input.value = "";
+					apply();
+				}
+				if (document.activeElement === input) input.blur();
+			}
+		});
 	}
 </script>

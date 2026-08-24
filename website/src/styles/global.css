@@ -24,6 +24,11 @@
 	--phosphor-faint: #1c7d49;
 	--glass-shadow: rgba(0, 0, 0, 0.6);
 
+	/* The window the whole shell occupies: chrome and content share it.
+	   In rem, not ch: `ch` resolves against each element's own font-size, so
+	   the 16.8px title bar and the 22px body resolved the same token to
+	   different widths and the nav floated off the content edge. */
+	--shell: 57.2rem;
 	--measure: 68ch;
 	--rule: 1px solid var(--phosphor-faint);
 	--space-xs: 0.5rem;
@@ -32,11 +37,13 @@
 	--space-lg: 2.5rem;
 	--space-xl: 4rem;
 	--type-meta: 1.05rem;
-	--type-note: 1.1rem;
+	/* Relative, so a caption keeps its ratio to body text at every size.
+	   As a rem it stayed put while body stepped down, and the gap collapsed. */
+	--type-note: 0.82em;
 	--type-section: 1.5rem;
 	--type-body: 1.375rem;
 	--type-lede: clamp(1.65rem, 3vw, 2rem);
-	--type-display: clamp(2.8rem, 7vw, 5.25rem);
+	--type-display: clamp(2.8rem, 6vw, 4.75rem);
 
 	color-scheme: dark;
 }
@@ -80,7 +87,7 @@ body::before {
 }
 
 main {
-	max-width: 78ch;
+	max-width: var(--shell);
 	margin: 0 auto;
 	padding: clamp(1.5rem, 4vw, 3.5rem) clamp(1.25rem, 5vw, 2rem) 6rem;
 }
@@ -96,9 +103,13 @@ a {
 	text-underline-offset: 3px;
 }
 
+/* Hover must add signal. Going to --phosphor landed the link on exactly the
+   body text colour, so the only thing hovering did was remove the amber. */
 a:hover,
 a:focus-visible {
-	color: var(--phosphor);
+	color: var(--phosphor-amber);
+	text-decoration-thickness: 2px;
+	text-shadow: 0 0 7px rgba(255, 209, 102, 0.55);
 }
 
 a:focus-visible,
@@ -156,15 +167,22 @@ pre code {
 
 /* Terminal chrome — a titlebar, never a conventional site header. */
 .term-bar {
-	display: flex;
-	align-items: center;
-	gap: 0.6em;
-	padding: 0.6rem 1rem;
 	border-bottom: var(--rule);
 	background: var(--screen-bg-raised);
 	color: var(--phosphor-dim);
 	font-size: var(--type-meta);
 	letter-spacing: 0.03em;
+}
+
+/* The bar's surface is full-bleed like a window titlebar; its contents sit
+   on the same column as main, so the nav can't float off the content edge. */
+.term-bar__inner {
+	display: flex;
+	align-items: center;
+	gap: 0.6em;
+	max-width: var(--shell);
+	margin: 0 auto;
+	padding: 0.35rem clamp(1.25rem, 5vw, 2rem);
 }
 
 .term-bar__dot {
@@ -187,12 +205,12 @@ pre code {
 	gap: 1.25em;
 }
 
-/* Padding + negative margin expands the touch target to ~44px without
-   moving the visible text — the `~` link is a single character. */
+/* Padding alone expands the touch target past 44px. An earlier negative
+   margin kept the bar short but pulled the links to y = -2px, where their
+   focus ring rendered above the viewport edge. */
 .term-bar nav a {
 	color: var(--phosphor-dim);
 	padding: 0.7em 0.45em;
-	margin: -0.7em -0.45em;
 }
 
 /* Explicit: the 0-2-1 selector above outranks the global a:hover rule. */
@@ -222,8 +240,16 @@ pre code {
 	text-indent: -4ch;
 	overflow-wrap: anywhere;
 	opacity: 0;
-	animation: line-in 0.01s linear forwards;
+	animation: line-in 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 	animation-delay: calc(var(--i, 0) * 0.07s);
+}
+
+/* A child made inline-block becomes its own block container and inherits
+   the li's negative text-indent, applying the -4ch a second time to its own
+   first line — which paints it 4ch left of the column. Reset it here once,
+   so any child can be made inline-block without clipping off the edge. */
+.log li > * {
+	text-indent: 0;
 }
 
 .log__tag {
@@ -245,6 +271,12 @@ strong {
 
 .tree-list li {
 	margin-bottom: 0.15rem;
+}
+
+/* Held until the reader scrolls to it, so a below-the-fold reveal doesn't
+   finish before anyone can see it. JS-only, so no-JS never hides a line. */
+.log--defer li {
+	animation-play-state: paused;
 }
 
 /* Read mode: docs load whole, no boot-sequence reveal. */
@@ -292,8 +324,10 @@ strong {
 	font-size: 1.15rem;
 }
 
-.node__foot a:last-child {
-	margin-left: auto;
+/* No auto margin: with no Prev link, pushing the last child right left a
+   ~400px hole and orphaned a lone `Up`. Info footers read left to right. */
+.node__foot a {
+	white-space: nowrap;
 }
 
 /* The (dir) node's "* Menu:" of topics. */
@@ -305,10 +339,12 @@ strong {
 	color: var(--phosphor-amber);
 }
 
-/* Explicit: same specificity as the global a:hover but later in source. */
+/* Same brightening as every other amber link, not a swap to body colour. */
 .dir-menu a:hover,
 .dir-menu a:focus-visible {
-	color: var(--phosphor);
+	color: var(--phosphor-amber);
+	text-decoration-thickness: 2px;
+	text-shadow: 0 0 7px rgba(255, 209, 102, 0.55);
 }
 
 /* Wraps as one unit instead of splitting mid-phrase. */
@@ -316,7 +352,15 @@ strong {
 	white-space: nowrap;
 }
 
-.dir-menu .log__tag {
+.dir-menu /* A child made inline-block becomes its own block container and inherits
+   the li's negative text-indent, applying the -4ch a second time to its own
+   first line — which paints it 4ch left of the column. Reset it here once,
+   so any child can be made inline-block without clipping off the edge. */
+.log li > * {
+	text-indent: 0;
+}
+
+.log__tag {
 	color: var(--phosphor-dim);
 }
 
@@ -391,6 +435,32 @@ strong {
 .hero {
 	padding-block: clamp(var(--space-lg), 8vw, var(--space-xl));
 	border-bottom: var(--rule);
+	display: grid;
+	gap: var(--space-lg);
+}
+
+/* Above this width the promise and its proof fit side by side, which is the
+   only way the crash log lands in the first viewport. */
+@media (min-width: 62em) {
+	.hero {
+		grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+		column-gap: var(--space-xl);
+		align-items: start;
+	}
+}
+
+.hero__proof .rule-label {
+	margin-top: 0;
+}
+
+.hero__proof .log {
+	margin-bottom: var(--space-sm);
+}
+
+.crash-log .log__tag {
+	/* The tags are the actors in this story; keep them aligned. */
+	display: inline-block;
+	min-width: 10ch;
 }
 
 .hero .lede {
@@ -461,8 +531,8 @@ strong {
 
 /* Site identity line — reads as the shell giving control back. */
 .term-foot {
-	/* 78ch here must match main's, so the font-size step lives on the children. */
-	max-width: 78ch;
+	/* Matches main's shell, so the font-size step lives on the children. */
+	max-width: var(--shell);
 	margin: 0 auto;
 	padding: 1.25rem clamp(1.25rem, 5vw, 2rem) 2.5rem;
 	border-top: var(--rule);
@@ -486,33 +556,51 @@ strong {
 }
 
 /* Self-links: every reference entry is an anchor you can hand to a
-   colleague. Quiet until asked for. */
+   colleague. A dotted rule keeps that quiet but visible, so a focus ring
+   never lands on text that gave no sign it was focusable. */
 a.self {
-	text-decoration: none;
+	text-decoration: underline dotted var(--phosphor-faint);
+	text-decoration-thickness: 1px;
+	text-underline-offset: 4px;
 }
 
 a.self:hover,
 a.self:focus-visible {
-	text-decoration: underline;
+	text-decoration: underline solid var(--phosphor-amber);
 	text-decoration-thickness: 1px;
-	text-underline-offset: 3px;
+	text-underline-offset: 4px;
 }
 
+/* Offset clears the sticky filter line; the outline clears the glyphs. */
 li:target,
 section:target {
-	scroll-margin-top: 1.5rem;
+	scroll-margin-top: 5rem;
 	background: var(--screen-bg-raised);
 	outline: 1px solid var(--phosphor-faint);
-	outline-offset: 2px;
+	outline-offset: 5px;
 }
 
 /* `$ grep` filter line on the reference pages. */
+/* Sticky: filtering collapses a long reference, and a filter you have to
+   scroll back up to reach is a filter you only use once. */
 .grep {
+	position: sticky;
+	top: 0;
+	z-index: 10;
 	display: flex;
 	align-items: baseline;
 	gap: 1ch;
 	margin: 1.5rem 0 2rem;
+	padding: 0.6rem 0;
 	max-width: var(--measure);
+	background: var(--screen-bg);
+}
+
+/* A shorter list still has to say why each row survived. */
+mark {
+	background: var(--phosphor);
+	color: var(--screen-bg);
+	text-shadow: none;
 }
 
 .grep__prompt {
@@ -536,13 +624,15 @@ section:target {
 	padding: 0 0 0.1em;
 }
 
+/* --phosphor-faint is decorative-only (3.91:1); a placeholder is text. */
 .grep input::placeholder {
-	color: var(--phosphor-faint);
+	color: var(--phosphor-dim);
 	opacity: 1;
 }
 
+/* Keeps the site-wide ring. Swapping it for a border-colour shift gave
+   this one control a weaker indicator than every other control. */
 .grep input:focus-visible {
-	outline: none;
 	border-bottom-color: var(--phosphor-amber);
 }
 
@@ -594,6 +684,179 @@ section:target {
 	color: var(--phosphor);
 }
 
+/* Command output: no `$` — the absence of the prompt is what marks it as
+   output — and it sits tight under the command that produced it. */
+.cmd + .out {
+	margin-top: 0.4rem;
+}
+
+/* A destructive command states its consequence at full phosphor and body
+   size. Every other caption is a dim `.note`; this one must not be. */
+.cmd + .cmd-warn {
+	max-width: var(--measure);
+	margin: -1rem 0 1.5rem;
+	color: var(--phosphor);
+}
+
+.cmd-warn__tag {
+	color: var(--phosphor-amber);
+	white-space: nowrap;
+}
+
+/* Reference rows read as `column -t` output, not as log lines: name,
+   default, and purpose each hold a column so a default can be scanned
+   down the page instead of hunted for inside a sentence. */
+/* rem for the same reason as --shell: the header row is caption-sized and
+   the data rows are body-sized, so ch-based tracks did not match. */
+.ref-block {
+	--c1: 17.6rem;
+	--c2: 11rem;
+	margin-bottom: 2rem;
+}
+
+.ref-block--route {
+	--c1: 4.4rem;
+	--c2: 18.7rem;
+}
+
+.ref-block .log {
+	margin-bottom: 0;
+}
+
+.ref__head {
+	display: none;
+	max-width: none;
+	margin: 0 0 0.4rem;
+	padding-bottom: 0.3rem;
+	border-bottom: var(--rule);
+	color: var(--phosphor-dim);
+	font-size: var(--type-note);
+	letter-spacing: 0.06em;
+}
+
+.ref__method {
+	color: var(--phosphor-dim);
+}
+
+.ref__def {
+	color: var(--phosphor-dim);
+}
+
+/* Stacked below the column breakpoint, the row still needs its separators. */
+.ref__def::before {
+	content: " ";
+}
+
+.ref__desc::before {
+	content: " — ";
+	color: var(--phosphor-dim);
+}
+
+/* Full body size and full phosphor: the column and the dim name/default
+   beside it carry the hierarchy, so the text people came for isn't shrunk. */
+.ref__desc {
+	color: var(--phosphor);
+}
+
+@media (min-width: 60em) {
+	/* `.log li` also sets the hanging indent; this has to outrank it or the
+	   data rows keep a 4ch indent the header row never had. */
+	.ref__row,
+	.log li.ref__row {
+		display: grid;
+		grid-template-columns: var(--c1) var(--c2) minmax(0, 1fr);
+		column-gap: 1.1rem;
+		align-items: baseline;
+		padding-left: 0;
+		text-indent: 0;
+	}
+
+	.ref__def::before,
+	.ref__desc::before {
+		content: none;
+	}
+}
+
+/* External destinations announce themselves; the arrow vocabulary is the
+   same one the info-node footers already use. */
+main a[rel~="external"]::after,
+.term-foot a[rel~="external"]::after {
+	content: "\2197";
+	margin-left: 0.15em;
+	font-size: 0.85em;
+	color: var(--phosphor-dim);
+}
+
+/* The glow is texture, not information: at raised contrast it goes, and the
+   dim tier is promoted to full phosphor. */
+@media (prefers-contrast: more) {
+	body,
+	strong,
+	.node h1,
+	.page-title__promise,
+	.cta {
+		text-shadow: none;
+	}
+
+	body::before {
+		display: none;
+	}
+
+	.note,
+	.ref__def,
+	.ref__method,
+	.ref__head,
+	.log__tag,
+	.grep__count,
+	.term-bar,
+	.term-bar nav a,
+	.term-foot,
+	.term-foot a,
+	main a[rel~="external"]::after {
+		color: var(--phosphor);
+	}
+
+	.grep input::placeholder {
+		color: var(--phosphor-dim);
+	}
+}
+
+/* The path is the part that changes; truncating from the right kept
+   `floodgate@localhost:` and threw away the location. Drop the constant
+   prefix instead, before anything has to be cut. */
+@media (max-width: 44em) {
+	.term-bar__host {
+		display: none;
+	}
+}
+
+/* Inline monospace links are one line-height tall, which is a fine mark and
+   a poor target. On touch, grow the hit area without moving the text. */
+@media (pointer: coarse), (max-width: 44em) {
+	.dir-menu a,
+	.node__foot a,
+	.term-foot a,
+	.log a,
+	.ref__row a.self {
+		display: inline-block;
+		padding-block: 0.55em;
+	}
+
+	/* .node__head runs at --type-meta, so 0.55em left it 1.2px short of 44. */
+	.node__head a {
+		display: inline-block;
+		padding-block: 0.62em;
+	}
+
+	.grep input {
+		padding-block: 0.55em 0.45em;
+	}
+
+	.cmd__copy {
+		padding: 0.55em 0.5em;
+	}
+}
+
 @keyframes line-in {
 	from {
 		opacity: 0;
@@ -634,7 +897,7 @@ section:target {
 
 @media (max-width: 30em) {
 	body {
-		font-size: 1.2rem;
+		font-size: 1.35rem;
 	}
 
 	.term-bar nav {
