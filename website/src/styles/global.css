@@ -26,6 +26,17 @@
 
 	--measure: 68ch;
 	--rule: 1px solid var(--phosphor-faint);
+	--space-xs: 0.5rem;
+	--space-sm: 1rem;
+	--space-md: 1.5rem;
+	--space-lg: 2.5rem;
+	--space-xl: 4rem;
+	--type-meta: 1.05rem;
+	--type-note: 1.1rem;
+	--type-section: 1.5rem;
+	--type-body: 1.375rem;
+	--type-lede: clamp(1.65rem, 3vw, 2rem);
+	--type-display: clamp(2.8rem, 7vw, 5.25rem);
 
 	color-scheme: dark;
 }
@@ -44,10 +55,10 @@ body {
 	background: var(--screen-bg);
 	color: var(--phosphor);
 	font-family: "VT323", ui-monospace, monospace;
-	font-size: 1.375rem;
+	font-size: var(--type-body);
 	line-height: 1.45;
 	letter-spacing: 0.01em;
-	text-shadow: 0 0 6px rgba(61, 255, 136, 0.35);
+	text-shadow: 0 0 4px rgba(61, 255, 136, 0.22);
 }
 
 /* A faint scanline field over the whole screen — texture, not a spinner. */
@@ -76,6 +87,7 @@ main {
 
 p {
 	max-width: var(--measure);
+	line-height: 1.52;
 }
 
 a {
@@ -93,6 +105,21 @@ a:focus-visible,
 button:focus-visible {
 	outline: 2px solid var(--phosphor-amber);
 	outline-offset: 3px;
+}
+
+.skip-link {
+	position: fixed;
+	inset-block-start: var(--space-sm);
+	inset-inline-start: var(--space-sm);
+	z-index: 100;
+	padding: 0.55em 0.8em;
+	background: var(--screen-bg);
+	border: 1px solid var(--phosphor);
+	transform: translateY(calc(-100% - var(--space-lg)));
+}
+
+.skip-link:focus {
+	transform: translateY(0);
 }
 
 hr {
@@ -136,7 +163,7 @@ pre code {
 	border-bottom: var(--rule);
 	background: var(--screen-bg-raised);
 	color: var(--phosphor-dim);
-	font-size: 1.05rem;
+	font-size: var(--type-meta);
 	letter-spacing: 0.03em;
 }
 
@@ -193,6 +220,7 @@ pre code {
 .log li {
 	padding-left: 4ch;
 	text-indent: -4ch;
+	overflow-wrap: anywhere;
 	opacity: 0;
 	animation: line-in 0.01s linear forwards;
 	animation-delay: calc(var(--i, 0) * 0.07s);
@@ -211,7 +239,7 @@ pre code {
 strong {
 	font-weight: 400;
 	color: var(--phosphor);
-	text-shadow: 0 0 10px rgba(61, 255, 136, 0.85), 0 0 2px rgba(61, 255, 136, 0.9);
+	text-shadow: 0 0 7px rgba(61, 255, 136, 0.62), 0 0 2px rgba(61, 255, 136, 0.75);
 	letter-spacing: 0.02em;
 }
 
@@ -311,7 +339,7 @@ strong {
    the label itself sits at full phosphor so it leads the text below it. */
 .rule-label {
 	display: block;
-	font-size: 1.5rem;
+	font-size: var(--type-section);
 	font-weight: 400;
 	line-height: 1.3;
 	color: var(--phosphor);
@@ -330,12 +358,71 @@ strong {
 
 /* Page titles for the terminal pages that aren't info nodes. */
 .page-title {
-	font-size: 2.15rem;
 	font-weight: 400;
-	line-height: 1.2;
-	margin: 2.5rem 0 1rem;
+	line-height: 1;
+	margin: 0;
 	color: var(--phosphor);
-	text-shadow: 0 0 10px rgba(61, 255, 136, 0.5);
+	overflow-wrap: anywhere;
+}
+
+.page-title__product,
+.page-title__promise {
+	display: block;
+}
+
+.page-title__product {
+	color: var(--phosphor-dim);
+	font-size: var(--type-section);
+	line-height: 1;
+	letter-spacing: 0.08em;
+	text-shadow: none;
+}
+
+.page-title__promise {
+	margin-top: 0.18em;
+	max-width: 17ch;
+	font-size: var(--type-display);
+	line-height: 0.94;
+	letter-spacing: -0.015em;
+	text-shadow: 0 0 12px rgba(61, 255, 136, 0.42);
+	text-wrap: balance;
+}
+
+.hero {
+	padding-block: clamp(var(--space-lg), 8vw, var(--space-xl));
+	border-bottom: var(--rule);
+}
+
+.hero .lede {
+	margin-block: var(--space-md) 0;
+}
+
+.hero__actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-sm) var(--space-md);
+	margin-top: var(--space-lg);
+}
+
+.hero__actions .cta {
+	margin-top: 0;
+}
+
+.text-action {
+	padding-block: 0.6em;
+}
+
+.boot-proof {
+	margin-top: var(--space-lg);
+}
+
+.boot-proof .rule-label {
+	margin-top: 0;
+}
+
+.boot-proof .log {
+	margin-bottom: 0;
 }
 
 .cta {
@@ -357,12 +444,15 @@ strong {
 
 .note {
 	color: var(--phosphor-dim);
-	font-size: 1.1rem;
+	font-size: var(--type-note);
 }
 
 /* Opening value-prop paragraph, one step above body size. */
 .lede {
-	font-size: 1.6rem;
+	max-width: 52ch;
+	font-size: var(--type-lede);
+	line-height: 1.36;
+	letter-spacing: 0.015em;
 }
 
 [hidden] {
@@ -383,7 +473,7 @@ strong {
 }
 
 .term-foot > * {
-	font-size: 1.1rem;
+	font-size: var(--type-note);
 }
 
 .term-foot a {
@@ -458,7 +548,7 @@ section:target {
 
 .grep__count {
 	color: var(--phosphor-dim);
-	font-size: 1.1rem;
+	font-size: var(--type-note);
 	white-space: nowrap;
 	flex: none;
 	min-width: 5ch;
@@ -495,7 +585,7 @@ section:target {
 	padding: 0 0.25em;
 	flex: none;
 	font: inherit;
-	font-size: 1.1rem;
+	font-size: var(--type-note);
 	color: var(--phosphor-amber);
 	cursor: pointer;
 }
