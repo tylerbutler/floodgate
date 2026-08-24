@@ -7,16 +7,16 @@
 //// must be too (without it every session in the roster collapses to `""`).
 
 import beryl
-import beryl/coordinator
 import beryl/presence
+import beryl/socket
 import beryl/transport
-import beryl/wire/codec.{Join}
+import beryl/wire/codec
+import dewdrop/server
 import floodgate
 import floodgate/auth
 import floodgate/document_channel
 import floodgate/memory_store
 import floodgate/presence_worker
-import floodgate/server_codec
 import gleam/dict
 import gleam/dynamic
 import gleam/dynamic/decode
@@ -115,36 +115,36 @@ pub fn non_object_metadata_is_rejected_test() {
 // ── Wire frames, end to end ──────────────────────────────────────────────────
 
 fn attach(
-  channels: beryl.Channels,
+  channels: beryl.Sockets,
   socket_id: String,
 ) -> process.Subject(String) {
   let sent = process.new_subject()
-  process.send(
-    beryl.coordinator_subject(channels),
-    coordinator.SocketConnected(
-      socket_id,
-      fn(text) {
+  let assert Ok(owner) = transport.runtime_pid(channels)
+  let assert Ok(Nil) =
+    transport.admit_socket(
+      sockets: channels,
+      owner: owner,
+      socket_id: socket_id,
+      send: fn(text) {
         process.send(sent, text)
         Ok(Nil)
       },
-      fn(_binary) { Ok(Nil) },
-      None,
-      dynamic.nil(),
-    ),
-  )
+      send_binary: fn(_binary) { Ok(Nil) },
+      codec: None,
+      seed: socket.empty_seed(),
+      close: fn() { Nil },
+    )
   sent
 }
 
-fn route(channels: beryl.Channels, socket_id: String, frame: String) -> Nil {
-  coordinator.route_message(
-    beryl.coordinator_subject(channels),
-    socket_id,
-    frame,
-  )
+fn route(channels: beryl.Sockets, socket_id: String, frame: String) -> Nil {
+  let assert Ok(decoded) =
+    codec.decode_text(transport.active_codec(channels))(frame)
+  transport.route_decoded(channels, socket_id, decoded)
 }
 
 fn phoenix_event(doc: String, event: String, payload: String) -> String {
-  "[\"1\",\"2\",\"document:"
+  "[\"1\",null,\"document:"
   <> tenant
   <> ":"
   <> doc
@@ -156,7 +156,7 @@ fn phoenix_event(doc: String, event: String, payload: String) -> String {
 }
 
 fn connect(
-  channels: beryl.Channels,
+  channels: beryl.Sockets,
   doc: String,
   token: String,
   socket_id: String,
@@ -197,7 +197,7 @@ fn drain(sent: process.Subject(String)) -> Nil {
 }
 
 fn join_presence(
-  channels: beryl.Channels,
+  channels: beryl.Sockets,
   doc: String,
   socket_id: String,
   meta: String,
@@ -260,7 +260,7 @@ fn side(
   groups(inner)
 }
 
-fn start(doc: String) -> #(beryl.Channels, String) {
+fn start(doc: String) -> #(beryl.Sockets, String) {
   let assert Ok(#(channels, _sess)) =
     floodgate.start_with_backend(tenant, secret, memory_store.new())
   #(channels, token_for(doc, "alice"))
@@ -353,10 +353,7 @@ pub fn two_sessions_share_one_key_test() {
   // And they leave independently: one tab closing must not take the other's
   // session with it, which is what keying on session rather than user buys.
   drain(third)
-  process.send(
-    beryl.coordinator_subject(channels),
-    coordinator.SocketDisconnected("s-tab-1"),
-  )
+  transport.socket_disconnected(channels, "s-tab-1")
   let assert [#("alice", [gone])] =
     side(payload_of(next(third, "presence_diff")), "leaves")
   gone |> string.contains("\"client_id\":\"s-tab-1\"") |> should.be_true
@@ -372,13 +369,8 @@ pub fn two_sessions_share_one_key_test() {
   survivor |> string.contains("\"client_id\":\"s-tab-2\"") |> should.be_true
 }
 
-/// An update replaces the metadata under the same key.
-///
-/// beryl has no update call, so this is untrack-then-track and the wire carries
-/// the leave and the join as two diffs where Phoenix emits one. Watershed applies
-/// both as a single change (its tracker is keyed by `phx_ref` and idempotent), so
-/// the resulting roster is identical.
-pub fn updating_emits_a_leave_then_a_join_test() {
+/// An update atomically replaces the metadata under the same key.
+pub fn updating_emits_one_replacement_diff_test() {
   let doc = "presence-update"
   let #(channels, token) = start(doc)
   let sent = attach(channels, "s-upd")
@@ -392,15 +384,13 @@ pub fn updating_emits_a_leave_then_a_join_test() {
     phoenix_event(doc, "updatePresence", "{\"meta\":{\"panel\":\"text\"}}"),
   )
 
-  let leave = payload_of(next(sent, "presence_diff"))
-  side(leave, "joins") |> should.equal([])
-  let assert [#("alice", [old])] = side(leave, "leaves")
+  let replacement = payload_of(next(sent, "presence_diff"))
+  let assert [#("alice", [old])] = side(replacement, "leaves")
   old |> string.contains("\"panel\":\"sudoku\"") |> should.be_true
 
-  let join = payload_of(next(sent, "presence_diff"))
-  side(join, "leaves") |> should.equal([])
-  let assert [#("alice", [new])] = side(join, "joins")
+  let assert [#("alice", [new])] = side(replacement, "joins")
   new |> string.contains("\"panel\":\"text\"") |> should.be_true
+  process.receive(sent, 300) |> should.equal(Error(Nil))
 }
 
 /// An explicit leave removes the session, and a duplicate leave is a silent
@@ -437,10 +427,7 @@ pub fn disconnect_removes_presence_for_the_survivors_test() {
   drain(leaving)
   drain(survivor)
 
-  process.send(
-    beryl.coordinator_subject(channels),
-    coordinator.SocketDisconnected("s-dc-1"),
-  )
+  transport.socket_disconnected(channels, "s-dc-1")
 
   let diff = payload_of(next(survivor, "presence_diff"))
   side(diff, "joins") |> should.equal([])
@@ -568,17 +555,21 @@ pub fn presence_works_over_the_socketio_endpoint_test() {
   let #(channels, token) = start(doc)
 
   let sent = process.new_subject()
-  transport.socket_connected_with_codec(
-    channels: channels,
-    socket_id: "s-sio-presence",
-    send: fn(text) {
-      process.send(sent, text)
-      Ok(Nil)
-    },
-    send_binary: fn(_binary) { Ok(Nil) },
-    codec: Some(server_codec.server_codec()),
-    assigns: dynamic.nil(),
-  )
+  let assert Ok(owner) = transport.runtime_pid(channels)
+  let assert Ok(Nil) =
+    transport.admit_socket(
+      sockets: channels,
+      owner: owner,
+      socket_id: "s-sio-presence",
+      send: fn(text) {
+        process.send(sent, text)
+        Ok(Nil)
+      },
+      send_binary: fn(_binary) { Ok(Nil) },
+      codec: Some(server.server_codec()),
+      seed: socket.empty_seed(),
+      close: fn() { Nil },
+    )
   // A Socket.IO join *is* the connect_document payload, so one frame connects.
   transport.route_decoded(
     channels,
@@ -587,7 +578,7 @@ pub fn presence_works_over_the_socketio_endpoint_test() {
       None,
       None,
       topic,
-      Join,
+      codec.Join,
       dynamic.properties([
         #(dynamic.string("tenantId"), dynamic.string(tenant)),
         #(dynamic.string("id"), dynamic.string(doc)),

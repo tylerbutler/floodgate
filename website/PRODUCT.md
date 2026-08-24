@@ -63,7 +63,7 @@ tenants, each with two rotating JWT secret slots.
   secret rotation; admin UI (shared Lustre SPA) with GitHub OAuth; per-tenant
   storage backends (`shelf`/DETS, `ets`, or `memory`); configurable
   connection/rate/frame limits; `/health` readiness probe.
-- Built from sibling Gleam libraries (`spillway`, `beryl`, `dewdrop`,
+- Built from sibling Gleam libraries (`spillway`, `beryl`,
   `signet`, `silt`, `windsock`) rather than implementing the protocol itself
   — relevant to how "how it works" content should be framed.
 - Lives in the standalone `tylerbutler/floodgate` repository;

@@ -1,19 +1,17 @@
-//// The coordinator's heartbeat sweep is what reclaims a socket that stopped
+//// Beryl's heartbeat sweep reclaims a socket that stopped
 //// heartbeating — a process that died without a clean close, or a half-open
-//// connection whose peer went away while TCP stayed up. Until floodgate
-//// registered a closer the sweep could drop coordinator state but not close the
-//// connection, so the socket process stayed alive pinging into the void with
-//// its stale RSN pinning the document's MSN.
+//// connection whose peer went away while TCP stayed up.
 ////
 //// This exercises the whole chain: no heartbeats → sweep → channel terminate →
 //// session roster reclaimed → registered closer invoked.
 
+import beryl/socket
 import beryl/transport
 import beryl/wire/codec.{Join}
+import dewdrop/server
 import floodgate
 import floodgate/auth
 import floodgate/memory_store
-import floodgate/server_codec
 import floodgate/session
 import gleam/dynamic
 import gleam/erlang/process
@@ -42,22 +40,21 @@ pub fn socket_that_stops_heartbeating_is_evicted_and_closed_test() {
 
   let closed = process.new_subject()
   let sent = process.new_subject()
-  transport.socket_connected_with_codec(
-    channels: channels,
-    socket_id: socket_id,
-    send: fn(text) {
-      process.send(sent, text)
-      Ok(Nil)
-    },
-    send_binary: fn(_binary) { Ok(Nil) },
-    codec: Some(server_codec.server_codec()),
-    assigns: dynamic.nil(),
-  )
-  transport.register_closer(
-    channels: channels,
-    socket_id: socket_id,
-    close: fn() { process.send(closed, Nil) },
-  )
+  let assert Ok(owner) = transport.runtime_pid(channels)
+  let assert Ok(Nil) =
+    transport.admit_socket(
+      sockets: channels,
+      owner: owner,
+      socket_id: socket_id,
+      send: fn(text) {
+        process.send(sent, text)
+        Ok(Nil)
+      },
+      send_binary: fn(_binary) { Ok(Nil) },
+      codec: Some(server.server_codec()),
+      seed: socket.empty_seed(),
+      close: fn() { process.send(closed, Nil) },
+    )
 
   // A Socket.IO join is the connect_document payload itself, so one frame puts
   // this client in the session roster.
@@ -70,8 +67,8 @@ pub fn socket_that_stops_heartbeating_is_evicted_and_closed_test() {
   session.clients(document_session, topic) |> should.equal([socket_id])
 
   // Now go silent. No heartbeat ever arrives. The closer firing means the
-  // coordinator has already run the channel's terminate, which is what returns
-  // the client to the session.
+  // The runtime has already run the channel's terminate, which returns the
+  // client to the session.
   let assert Ok(Nil) = process.receive(closed, 2000)
   session.clients(document_session, topic) |> should.equal([])
 }

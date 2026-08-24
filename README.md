@@ -4,7 +4,7 @@ A [Fluid Framework](https://fluidframework.com) server written in Gleam, running
 on the BEAM.
 
 Floodgate is **dual-mode**: one process serves both wire protocols from the same
-coordinator, session, and storage, so clients of either kind collaborate on the
+socket runtime, session, and storage, so clients of either kind collaborate on the
 same document.
 
 | Endpoint | Clients |
@@ -71,9 +71,8 @@ another origin.
 | `FLOODGATE_MAX_FRAME_BYTES` | `16777216` (16 MiB) | Inbound frame ceiling. Also what IConnected advertises as `maxMessageSize` and the Engine.IO handshake as `maxPayload` — one value, so the three cannot drift. Oversize frames close the socket. |
 | `FLOODGATE_MAX_CONNECTIONS_PER_IP` | `256` | Concurrent sockets per peer address |
 | `FLOODGATE_MAX_CONNECTIONS` | `4096` | Concurrent sockets node-wide |
-| `FLOODGATE_MESSAGE_RATE` / `_BURST` | `1000` / `2000` | Per-socket inbound frames per second |
+| `FLOODGATE_MESSAGE_RATE` / `_BURST` | `1000` / `2000` | Per-socket inbound frame and decoded-message rates |
 | `FLOODGATE_JOIN_RATE` / `_BURST` | `100` / `200` | Per-socket joins per second |
-| `FLOODGATE_HEARTBEAT_INTERVAL_MS` | `30000` | Suggested client ping cadence; informational only |
 | `FLOODGATE_HEARTBEAT_TIMEOUT_MS` | `60000` | Server-side staleness window. A socket that sends no heartbeat within it is evicted *and* closed, so its stale reference sequence number stops pinning the document's minimum. Must be at least 2 — beryl derives its check interval as half this. |
 
 Set any limit to `0` to disable it. Defaults are deliberately generous — the conformance
@@ -167,7 +166,7 @@ document by sending `joinPresence`.
 
 ```
 joinPresence     {"meta": {...}}   → presence_state to that socket, then presence_diff to the topic
-updatePresence   {"meta": {...}}   → presence_diff carrying the leave, then one carrying the join
+updatePresence   {"meta": {...}}   → one presence_diff carrying the old leave and new join
 leavePresence    {}                → presence_diff carrying the leave
 ```
 
@@ -255,8 +254,7 @@ protocol itself:
 | Library | Role |
 |---|---|
 | [`spillway`](https://github.com/tylerbutler/spillway) | Fluid protocol: message types, sequencing, validation, signals, nacks |
-| [`beryl`](https://github.com/tylerbutler/beryl) | Channel coordinator, pubsub fan-out, Phoenix framing |
-| [`dewdrop`](https://github.com/tylerbutler/dewdrop) | Routerlicious/Socket.IO codec and event vocabulary |
+| [`beryl`](https://github.com/tylerbutler/beryl) | Supervised per-socket runtime, channel routing, pubsub, presence, Phoenix framing |
 | [`windsock`](https://github.com/tylerbutler/windsock) | Engine.IO/Socket.IO framing primitives |
 | [`signet`](https://github.com/tylerbutler/signet) | JWT scopes and Fluid token handling |
 | [`silt`](https://github.com/tylerbutler/silt) | Git object model for the Historian storage surface |

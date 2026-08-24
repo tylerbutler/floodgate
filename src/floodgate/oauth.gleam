@@ -1,6 +1,4 @@
-//// GitHub OAuth for Floodgate's admin session, using vestibule directly —
-//// the same library and two-phase flow (`authorize_url`/`handle_callback`)
-//// that `server/levee_oauth` wraps for Levee's Elixir side.
+//// GitHub OAuth for Floodgate's admin session, using Vestibule directly.
 ////
 //// Floodgate calls vestibule itself rather than depending on `levee_oauth`
 //// (an Elixir-facing package that reads its own environment variables via
@@ -21,14 +19,15 @@
 
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
+import gleam/option.{None}
 import gleam/result
 
 import vestibule
 import vestibule/auth.{type Auth}
-import vestibule/authorization_request.{AuthorizationRequest}
+import vestibule/authorization_request
 import vestibule/config as vestibule_config
 import vestibule/error.{type AuthError as VestibuleAuthError}
-import vestibule/strategy/github
+import vestibule_github
 
 import floodgate/oauth_state
 
@@ -62,22 +61,22 @@ pub type GitHubConfig {
 /// other route.
 pub fn build_config(
   config: GitHubConfig,
-) -> Result(vestibule_config.Config, OAuthError) {
+) -> Result(vestibule_config.ClientConfig, OAuthError) {
   use <- guard_not_empty(config.client_id, "FLOODGATE_GITHUB_CLIENT_ID")
   use <- guard_not_empty(config.client_secret, "FLOODGATE_GITHUB_CLIENT_SECRET")
   use <- guard_not_empty(config.redirect_uri, "FLOODGATE_GITHUB_REDIRECT_URI")
   Ok(vestibule_config.new(
-    config.client_id,
-    config.client_secret,
-    config.redirect_uri,
+    client_id: config.client_id,
+    redirect_uri: config.redirect_uri,
+    auth: vestibule_config.ClientSecret(config.client_secret),
   ))
 }
 
 fn guard_not_empty(
   value: String,
   name: String,
-  next: fn() -> Result(vestibule_config.Config, OAuthError),
-) -> Result(vestibule_config.Config, OAuthError) {
+  next: fn() -> Result(vestibule_config.ClientConfig, OAuthError),
+) -> Result(vestibule_config.ClientConfig, OAuthError) {
   case value {
     "" -> Error(ConfigMissing(variable: name))
     _ -> next()
@@ -93,8 +92,16 @@ pub fn begin_auth(
   now: Int,
 ) -> Result(String, OAuthError) {
   use oauth_config <- result.try(build_config(config))
-  case vestibule.authorize_url(github.strategy(), oauth_config) {
-    Ok(AuthorizationRequest(url:, state:, code_verifier:)) -> {
+  case
+    vestibule.create_authorization_request(
+      vestibule_github.strategy(),
+      config: oauth_config,
+      options: vestibule_config.authorize_options(),
+    )
+  {
+    Ok(request) -> {
+      let state = authorization_request.state(request)
+      let code_verifier = authorization_request.code_verifier(request)
       oauth_state.store(
         state_actor,
         state,
@@ -102,7 +109,7 @@ pub fn begin_auth(
         now,
         state_ttl_seconds,
       )
-      Ok(url)
+      Ok(authorization_request.url(request))
     }
     Error(err) -> Error(VestibuleError(err))
   }
@@ -127,11 +134,12 @@ pub fn complete_auth(
   )
   case
     vestibule.handle_callback(
-      github.strategy(),
+      vestibule_github.strategy(),
       oauth_config,
       callback_params,
       state,
       code_verifier,
+      None,
     )
   {
     Ok(auth) -> Ok(auth)

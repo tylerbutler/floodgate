@@ -1,12 +1,12 @@
-//// Floodgate — Fluid Framework server on beryl: dewdrop/server codec, spillway
-//// sequencing, beryl channels + pubsub fan-out + Mist. Official Fluid drivers
-//// can connect. Gleam analogue of levee's DocumentChannel + Session + endpoint.
+//// Floodgate — Fluid Framework server on Beryl's socket runtime, with
+//// Socket.IO and Phoenix Channels transports.
 
 import beryl
+import beryl/channel
 import beryl/error as beryl_error
 import beryl/presence
 import beryl/pubsub
-import beryl/supervisor as beryl_supervisor
+import beryl/transport/server as transport_server
 import beryl/wire
 import beryl_mist
 import floodgate/admin_auth
@@ -49,6 +49,7 @@ import signet/jwt
 import signet/types
 import vestibule/auth as vestibule_auth
 import vestibule/error as vestibule_error
+import vestibule/user_info as vestibule_user_info
 
 /// Runtime configuration resolved once, in `serve_with_backend`, from every
 /// `FLOODGATE_*`/`GITHUB_*` environment variable the REST surface needs.
@@ -148,7 +149,7 @@ fn limit_env(name: String, default: Int) -> Int {
 pub fn start(
   configured_tenant: String,
   jwt_secret: String,
-) -> Result(#(beryl.Channels, session.Session), beryl_error.StartFailure) {
+) -> Result(#(beryl.Sockets, session.Session), beryl_error.StartFailure) {
   start_with_backend(
     configured_tenant,
     jwt_secret,
@@ -161,14 +162,13 @@ pub fn start_with_backend(
   configured_tenant: String,
   jwt_secret: String,
   storage: store.Backend,
-) -> Result(#(beryl.Channels, session.Session), beryl_error.StartFailure) {
+) -> Result(#(beryl.Sockets, session.Session), beryl_error.StartFailure) {
   let pubsub_handle = pubsub.start(pubsub.default_config())
-  // Phoenix framing is the coordinator default so `levee-driver` sockets on
-  // the stock beryl transport need no per-connection codec; the Socket.IO
-  // transport overrides it per socket with the dewdrop/Routerlicious codec.
-  //
-  // The limits below must be applied before `beryl_supervisor.config`, which
-  // reads them to decide whether to start the connection-limiter child.
+  let max_frame_bytes = max_frame_bytes()
+  let message_rate = limit_env("FLOODGATE_MESSAGE_RATE", 1000)
+  let message_burst = limit_env("FLOODGATE_MESSAGE_BURST", 2000)
+  // Phoenix framing is the runtime default. The Socket.IO transport overrides
+  // it per connection with Floodgate's Routerlicious codec.
   // Defaults are deliberately generous: the conformance suites open several
   // concurrent sockets from one address and burst ops during sync tests, so
   // these bound abuse without shaping normal collaboration. Set any to 0 to
@@ -176,53 +176,32 @@ pub fn start_with_backend(
   let config =
     beryl.config(wire.phoenix_codec())
     |> beryl.with_pubsub(pubsub_handle)
-    |> beryl.with_max_inbound_frame_bytes(max_frame_bytes())
-    // The values beryl already defaults to, made explicit and overridable.
-    // The sweep they drive is what reclaims a socket whose process died without
-    // a clean close, or whose peer stopped answering pings while the TCP
-    // connection stayed open — its stale RSN would otherwise pin the document's
-    // MSN and block summarization for everyone else on it.
-    |> beryl.with_heartbeat(
-      interval_ms: positive_env("FLOODGATE_HEARTBEAT_INTERVAL_MS", 30_000),
-      timeout_ms: positive_env("FLOODGATE_HEARTBEAT_TIMEOUT_MS", 60_000),
-    )
+    |> beryl.with_max_inbound_frame_bytes(max_frame_bytes)
+    |> beryl.with_heartbeat(timeout_ms: positive_env(
+      "FLOODGATE_HEARTBEAT_TIMEOUT_MS",
+      60_000,
+    ))
     |> beryl.with_max_connections_per_ip(limit_env(
       "FLOODGATE_MAX_CONNECTIONS_PER_IP",
       256,
     ))
     |> beryl.with_max_connections(limit_env("FLOODGATE_MAX_CONNECTIONS", 4096))
-    |> beryl.with_message_rate(
-      per_second: limit_env("FLOODGATE_MESSAGE_RATE", 1000),
-      burst: limit_env("FLOODGATE_MESSAGE_BURST", 2000),
-    )
+    |> beryl.with_frame_rate(per_second: message_rate, burst: message_burst)
+    |> beryl.with_message_rate(per_second: message_rate, burst: message_burst)
     |> beryl.with_join_rate(
       per_second: limit_env("FLOODGATE_JOIN_RATE", 100),
       burst: limit_env("FLOODGATE_JOIN_BURST", 200),
     )
-  let supervised = beryl_supervisor.config(config)
-  // `channels` is valid before the tree starts (it is a named handle), which is
-  // what lets the `on_diff` callback below capture it while still building the
-  // config that starts presence.
-  let channels = beryl_supervisor.channels(supervised)
+  let registration = document_channel.new_registration()
   // Server-backed presence (`presence_v1`).
-  //
-  // `diff_topics` has to be iterated rather than assuming one: `diff_joins` and
-  // `diff_leaves` are per-topic in the pinned beryl, so a diff spanning two
-  // documents would otherwise fan the wrong entries out to both.
   let presence_name = presence_worker.new_name()
-  let supervised =
-    supervised
-    |> beryl_supervisor.with_presence(
-      presence.default_config(presence_replica())
-      |> presence_replication
-      |> presence.with_on_diff(fn(diff) {
-        presence.diff_topics(diff)
-        |> list.each(fn(topic) {
-          beryl.broadcast_presence_diff(channels, topic, diff)
-        })
-      }),
-    )
-  let assert Some(presence_handle) = beryl_supervisor.presence(supervised)
+  let #(presence_handle, presence_spec) =
+    presence.default_config(presence_replica())
+    |> presence_replication
+    |> presence.with_on_diff(fn(diff) {
+      document_channel.broadcast_presence_diff(registration, diff)
+    })
+    |> presence.child_spec
   // Sequence state lives in one actor per document, under the registry owner
   // and factory this child spec pairs. Supervising them matters because an
   // unsupervised registry owner left every `process.call` from every channel
@@ -232,22 +211,24 @@ pub fn start_with_backend(
   // as the name of the registry's ETS table.
   let session_name = session.new_name()
   let document_session = session.from_name(session_name, storage)
-  // The channel needs the handle `register` returns, to push a targeted
-  // signal to one socket via `beryl.send_info` — but `register` takes the
-  // channel, so the handle cannot exist at construction. The holder closes
-  // that loop: built first, filled in immediately after. Discarding the
-  // result here is what left signal targeting unimplementable.
-  //
-  // Built before the tree starts because the presence worker is *in* the tree
-  // and its push callback closes over the holder.
-  let registration = document_channel.new_registration()
+  let assert Ok(#(sockets, beryl_spec)) =
+    channel.child_spec(config, handlers: [
+      document_channel.new(
+        document_session,
+        registration,
+        presence_worker.from_name(presence_name),
+        max_frame_bytes,
+      ),
+    ])
+  document_channel.set_sockets(registration, sockets)
   case
     static_supervisor.new(static_supervisor.OneForOne)
     // The backend's own processes come first: the session actor's `store.open`
     // and its lazy rehydration both call into storage, so storage has to be up
     // before it.
     |> store.supervise(storage)
-    |> static_supervisor.add(beryl_supervisor.start(supervised))
+    |> static_supervisor.add(presence_spec)
+    |> static_supervisor.add(beryl_spec)
     |> static_supervisor.add(session.child_spec(session_name, storage))
     |> static_supervisor.add(
       presence_worker.child_spec(
@@ -273,19 +254,7 @@ pub fn start_with_backend(
       // See `store.ensure_startup_tenant` for why this preserves existing
       // deployments across a persistent restart.
       store.ensure_startup_tenant(storage, configured_tenant, jwt_secret)
-      let _ =
-        beryl.register(
-          channels,
-          "document:*",
-          document_channel.new(
-            channels,
-            document_session,
-            registration,
-            presence_worker.from_name(presence_name),
-          ),
-        )
-        |> result.map(document_channel.set_registration(registration, _))
-      Ok(#(channels, document_session))
+      Ok(#(sockets, document_session))
     }
     Error(e) -> Error(beryl_error.from_actor_start_error(e))
   }
@@ -336,14 +305,16 @@ const phoenix_socket_path = "/socket/websocket"
 /// Phoenix endpoint transport config. beryl defaults to a same-origin policy,
 /// which rejects browser clients served from another origin; FLOODGATE_ALLOWED_ORIGINS
 /// takes a comma-separated allow-list, or `*` to disable origin checking.
-fn phoenix_transport_config() -> beryl_mist.TransportConfig(Nil) {
-  let config = beryl_mist.default_config(phoenix_socket_path)
-  // beryl_mist's own default is already SameOrigin, so that case needs no call.
+fn phoenix_transport_config() -> transport_server.TransportConfig(
+  mist.Connection,
+) {
+  let config = transport_server.default_config(phoenix_socket_path)
+  // The transport default is already SameOrigin, so that case needs no call.
   case origin_policy() {
     origin.SameOrigin -> config
-    origin.AllowAll -> beryl_mist.with_allow_all_origins(config)
+    origin.AllowAll -> transport_server.with_allow_all_origins(config)
     origin.AllowList(origins) ->
-      beryl_mist.with_allowed_origins(config, origins)
+      transport_server.with_allowed_origins(config, origins)
   }
 }
 
@@ -1559,30 +1530,39 @@ fn oauth_callback_response(
             "OAuth is not configured",
           )
         }
-        Error(oauth.VestibuleError(vestibule_error.UserInfoFailed(_))) ->
-          oauth_error_response(
-            502,
-            "provider_error",
-            "Could not fetch profile from provider",
-          )
-        Error(oauth.VestibuleError(vestibule_error.ProviderError(
-          code,
-          description,
-          _uri,
-        ))) -> {
-          let message = case description {
-            "" -> code
-            _ -> description
+        Error(oauth.VestibuleError(error)) ->
+          case vestibule_error.kind(error) {
+            vestibule_error.UserInfoKind ->
+              oauth_error_response(
+                502,
+                "provider_error",
+                "Could not fetch profile from provider",
+              )
+            vestibule_error.ProviderKind ->
+              case vestibule_error.provider_error(error) {
+                Some(provider_error) -> {
+                  let description =
+                    vestibule_error.provider_description(provider_error)
+                  let message = case description {
+                    "" -> vestibule_error.provider_code(provider_error)
+                    _ -> description
+                  }
+                  oauth_error_response(401, "oauth_failed", message)
+                }
+                None ->
+                  oauth_error_response(
+                    401,
+                    "auth_failed",
+                    "Authentication failed, please try again",
+                  )
+              }
+            _ ->
+              oauth_error_response(
+                401,
+                "auth_failed",
+                "Authentication failed, please try again",
+              )
           }
-          oauth_error_response(401, "oauth_failed", message)
-        }
-        Error(oauth.VestibuleError(_err)) -> {
-          oauth_error_response(
-            401,
-            "auth_failed",
-            "Authentication failed, please try again",
-          )
-        }
       }
     }
   }
@@ -1600,14 +1580,14 @@ pub fn handle_successful_auth(
   public_url: String,
   auth_result: vestibule_auth.Auth,
 ) -> response.Response(mist.ResponseData) {
-  let github_id = auth_result.uid
-  let info = auth_result.info
-  let github_username = option.unwrap(info.nickname, "")
-  let display_name = case info.name {
+  let github_id = vestibule_auth.uid(auth_result)
+  let info = vestibule_auth.info(auth_result)
+  let github_username = option.unwrap(vestibule_user_info.nickname(info), "")
+  let display_name = case vestibule_user_info.name(info) {
     Some(name) -> name
     None -> github_username
   }
-  let email = option.unwrap(info.email, "")
+  let email = option.unwrap(vestibule_user_info.email(info), "")
   let now = now_seconds()
   case
     find_or_create_admin_user(

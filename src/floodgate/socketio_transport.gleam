@@ -1,31 +1,19 @@
 //// Mist transport for the Engine.IO/Socket.IO framing expected by the
 //// official Routerlicious driver.
 ////
-//// This is floodgate's own transport rather than beryl_mist's, so the guards
-//// beryl_mist applies to the Phoenix endpoint have to be applied here too or the
-//// two endpoints diverge. It now mirrors beryl_mist on four counts: the origin
-//// (CSWSH) policy, the per-IP/node connection ceiling, the per-socket message
-//// rate limit, and — importantly — registering a closer so the coordinator can
-//// actively evict a stale socket instead of leaving a zombie connection whose
-//// frames are silently dropped.
-////
-//// It additionally enforces the Engine.IO `pingTimeout` it advertises, which
-//// beryl_mist has no equivalent of because Phoenix heartbeats are policed
-//// entirely by the coordinator's sweep.
+//// Beryl's shared transport server owns admission, limits, runtime
+//// registration, frame decoding, and runtime-triggered closes. This module
+//// adds the Engine.IO opening packet, namespace connect acknowledgment, and
+//// server ping timer required by Socket.IO.
 
-import beryl.{type Channels, type ConnectionPermit}
-import beryl/transport.{type RateLimiter}
-import beryl/wire/codec.{type Inbound, Event, Heartbeat, Join}
-import dewdrop/events
+import beryl.{type Sockets}
+import beryl/transport
+import beryl/transport/server
+import dewdrop/server as fluid_codec
 import floodgate/origin
-import floodgate/server_codec
-import floodgate/store
 import gleam/bit_array
-import gleam/bool
 import gleam/bytes_tree
 import gleam/crypto
-import gleam/dynamic
-import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
@@ -42,87 +30,63 @@ const ping_timeout_ms = 20_000
 
 type ConnectionState {
   ConnectionState(
-    socket_id: String,
-    channels: Channels,
-    send_subject: Subject(SendRequest),
-    /// `None` until the socket's `connect_document` names a document.
-    topic: Option(String),
-    connection_permit: Option(ConnectionPermit),
-    message_limiter: Option(RateLimiter),
-    max_frame_bytes: Int,
-    /// Monotonic ms of the last frame received on this socket, for the pong
-    /// deadline below.
+    runtime: server.ConnectionState,
+    sid: String,
+    ping_subject: Subject(server.SendRequest),
     last_inbound_ms: Int,
   )
 }
 
-type SendRequest {
-  SendText(String)
-  SendBinary(BitArray)
-  SendPing
-  Close
-}
-
 /// Build a combined `/socket.io/` WebSocket and HTTP request handler.
-///
-/// The frame ceiling is read from the beryl config via
-/// `beryl.max_inbound_frame_bytes`, which is the single authority for all three
-/// places the limit is observable: enforced here per frame (beryl only *exposes*
-/// the value — enforcement is each transport's job), advertised in the Engine.IO
-/// handshake as `maxPayload`, and advertised by the channel as IConnected's
-/// `maxMessageSize`.
 pub fn handler(
-  channels: Channels,
+  sockets: Sockets,
   origin_policy: origin.OriginPolicy,
   http_fallback: fn(Request(Connection)) -> Response(ResponseData),
 ) -> fn(Request(Connection)) -> Response(ResponseData) {
-  fn(request) {
-    case is_socketio_websocket_request(request) {
-      True -> upgrade(request, channels, origin_policy)
-      False -> http_fallback(request)
-    }
-  }
+  let config = transport_config(origin_policy)
+  server.handler(
+    upgrade: fn(request, next) { upgrade(request, sockets, config, next) },
+    http_fallback: http_fallback,
+  )
 }
 
-fn is_socketio_websocket_request(request: Request(Connection)) -> Bool {
-  case request.path_segments(request), request.get_header(request, "upgrade") {
-    ["socket.io"], Ok(upgrade) -> string.lowercase(upgrade) == "websocket"
-    _, _ -> False
+fn transport_config(
+  policy: origin.OriginPolicy,
+) -> server.TransportConfig(Connection) {
+  let config = server.default_config("/socket.io")
+  case policy {
+    origin.SameOrigin -> config
+    origin.AllowAll -> server.with_allow_all_origins(config)
+    origin.AllowList(origins) -> server.with_allowed_origins(config, origins)
   }
 }
 
 fn upgrade(
   request: Request(Connection),
-  channels: Channels,
-  origin_policy: origin.OriginPolicy,
+  sockets: Sockets,
+  config: server.TransportConfig(Connection),
+  next: fn() -> Response(ResponseData),
 ) -> Response(ResponseData) {
-  // Reject cross-site browser upgrades before the handshake. Non-browser
-  // clients — the official Fluid drivers and the conformance suites — send no
-  // `Origin` and stay admitted under the default policy.
-  use <- bool.lazy_guard(
-    when: !origin.allowed(
-      origin_policy,
-      origin: request.get_header(request, "origin"),
-      host: request.get_header(request, "host"),
-    ),
-    return: fn() { empty_response(403) },
-  )
-
-  case beryl.acquire_connection_slot(channels, request_ip(request)) {
-    Error(Nil) -> empty_response(429)
-    Ok(permit) ->
-      // The permit is bound to the connection process in `on_init` so the
-      // limiter's monitor reclaims it on abnormal death, and released in
-      // `on_close`. A handshake that never reaches `on_init` would leak the
-      // slot; that window is the same one beryl_mist has, and the request has
-      // already been screened as a websocket upgrade by this point.
+  let telemetry = transport.telemetry(sockets, transport.Mist)
+  server.upgrade(
+    request: request,
+    sockets: sockets,
+    config: config,
+    telemetry: telemetry,
+    request_ip: request_ip,
+    reject: empty_response,
+    accept: fn(metadata, permit) {
       mist.websocket(
         request: request,
         handler: on_message,
-        on_init: fn(connection) { on_init(connection, channels, permit) },
+        on_init: fn(connection) {
+          on_init(connection, request, metadata, sockets, permit, telemetry)
+        },
         on_close: on_close,
       )
-  }
+    },
+    next: next,
+  )
 }
 
 fn empty_response(status: Int) -> Response(ResponseData) {
@@ -130,81 +94,50 @@ fn empty_response(status: Int) -> Response(ResponseData) {
   |> response.set_body(mist.Bytes(bytes_tree.new()))
 }
 
-/// The real socket peer address. Deliberately not read from `X-Forwarded-For`:
-/// a client sets that freely and could otherwise spoof its way past the per-IP
-/// ceiling. Behind a trusted proxy every connection shares the proxy address,
-/// so enforce per-client limits at the proxy instead.
-fn request_ip(request: Request(Connection)) -> String {
-  case mist.get_connection_info(request.body) {
-    Ok(info) -> mist.ip_address_to_string(info.ip_address)
-    Error(Nil) -> "unknown"
-  }
+fn request_ip(request: Request(Connection)) -> Result(String, Nil) {
+  mist.get_connection_info(request.body)
+  |> result.map(fn(info) { mist.ip_address_to_string(info.ip_address) })
 }
 
 fn on_init(
   connection: WebsocketConnection,
-  channels: Channels,
-  permit: ConnectionPermit,
-) -> #(ConnectionState, Option(process.Selector(SendRequest))) {
-  let max_frame_bytes = beryl.max_inbound_frame_bytes(channels)
-  let socket_id = generate_socket_id()
-  let send_subject = process.new_subject()
+  request: Request(Connection),
+  metadata: List(#(String, String)),
+  sockets: Sockets,
+  permit: transport.ConnectionPermit,
+  telemetry: transport.Telemetry,
+) -> #(ConnectionState, Option(process.Selector(server.SendRequest))) {
+  let sid = generate_socket_id()
+  let ping_subject = process.new_subject()
   let selector =
     process.new_selector()
-    |> process.select(send_subject)
-
-  // Bind before anything can fail, so the slot is reclaimed even if this
-  // process dies without running `on_close`.
-  beryl.bind_connection_slot(permit)
-
-  let send_text = fn(text: String) -> Result(Nil, Nil) {
-    process.send(send_subject, SendText(text))
-    Ok(Nil)
-  }
-  let send_binary = fn(data: BitArray) -> Result(Nil, Nil) {
-    process.send(send_subject, SendBinary(data))
-    Ok(Nil)
-  }
-
-  transport.socket_connected_with_codec(
-    channels: channels,
-    socket_id: socket_id,
-    send: send_text,
-    send_binary: send_binary,
-    codec: Some(server_codec.server_codec()),
-    assigns: dynamic.nil(),
-  )
-
-  // Without this the coordinator can drop its own state for a stale socket but
-  // cannot close the underlying connection, leaving this process alive and
-  // pinging into the void — and its stale RSN pinning the document's MSN.
-  transport.register_closer(
-    channels: channels,
-    socket_id: socket_id,
-    close: fn() { process.send(send_subject, Close) },
-  )
-
+    |> process.select(ping_subject)
+  let #(runtime, selector) =
+    server.init_connection(
+      sockets: sockets,
+      seed: server.connect_seed(request, metadata),
+      connection_permit: permit,
+      base_selector: selector,
+      logger_name: "floodgate.socketio",
+      telemetry: telemetry,
+      codec: Some(fluid_codec.server_codec()),
+    )
   let _ =
     mist.send_text_frame(
       connection,
       socketio.encode_open(
-        socket_id,
+        sid,
         ping_interval_ms,
         ping_timeout_ms,
-        max_frame_bytes,
+        transport.max_inbound_frame_bytes(sockets),
       ),
     )
-  schedule_ping(send_subject)
-
+  schedule_ping(ping_subject)
   #(
     ConnectionState(
-      socket_id: socket_id,
-      channels: channels,
-      send_subject: send_subject,
-      topic: None,
-      connection_permit: Some(permit),
-      message_limiter: transport.new_message_limiter(channels),
-      max_frame_bytes: max_frame_bytes,
+      runtime: runtime,
+      sid: sid,
+      ping_subject: ping_subject,
       last_inbound_ms: now_ms(),
     ),
     Some(selector),
@@ -213,126 +146,69 @@ fn on_init(
 
 fn on_message(
   state: ConnectionState,
-  message: mist.WebsocketMessage(SendRequest),
+  message: mist.WebsocketMessage(server.SendRequest),
   connection: WebsocketConnection,
-) -> mist.Next(ConnectionState, SendRequest) {
+) -> mist.Next(ConnectionState, server.SendRequest) {
   case message {
     mist.Text(text) -> {
       let state = ConnectionState(..state, last_inbound_ms: now_ms())
-      case frame_too_large(state.max_frame_bytes, string.byte_size(text)) {
-        True -> mist.stop()
-        False ->
-          case take_token(state) {
-            #(state, False) -> mist.continue(state)
-            #(state, True) -> handle_text(state, text, connection)
+      case socket_ping_ack_id(text) {
+        Some(id) ->
+          handle_control_frame(connection, state, text, "43" <> id <> "[]")
+        None ->
+          case text == socketio.socket_connect_prefix {
+            True ->
+              handle_control_frame(
+                connection,
+                state,
+                text,
+                socketio.encode_connect_ack(state.sid),
+              )
+            False ->
+              resume(state, server.handle_text_frame(state.runtime, text))
           }
       }
     }
-    mist.Binary(data) -> {
-      let state = ConnectionState(..state, last_inbound_ms: now_ms())
-      case frame_too_large(state.max_frame_bytes, bit_array.byte_size(data)) {
-        True -> mist.stop()
-        False ->
-          case take_token(state) {
-            #(state, False) -> mist.continue(state)
-            #(state, True) -> {
-              transport.route_binary(state.channels, state.socket_id, data)
-              mist.continue(state)
+    mist.Binary(data) ->
+      resume(
+        ConnectionState(..state, last_inbound_ms: now_ms()),
+        server.handle_binary_frame(state.runtime, data),
+      )
+    mist.Closed | mist.Shutdown -> mist.stop()
+    mist.Custom(server.Close) -> mist.stop()
+    mist.Custom(server.SendBinary(data)) -> {
+      let _send_result = mist.send_binary_frame(connection, data)
+      mist.continue(state)
+    }
+    mist.Custom(server.SendText(text)) ->
+      case text == socketio.engine_ping() {
+        False -> send_text(connection, state, text)
+        True ->
+          case pong_overdue(state) {
+            True -> mist.stop()
+            False -> {
+              schedule_ping(state.ping_subject)
+              send_text(connection, state, text)
             }
           }
       }
-    }
-    mist.Closed | mist.Shutdown -> mist.stop()
-    // Coordinator-initiated eviction via the registered closer.
-    mist.Custom(Close) -> mist.stop()
-    mist.Custom(SendText(text)) -> send_text(connection, state, text)
-    mist.Custom(SendBinary(data)) -> {
-      mist.send_binary_frame(connection, data)
-      |> result.replace(mist.continue(state))
-      |> result.unwrap(mist.continue(state))
-    }
-    mist.Custom(SendPing) ->
-      case pong_overdue(state) {
-        True -> mist.stop()
-        False -> {
-          schedule_ping(state.send_subject)
-          send_text(connection, state, socketio.engine_ping())
-        }
-      }
   }
 }
 
-/// Whether the peer has gone silent past the `pingTimeout` the Engine.IO
-/// handshake advertises.
-///
-/// The ping timer previously fired unconditionally forever, so a peer that
-/// stopped answering — a half-open connection, or a browser tab suspended
-/// mid-flight — was only reclaimed by the coordinator's 60 s heartbeat sweep.
-/// Checking here honours the 20 s figure already published in `encode_open`,
-/// and the allowance is `interval + timeout` because the deadline is evaluated
-/// on the interval tick: a pong that arrives just before one tick must not be
-/// judged stale at the next.
-fn pong_overdue(state: ConnectionState) -> Bool {
-  now_ms() - state.last_inbound_ms > ping_interval_ms + ping_timeout_ms
-}
-
-/// Whether an inbound frame breaches the configured ceiling. A cap of 0 (or
-/// less) disables the check, matching beryl's convention. Mirrors beryl_mist so
-/// both endpoints reject at the same size and in the same way — a close rather
-/// than a protocol error, since at frame level there is no reliable client or
-/// topic context to address a nack to, and WebSocket close is the native signal.
-fn frame_too_large(max_bytes: Int, actual_bytes: Int) -> Bool {
-  max_bytes > 0 && actual_bytes > max_bytes
-}
-
-/// Take a token from this socket's inbound message budget. Over-budget frames
-/// are dropped rather than closing the socket, matching how the coordinator
-/// treats frames from a socket it has already stopped tracking.
-fn take_token(state: ConnectionState) -> #(ConnectionState, Bool) {
-  case state.message_limiter {
-    None -> #(state, True)
-    Some(limiter) -> {
-      let #(limiter, allowed) = transport.take_token(limiter)
-      #(ConnectionState(..state, message_limiter: Some(limiter)), allowed)
-    }
-  }
-}
-
-fn handle_text(
-  state: ConnectionState,
-  text: String,
+fn handle_control_frame(
   connection: WebsocketConnection,
-) -> mist.Next(ConnectionState, SendRequest) {
-  case socket_ping_ack_id(text) {
-    Some(id) -> send_text(connection, state, "43" <> id <> "[]")
-    None ->
-      case socketio.classify(text) {
-        socketio.EnginePing -> {
-          transport.route_decoded(
-            state.channels,
-            state.socket_id,
-            codec.inbound(None, None, "", Heartbeat, dynamic.nil()),
-          )
-          mist.continue(state)
-        }
-        socketio.EnginePong -> {
-          transport.route_decoded(
-            state.channels,
-            state.socket_id,
-            codec.inbound(None, None, "", Heartbeat, dynamic.nil()),
-          )
-          mist.continue(state)
-        }
-        socketio.SocketConnect ->
-          send_text(
-            connection,
-            state,
-            socketio.encode_connect_ack(state.socket_id),
-          )
-        socketio.FluidEvent(event, args) ->
-          handle_fluid_event(state, event, args)
-        socketio.Unrecognized(_) -> mist.continue(state)
-      }
+  state: ConnectionState,
+  frame: String,
+  response: String,
+) -> mist.Next(ConnectionState, server.SendRequest) {
+  case server.handle_text_frame(state.runtime, frame) {
+    server.Continue(runtime) ->
+      send_text(
+        connection,
+        ConnectionState(..state, runtime: runtime),
+        response,
+      )
+    server.Stop -> mist.stop()
   }
 }
 
@@ -351,94 +227,14 @@ fn socket_ping_ack_id(text: String) -> Option(String) {
   }
 }
 
-fn handle_fluid_event(
+fn resume(
   state: ConnectionState,
-  event: String,
-  args: List(dynamic.Dynamic),
-) -> mist.Next(ConnectionState, SendRequest) {
-  case inbound_event(state.topic, event, args) {
-    Error(Nil) -> mist.continue(state)
-    Ok(#(inbound, topic)) -> {
-      transport.route_decoded(state.channels, state.socket_id, inbound)
-      mist.continue(ConnectionState(..state, topic: Some(topic)))
-    }
-  }
-}
-
-fn inbound_event(
-  current_topic: Option(String),
-  event: String,
-  args: List(dynamic.Dynamic),
-) -> Result(#(Inbound, String), Nil) {
-  case event, args {
-    // A connect names its own document — and may rename the socket's topic —
-    // so it is routable whether or not the socket has joined before.
-    e, [payload, ..] if e == events.connect_document -> {
-      use topic <- result.try(topic_from_connect(payload))
-      Ok(#(codec.inbound(None, None, topic, Join, payload), topic))
-    }
-    // Everything else only makes sense on a socket that has joined a document.
-    _, _ ->
-      case current_topic {
-        None -> Error(Nil)
-        Some(topic) -> joined_event(topic, event, args)
-      }
-  }
-}
-
-fn joined_event(
-  topic: String,
-  event: String,
-  args: List(dynamic.Dynamic),
-) -> Result(#(Inbound, String), Nil) {
-  case event, args {
-    e, [client_id, messages, ..] if e == events.submit_op ->
-      Ok(#(
-        codec.inbound(
-          None,
-          None,
-          topic,
-          Event(event),
-          dynamic.properties([
-            #(dynamic.string("clientId"), client_id),
-            #(dynamic.string("messageBatches"), messages),
-          ]),
-        ),
-        topic,
-      ))
-    e, [client_id, signals, ..] if e == events.submit_signal ->
-      Ok(#(
-        codec.inbound(
-          None,
-          None,
-          topic,
-          Event(event),
-          dynamic.properties([
-            #(dynamic.string("clientId"), client_id),
-            #(dynamic.string("signals"), signals),
-          ]),
-        ),
-        topic,
-      ))
-    _, [payload, ..] ->
-      Ok(#(codec.inbound(None, None, topic, Event(event), payload), topic))
-    _, [] -> Error(Nil)
-  }
-}
-
-fn topic_from_connect(payload: dynamic.Dynamic) -> Result(String, Nil) {
-  use tenant <- result.try(string_field(payload, "tenantId"))
-  use document_id <- result.try(string_field(payload, "id"))
-  Ok(store.topic(tenant, document_id))
-}
-
-/// A non-empty string field of `value`, or `Error(Nil)` when the field is
-/// missing, not a string, or empty.
-fn string_field(value: dynamic.Dynamic, key: String) -> Result(String, Nil) {
-  case decode.run(value, decode.field(key, decode.string, decode.success)) {
-    Ok("") -> Error(Nil)
-    Ok(found) -> Ok(found)
-    Error(_) -> Error(Nil)
+  outcome: server.FrameDisposition,
+) -> mist.Next(ConnectionState, server.SendRequest) {
+  case outcome {
+    server.Continue(runtime) ->
+      mist.continue(ConnectionState(..state, runtime: runtime))
+    server.Stop -> mist.stop()
   }
 }
 
@@ -446,23 +242,28 @@ fn send_text(
   connection: WebsocketConnection,
   state: ConnectionState,
   text: String,
-) -> mist.Next(ConnectionState, SendRequest) {
+) -> mist.Next(ConnectionState, server.SendRequest) {
   mist.send_text_frame(connection, text)
   |> result.replace(mist.continue(state))
   |> result.unwrap(mist.continue(state))
 }
 
 fn on_close(state: ConnectionState) -> Nil {
-  transport.socket_disconnected(state.channels, state.socket_id)
-  case state.connection_permit {
-    Some(permit) -> beryl.release_connection_slot(permit)
-    None -> Nil
-  }
+  server.close_connection(state.runtime)
 }
 
-fn schedule_ping(subject: Subject(SendRequest)) -> Nil {
-  let _ = process.send_after(subject, ping_interval_ms, SendPing)
+fn schedule_ping(subject: Subject(server.SendRequest)) -> Nil {
+  let _ =
+    process.send_after(
+      subject,
+      ping_interval_ms,
+      server.SendText(socketio.engine_ping()),
+    )
   Nil
+}
+
+fn pong_overdue(state: ConnectionState) -> Bool {
+  now_ms() - state.last_inbound_ms > ping_interval_ms + ping_timeout_ms
 }
 
 fn generate_socket_id() -> String {

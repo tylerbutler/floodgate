@@ -1,12 +1,9 @@
 //// Server-backed presence (`presence_v1`) — the actor that owns Floodgate's
 //// side of beryl's presence registry.
 ////
-//// This exists because beryl's `track`/`untrack`/`untrack_all`/`list` are
-//// `process.call`s with a 5 s timeout that **panic** on a slow or dead actor,
-//// and channel callbacks run inside the single beryl coordinator process.
-//// Calling them from `document_channel` would stall — or kill — every socket on
-//// the node. So every command below is a cast, handled here, and results come
-//// back to the originating socket through the injected `push`.
+//// This isolates Beryl's synchronous public presence calls from socket
+//// callbacks. Every command below is a cast handled by this worker, and
+//// results return to the originating channel through the injected `push`.
 ////
 //// Being one actor is also what serializes join/update/leave/cleanup: an update
 //// queued behind a disconnect finds no tracking ref and cannot resurrect a
@@ -23,6 +20,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/json
 import gleam/otp/actor
 import gleam/otp/supervision
+import gleam/result
 
 /// Client→server commands are camelCase like `submitOp`; server→client frames
 /// are snake_case like `connect_document_success`. That split is the existing
@@ -55,7 +53,7 @@ pub const reserved_meta_fields = [
 ///
 /// Injected rather than imported so this module depends on nothing in Floodgate.
 /// `document_channel` must import *this* module for the command constructors, so
-/// reaching back for `beryl.send_info` directly would be an import cycle.
+/// reaching back for its channel-sender registry would be an import cycle.
 pub type Push =
   fn(String, String, String, json.Json) -> Nil
 
@@ -172,7 +170,10 @@ fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
             client_id,
             topic,
             event_state,
-            presence_wire.encode_state(presence.list(state.presence, topic)),
+            presence_wire.encode_state(
+              presence.list(state.presence, topic)
+              |> result.unwrap([]),
+            ),
           )
           let ref = presence.track(state.presence, topic, key, client_id, meta)
           actor.continue(
@@ -230,34 +231,39 @@ fn untracked(state: State, client_id: String) -> actor.Next(State, Msg) {
 }
 
 /// Replace a tracked session's metadata under its existing topic and key.
-///
-/// ponytail: beryl has no metadata-update call, so this is untrack-then-track
-/// and the wire carries two diffs — `{leaves: [old]}` then `{joins: [new]}` —
-/// where Phoenix would emit one diff carrying both. Watershed applies them as
-/// one change (its tracker is keyed by `phx_ref` and idempotent), so the roster
-/// is identical; only the frame count differs. Ceiling: a peer counting diffs
-/// sees two. Upgrade path: a beryl `update` API collapses it to one.
 fn retrack(
   state: State,
   client_id: String,
   previous: Tracked,
   meta: json.Json,
 ) -> State {
-  presence.untrack(state.presence, previous.ref)
-  let ref =
-    presence.track(
-      state.presence,
-      previous.topic,
-      previous.key,
-      client_id,
-      meta,
-    )
-  State(
-    ..state,
-    tracked: dict.insert(
-      state.tracked,
-      client_id,
-      Tracked(..previous, ref: ref),
-    ),
-  )
+  case presence.update(state.presence, previous.ref, meta) {
+    Ok(ref) ->
+      State(
+        ..state,
+        tracked: dict.insert(
+          state.tracked,
+          client_id,
+          Tracked(..previous, ref: ref),
+        ),
+      )
+    Error(presence.UnknownRef) -> {
+      let ref =
+        presence.track(
+          state.presence,
+          previous.topic,
+          previous.key,
+          client_id,
+          meta,
+        )
+      State(
+        ..state,
+        tracked: dict.insert(
+          state.tracked,
+          client_id,
+          Tracked(..previous, ref: ref),
+        ),
+      )
+    }
+  }
 }

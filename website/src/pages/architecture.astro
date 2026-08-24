@@ -7,11 +7,8 @@ const tree = [
 	{ prefix: "", name: "floodgate", desc: null },
 	{ prefix: "├─", name: "socketio_transport", desc: "official Fluid/Routerlicious wire format" },
 	{ prefix: "├─", name: "phx_transport", desc: "Phoenix Channels wire format (levee-driver compatible)" },
-	{ prefix: "├─", name: "beryl", desc: "coordinator" },
-	{ prefix: "│ ├─", name: "session_logic", desc: "feature/version negotiation, sequenced ops, summaries" },
-	{ prefix: "│ ├─", name: "signals", desc: "v1/v2 normalization, recipient targeting" },
-	{ prefix: "│ ├─", name: "presence_v1", desc: "server-backed roster, per document" },
-	{ prefix: "│ └─", name: "nack", desc: "rejection construction" },
+	{ prefix: "├─", name: "beryl", desc: "supervised socket actors, channel routing, pubsub, presence" },
+	{ prefix: "│ └─", name: "document_channel", desc: "auth, sequencing, signals, summaries" },
 	{ prefix: "├─", name: "storage", desc: "per-tenant backend" },
 	{ prefix: "│ ├─", name: "shelf (dets)", desc: "default \u2014 persistent, one file per document" },
 	{ prefix: "│ ├─", name: "ets", desc: "in-memory, process-local" },
@@ -21,11 +18,10 @@ const tree = [
 
 const composedFrom = [
 	{ name: "spillway", role: "Fluid protocol: message types, sequencing, validation, signals, nacks" },
-	{ name: "beryl", role: "session coordination and presence registry" },
-	{ name: "dewdrop", role: "supporting protocol utilities" },
+	{ name: "beryl", role: "supervised socket runtime, channel routing, pubsub, and presence" },
 	{ name: "signet", role: "JWT signing and verification" },
-	{ name: "silt", role: "typed ETS access" },
-	{ name: "windsock", role: "supporting runtime utilities" },
+	{ name: "silt", role: "Git object encoding and decoding" },
+	{ name: "windsock", role: "Engine.IO and Socket.IO framing primitives" },
 ];
 
 ---
@@ -62,9 +58,10 @@ const composedFrom = [
 
 	<p>
 		Floodgate doesn't implement the Fluid protocol itself. It composes a
-		handful of sibling Gleam libraries — each one a supervised part of the
-		same process tree — and adds the transports, storage wiring, and admin
-		surface around them.
+		handful of sibling Gleam libraries: some contribute workers to the process
+		tree, while others provide protocol, cryptography, storage, and runtime
+		utilities. Floodgate adds the transports, storage wiring, and admin surface
+		around them.
 	</p>
 
 	<h2 class="rule-label">composed from</h2>
@@ -81,7 +78,7 @@ const composedFrom = [
 	<h2 class="rule-label">dual-mode, one process</h2>
 	<p>
 		<code>socketio_transport</code> and <code>phx_transport</code> are two
-		wire-format adapters in front of the same <code>beryl</code> coordinator,
+		wire-format adapters in front of the same <code>beryl</code> socket runtime,
 		session state, and storage. A Fluid client on <code>/socket.io/</code>{" "}
 		and a Phoenix Channels client on <code>/socket/websocket</code> can
 		collaborate on the same document at the same time; neither transport

@@ -26,14 +26,13 @@ second, Levee-compatible endpoint is mostly wiring:
    `phoenix` npm client (used by `levee-driver`) speaks at `vsn=2.0.0`. beryl
    also ships a stock mist transport (`beryl/transport/mist.handler`) and
    handles the reserved `"phoenix"`-topic heartbeat natively.
-2. **One beryl instance can serve both wire formats.** The coordinator's
-   `SocketConnected` message carries `codec: Option(Codec)` — a per-connection
-   codec that falls back to the configured one. Sockets from different
-   transports share the same coordinator, pubsub, channels, and session.
-3. **The event vocabulary is already identical.** `dewdrop/events` defines
+2. **One Beryl runtime can serve both wire formats.** The public transport SPI
+   accepts an optional codec when a socket is admitted. Sockets from different
+   transports share the same supervised runtime, pubsub, channels, and session.
+3. **The event vocabulary is identical.** Floodgate defines the small set of
+   Routerlicious event constants used by its server codec:
    `connect_document`, `connect_document_success`/`_error`, `submitOp`,
-   `submitSignal`, `op`, `signal`, `nack` — the same names `levee-driver` and
-   Levee's `DocumentChannel` use.
+   `submitSignal`, `op`, `signal`, and `nack`.
 4. **Auth, protocol, and REST are already unified.** Tokens are signet
    (ADR-007), sequencing is spillway, and floodgate's REST surface already
    serves both dialects: Routerlicious-style `/documents/:tenant/:doc/deltas`
@@ -59,13 +58,11 @@ endpoint. A single floodgate process then supports:
 
 ### Design
 
-**1. Codec inversion.** Configure beryl with its canonical codec:
-`beryl.config(wire.phoenix_codec())`. The Socket.IO transport already decodes
-inbound frames itself; for outbound it passes its dewdrop/Routerlicious codec
-per-connection via `SocketConnected(codec: Some(server_codec.server_codec()))`
-(today it passes `None` and inherits the configured codec). The stock beryl
-mist transport then serves Phoenix framing at `/socket/websocket` with no
-custom transport code. Handler chain on one listener:
+**1. Codec inversion.** Configure Beryl with its canonical codec:
+`beryl.config(wire.phoenix_codec())`. The Socket.IO transport admits each
+connection through the public transport SPI with
+`codec: Some(dewdrop/server.server_codec())`. `beryl_mist` serves Phoenix framing
+at `/socket/websocket`. Handler chain on one listener:
 `/socket.io/` websocket → socketio transport; `/socket/websocket` websocket →
 beryl stock transport; everything else → existing REST handler.
 
@@ -192,34 +189,21 @@ document).
   `spillway/session_logic.determine_signal_recipients`, the same function
   levee's `Bridge.determine_signal_recipients` calls.
 
-  The original blocker was that `beryl.send_info` needs a `RegisteredChannel`
-  handle which does not exist when the channel is constructed, and `register`
-  takes the channel. `document_channel` resolves that with a small holder built
-  before `register` and filled in immediately after; a targeted signal reads it
-  at push time. Addressing a recipient needs no client→socket map, because
-  floodgate assigns `socket.id(sock)` as the Fluid client id — the two are the
-  same string. Untargeted signals keep the topic broadcast, which is one
-  coordinator message instead of one per recipient and avoids resolving a
-  recipient list at all.
-- **The beryl-main migration was deferred.** The ADR assumed floodgate could
-  move onto beryl's current `main` to pick up the split-out `beryl_mist`
-  package and the public transport SPI. It cannot yet: `dewdrop` and
-  `aquamarine` both still consume beryl in its pre-split root-package form
-  (aquamarine pins an old beryl commit outright), and subdirectory git
-  dependencies additionally require Gleam ≥ 1.18. Floodgate therefore stays on
-  its pinned pre-split beryl, where `beryl/transport/mist` and the per-socket
-  codec on `coordinator.SocketConnected` already provide everything this ADR
-  needs. Two pieces of the migration were still done and are ready for
-  whenever the ecosystem catches up: the repo moved to Gleam 1.18.1, and beryl
-  gained `transport.socket_connected_with_codec` (branch
-  `feat/per-socket-codec-spi`) so the per-socket codec is reachable from the
-  supported SPI instead of the internal `beryl/coordinator` module.
+  Current Beryl channel senders are scoped to one accepted join.
+  `document_channel` stores those senders by socket and topic, then uses
+  `channel.notify` for targeted delivery. Untargeted signals remain one topic
+  broadcast rather than one send per recipient.
+- **The Beryl-main migration is complete (2026-08-23).** Floodgate moved
+  channel registration to `beryl/channel.child_spec` and moved both transports
+  to the public runtime/transport APIs. The Socket.IO codec briefly lived in
+  Floodgate during the migration; as of 2026-08-24 it is `dewdrop/server`
+  again, with Floodgate's Routerlicious fixes upstreamed to dewdrop.
 
 ## Alternatives considered
 
-- **Two beryl instances (one per codec) sharing pubsub + session.** Works, but
-  per-socket codecs make it unnecessary; two coordinators would double the
-  socket bookkeeping and complicate presence/roster consistency.
+- **Two Beryl runtimes (one per codec) sharing pubsub + session.** Works, but
+  per-socket codecs make it unnecessary; two runtimes would duplicate socket
+  bookkeeping and complicate presence/roster consistency.
 - **Teach `levee-driver` Socket.IO instead.** Rejected: ADR-004 deliberately
   keeps `levee-driver` as the Phoenix Channels stack, and the point of this
   ADR is server-side convergence without touching either client's transport.

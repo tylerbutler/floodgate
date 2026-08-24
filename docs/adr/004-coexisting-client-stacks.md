@@ -45,7 +45,7 @@ allows each stack to use its native transport and runtime model.
    release readiness does not require retiring Phoenix-owned code.
 
 5. **Protocol and domain libraries should still be shared where appropriate.**
-   Spillway, Dewdrop, Windsock, storage abstractions, schemas, and conformance
+   Spillway, Beryl, Windsock, storage abstractions, schemas, and conformance
    fixtures can be reused without coupling the two server deployments or client
    packages.
 

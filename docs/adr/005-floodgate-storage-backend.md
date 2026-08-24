@@ -118,10 +118,10 @@ small crash-durability window for write throughput.
 
 ## Follow-ups
 
-- **[dewdrop#5](https://github.com/tylerbutler/dewdrop/issues/5):** beryl `main`
-  is ahead of dewdrop `main` in a breaking way (opaque `Codec`/`Inbound`). shelf
-  was added to Floodgate's `manifest.toml` **without re-resolving the git deps**,
-  so beryl stays on its last dewdrop-compatible commit. `gleam update` will break
-  the Floodgate build until dewdrop adopts the opaque API.
+- **Resolved (2026-08-24):** Floodgate takes its Socket.IO server codec and
+  event vocabulary from dewdrop (`dewdrop/server`, `dewdrop/events`) rather
+  than carrying copies; the Routerlicious argument shapes Floodgate needed were
+  upstreamed there. Beryl, beryl_mist, and dewdrop track `main`, and the
+  manifest resolves against the coordinator-free socket runtime.
 - **Postgres backend** for Floodgate is not yet implemented (shelf is ETS+DETS).
 - **WriteBack + storage actor** is the upgrade path if writes become disk-bound.

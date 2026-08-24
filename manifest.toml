@@ -8,10 +8,10 @@
 
 packages = [
   { name = "aquamarine", version = "0.1.0", build_tools = ["gleam"], requirements = ["collie", "gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "logging", "roost"], source = "git", repo = "https://github.com/tylerbutler/aquamarine", commit = "ff078d98d4399b8843f59235ee3f5acf434fe238" },
-  { name = "beryl", version = "0.0.1", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_erlang", "gleam_json", "gleam_otp", "gleam_stdlib", "lattice_presence", "palabres", "telemetry"], source = "git", repo = "https://github.com/tylerbutler/beryl", commit = "e4742cc454bb940a19659caee68d2909de675a72", path = "packages/beryl" },
-  { name = "beryl_mist", version = "0.0.1", build_tools = ["gleam"], requirements = ["beryl", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_stdlib", "mist"], source = "git", repo = "https://github.com/tylerbutler/beryl", commit = "e4742cc454bb940a19659caee68d2909de675a72", path = "packages/beryl_mist" },
+  { name = "beryl", version = "0.4.0", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "lattice_presence", "palabres", "telemetry"], source = "git", repo = "https://github.com/tylerbutler/beryl", commit = "bddf0c039b2e2d53bfb2a50025b503cc56de044c", path = "packages/beryl" },
+  { name = "beryl_mist", version = "0.3.1", build_tools = ["gleam"], requirements = ["beryl", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_stdlib", "mist"], source = "git", repo = "https://github.com/tylerbutler/beryl", commit = "bddf0c039b2e2d53bfb2a50025b503cc56de044c", path = "packages/beryl_mist" },
   { name = "collie", version = "3.0.0", build_tools = ["gleam"], requirements = ["exception", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "logging", "websocks"], otp_app = "collie", source = "hex", outer_checksum = "A419EA772E07F5F71F327706DC318440525AF9E3249E915F7A76B3E3C25658D7" },
-  { name = "dewdrop", version = "0.1.0", build_tools = ["gleam"], requirements = ["aquamarine", "beryl", "gleam_json", "gleam_stdlib", "windsock"], source = "git", repo = "https://github.com/tylerbutler/dewdrop", commit = "3466a15d66a435cd1f05ddc664f7568d73ba6069" },
+  { name = "dewdrop", version = "0.1.0", build_tools = ["gleam"], requirements = ["aquamarine", "beryl", "gleam_json", "gleam_stdlib", "windsock"], source = "git", repo = "https://github.com/tylerbutler/dewdrop", commit = "3d0b57f67686a60f912b8d6d54296020a809d9ef" },
   { name = "envoy", version = "1.2.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "envoy", source = "hex", outer_checksum = "9C6FBB6BFA02A52798BEEC5977A738CAD6E4A057F4B67FD0C8061AD2502C191A" },
   { name = "exception", version = "2.1.1", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "exception", source = "hex", outer_checksum = "6BDEA95248093599391C3B5DF1835C5C6A86C353C2F99CE539B450E3432FE117" },
   { name = "gleam_crypto", version = "1.6.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_crypto", source = "hex", outer_checksum = "2DE9E4EF53CF6FEE049D4F765731F7178F7A11AEFAE00EEE63BF7536B354AD3F" },
@@ -21,13 +21,13 @@ packages = [
   { name = "gleam_json", version = "3.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_json", source = "hex", outer_checksum = "44FDAA8847BE8FC48CA7A1C089706BD54BADCC4C45B237A992EDDF9F2CDB2836" },
   { name = "gleam_otp", version = "1.2.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_stdlib"], otp_app = "gleam_otp", source = "hex", outer_checksum = "BA6A294E295E428EC1562DC1C11EA7530DCB981E8359134BEABC8493B7B2258E" },
   { name = "gleam_stdlib", version = "1.0.5", build_tools = ["gleam"], requirements = [], otp_app = "gleam_stdlib", source = "hex", outer_checksum = "CEE5B6C076A85B45F60C585F4316C63EC8B7127C119D5738C3958A9C4D50404E" },
-  { name = "gleam_time", version = "1.7.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_time", source = "hex", outer_checksum = "56DB0EF9433826D3B99DB0B4AF7A2BFED13D09755EC64B1DAAB46F804A9AD47D" },
+  { name = "gleam_time", version = "1.10.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_time", source = "hex", outer_checksum = "56539216E4C4B1748714652AB38F0BD16B9101F61DB62769FDC7CD42A8E5E833" },
   { name = "gleeunit", version = "1.11.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleeunit", source = "hex", outer_checksum = "EC31ABA74256AEA531EDF8169931D775BBB384FED0A8A1BDC4DD9354E3E21826" },
   { name = "glisten", version = "9.0.1", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib", "logging"], otp_app = "glisten", source = "hex", outer_checksum = "7795AA50830656F3A0316A6B26595F893C83272DA901B3405E31339CAA31A10B" },
-  { name = "glow_auth", version = "1.0.1", build_tools = ["gleam"], requirements = ["gleam_http", "gleam_json", "gleam_stdlib", "gleam_time"], otp_app = "glow_auth", source = "hex", outer_checksum = "BCF868EC62BA7431A38D267EF00CFD846E28C6EAA5B349CB3099EAC013C6C7CB" },
+  { name = "glow_auth", version = "1.1.0", build_tools = ["gleam"], requirements = ["gleam_http", "gleam_json", "gleam_stdlib", "gleam_time"], otp_app = "glow_auth", source = "hex", outer_checksum = "2565254859425E65B83F2AC0A800FEBD62BD38681829E93D4737D23377AB8871" },
   { name = "gramps", version = "6.0.1", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_erlang", "gleam_http", "gleam_stdlib"], otp_app = "gramps", source = "hex", outer_checksum = "D55636072DEE173F6586A5679D3C02EC7A0DE3F8646B78C351B72908FF223DF7" },
   { name = "hpack_erl", version = "0.3.0", build_tools = ["rebar3"], requirements = [], otp_app = "hpack", source = "hex", outer_checksum = "D6137D7079169D8C485C6962DFE261AF5B9EF60FBC557344511C1E65E3D95FB0" },
-  { name = "lattice_presence", version = "1.0.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib"], otp_app = "lattice_presence", source = "hex", outer_checksum = "8A8B79D774015F623D3E370B55B200CC0CF1C49CB6805A1EC849149F60C91037" },
+  { name = "lattice_presence", version = "1.1.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib", "youid"], otp_app = "lattice_presence", source = "hex", outer_checksum = "464E88DAD86B8D714FC675785AD49FAC01AD7C7D6244DA2B96E3B6A80E44B969" },
   { name = "logging", version = "1.5.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "logging", source = "hex", outer_checksum = "BC5F18CE5DD9686100229FE5409BDC3DD5C46D5A7DF2F804AD2D8F0DD6C5060E" },
   { name = "mist", version = "6.0.3", build_tools = ["gleam"], requirements = ["exception", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "glisten", "gramps", "hpack_erl", "logging"], otp_app = "mist", source = "hex", outer_checksum = "1B07F321D5FA0CB162D81496F2DE96AEB6EF8980F4F38230A4CC3F849497E020" },
   { name = "palabres", version = "1.0.4", build_tools = ["gleam"], requirements = ["envoy", "gleam_stdlib"], otp_app = "palabres", source = "hex", outer_checksum = "2809B7C10AE929E82454B4A6A0FB7D02073C5A509F9A63EE9F7B268A75D98965" },
@@ -37,14 +37,16 @@ packages = [
   { name = "silt", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/tylerbutler/silt", commit = "7df0c9e60e6d4de94fadb3a351b32cac801cb69b" },
   { name = "spillway", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib", "signet", "windsock"], source = "git", repo = "https://github.com/tylerbutler/spillway", commit = "53875ca9c8d2686df97033584b08d0d00d1462d0" },
   { name = "telemetry", version = "1.4.2", build_tools = ["rebar3"], requirements = [], otp_app = "telemetry", source = "hex", outer_checksum = "928F6495066506077862C0D1646609EED891A4326BEE3126BA54B60AF61FEBB1" },
-  { name = "vestibule", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_http", "gleam_httpc", "gleam_json", "gleam_stdlib", "glow_auth"], source = "git", repo = "https://github.com/tylerbutler/vestibule.git", commit = "99755424808a59f72dee51e5bc3297b9d0abb547" },
+  { name = "vestibule", version = "0.0.0", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_http", "gleam_httpc", "gleam_json", "gleam_stdlib", "gleam_time"], source = "git", repo = "https://github.com/tylerbutler/vestibule.git", commit = "a5b69915156f02dd1a73f5c5e4a0125782904266" },
+  { name = "vestibule_github", version = "0.0.0", build_tools = ["gleam"], requirements = ["gleam_http", "gleam_httpc", "gleam_json", "gleam_stdlib", "glow_auth", "vestibule"], source = "git", repo = "https://github.com/tylerbutler/vestibule.git", commit = "a5b69915156f02dd1a73f5c5e4a0125782904266", path = "packages/vestibule_github" },
   { name = "websocks", version = "4.0.1", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_erlang", "gleam_stdlib"], otp_app = "websocks", source = "hex", outer_checksum = "89B0C31A032CBE28D4C5FB5CC25A8A690669FEBA501C63F99A4E8F5748750B2A" },
   { name = "windsock", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib"], source = "git", repo = "https://github.com/tylerbutler/windsock", commit = "a0745584f6291ac00e7f59dbd47ad90b25774bd6" },
+  { name = "youid", version = "1.6.0", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_stdlib", "gleam_time"], otp_app = "youid", source = "hex", outer_checksum = "7A3ABA44B1B38BC2BDCB5474C5317AA372BE58DFBC649815EE08B03526DDA18D" },
 ]
 
 [requirements]
-beryl = { git = "https://github.com/tylerbutler/beryl", ref = "v0.0", path = "packages/beryl" }
-beryl_mist = { git = "https://github.com/tylerbutler/beryl", ref = "v0.0", path = "packages/beryl_mist" }
+beryl = { git = "https://github.com/tylerbutler/beryl", ref = "main", path = "packages/beryl" }
+beryl_mist = { git = "https://github.com/tylerbutler/beryl", ref = "main", path = "packages/beryl_mist" }
 dewdrop = { git = "https://github.com/tylerbutler/dewdrop", ref = "main" }
 exception = { version = ">= 2.0.0 and < 3.0.0" }
 gleam_crypto = { version = ">= 1.0.0 and < 2.0.0" }
@@ -59,5 +61,6 @@ shelf = { version = ">= 1.0.1 and < 2.0.0" }
 signet = { git = "https://github.com/tylerbutler/signet", ref = "main" }
 silt = { git = "https://github.com/tylerbutler/silt", ref = "main" }
 spillway = { git = "https://github.com/tylerbutler/spillway", ref = "main" }
-vestibule = { git = "https://github.com/tylerbutler/vestibule.git", ref = "99755424808a59f72dee51e5bc3297b9d0abb547" }
+vestibule = { git = "https://github.com/tylerbutler/vestibule.git", ref = "main" }
+vestibule_github = { git = "https://github.com/tylerbutler/vestibule.git", ref = "main", path = "packages/vestibule_github" }
 windsock = { git = "https://github.com/tylerbutler/windsock", ref = "main" }

@@ -1,6 +1,6 @@
 name = "floodgate"
 version = "0.1.0"
-description = "Fluid Framework server on beryl: dewdrop/server codec + spillway protocol logic"
+description = "Fluid Framework server on Beryl with Socket.IO and Phoenix Channels transports"
 licences = ["MIT"]
 target = "erlang"
 gleam = ">= 1.13.0"
@@ -14,9 +14,9 @@ gleam_crypto = ">= 1.0.0 and < 2.0.0"
 # Only for session.gleam's `call_doc`, which turns a call against a
 # just-stopped document actor into a retry instead of a crashed caller.
 exception = ">= 2.0.0 and < 3.0.0"
-beryl = { git = "https://github.com/tylerbutler/beryl", ref = "v0.0", path = "packages/beryl" }
-beryl_mist = { git = "https://github.com/tylerbutler/beryl", ref = "v0.0", path = "packages/beryl_mist" }
+beryl = { git = "https://github.com/tylerbutler/beryl", ref = "main", path = "packages/beryl" }
 dewdrop = { git = "https://github.com/tylerbutler/dewdrop", ref = "main" }
+beryl_mist = { git = "https://github.com/tylerbutler/beryl", ref = "main", path = "packages/beryl_mist" }
 spillway = { git = "https://github.com/tylerbutler/spillway", ref = "main" }
 signet = { git = "https://github.com/tylerbutler/signet", ref = "main" }
 silt = { git = "https://github.com/tylerbutler/silt", ref = "main" }
@@ -24,9 +24,9 @@ windsock = { git = "https://github.com/tylerbutler/windsock", ref = "main" }
 mist = ">= 6.0.0 and < 7.0.0"
 gleam_http = ">= 4.3.0 and < 5.0.0"
 shelf = ">= 1.0.1 and < 2.0.0"
-# GitHub OAuth for the admin session — the same library and pinned commit
-# server/levee_oauth/gleam.toml uses for Levee.
-vestibule = { git = "https://github.com/tylerbutler/vestibule.git", ref = "99755424808a59f72dee51e5bc3297b9d0abb547" }
+# GitHub OAuth for the admin session.
+vestibule = { git = "https://github.com/tylerbutler/vestibule.git", ref = "main" }
+vestibule_github = { git = "https://github.com/tylerbutler/vestibule.git", ref = "main", path = "packages/vestibule_github" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

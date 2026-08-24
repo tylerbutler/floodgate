@@ -1,17 +1,18 @@
 //// Two-phase Phoenix connect (ADR-008): a `levee-driver` socket joins with
 //// only a token, then connects with the full IConnect payload and receives a
-//// pushed `connect_document_success`. Drives the real coordinator with Phoenix
-//// V2 frames, so these cover the codec inversion as well as the channel.
+//// pushed `connect_document_success`. Drives the real Beryl runtime with
+//// Phoenix V2 frames, so these cover the codec inversion and the channel.
 
 import beryl
-import beryl/coordinator
+import beryl/socket
+import beryl/transport
+import beryl/wire/codec
 import floodgate
 import floodgate/auth
 import floodgate/document_channel
 import floodgate/memory_store
 import floodgate/session
 import floodgate/store
-import gleam/dynamic
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
@@ -34,34 +35,34 @@ fn now() -> Int
 /// Start a runtime and attach a socket that captures outbound frames.
 fn start_socket(
   socket_id: String,
-) -> #(beryl.Channels, session.Session, process.Subject(String)) {
+) -> #(beryl.Sockets, session.Session, process.Subject(String)) {
   let assert Ok(#(channels, document_session)) =
     floodgate.start_with_backend(tenant, secret, memory_store.new())
   let sent = process.new_subject()
-  process.send(
-    beryl.coordinator_subject(channels),
-    coordinator.SocketConnected(
-      socket_id,
-      fn(text) {
+  let assert Ok(owner) = transport.runtime_pid(channels)
+  let assert Ok(Nil) =
+    transport.admit_socket(
+      sockets: channels,
+      owner: owner,
+      socket_id: socket_id,
+      send: fn(text) {
         process.send(sent, text)
         Ok(Nil)
       },
-      fn(_binary) { Ok(Nil) },
+      send_binary: fn(_binary) { Ok(Nil) },
       // No per-socket codec: inherit the configured Phoenix framing, exactly
-      // as beryl's stock mist transport does at /socket/websocket.
-      None,
-      dynamic.nil(),
-    ),
-  )
+      // as beryl's stock Mist transport does at /socket/websocket.
+      codec: None,
+      seed: socket.empty_seed(),
+      close: fn() { Nil },
+    )
   #(channels, document_session, sent)
 }
 
-fn route(channels: beryl.Channels, socket_id: String, frame: String) -> Nil {
-  coordinator.route_message(
-    beryl.coordinator_subject(channels),
-    socket_id,
-    frame,
-  )
+fn route(channels: beryl.Sockets, socket_id: String, frame: String) -> Nil {
+  let assert Ok(decoded) =
+    codec.decode_text(transport.active_codec(channels))(frame)
+  transport.route_decoded(channels, socket_id, decoded)
 }
 
 fn phoenix_join(doc: String, token: String) -> String {
@@ -75,7 +76,7 @@ fn phoenix_join(doc: String, token: String) -> String {
 }
 
 fn phoenix_event(doc: String, event: String, payload: String) -> String {
-  "[\"1\",\"2\",\"document:"
+  "[\"1\",null,\"document:"
   <> tenant
   <> ":"
   <> doc
@@ -362,31 +363,33 @@ pub fn recovered_membership_is_broadcast_before_the_new_join_test() {
 }
 
 /// Attach a frame-capturing socket to an existing runtime, so several clients
-/// can share one coordinator and one document.
+/// can share one socket runtime and one document.
 fn attach(
-  channels: beryl.Channels,
+  channels: beryl.Sockets,
   socket_id: String,
 ) -> process.Subject(String) {
   let sent = process.new_subject()
-  process.send(
-    beryl.coordinator_subject(channels),
-    coordinator.SocketConnected(
-      socket_id,
-      fn(text) {
+  let assert Ok(owner) = transport.runtime_pid(channels)
+  let assert Ok(Nil) =
+    transport.admit_socket(
+      sockets: channels,
+      owner: owner,
+      socket_id: socket_id,
+      send: fn(text) {
         process.send(sent, text)
         Ok(Nil)
       },
-      fn(_binary) { Ok(Nil) },
-      None,
-      dynamic.nil(),
-    ),
-  )
+      send_binary: fn(_binary) { Ok(Nil) },
+      codec: None,
+      seed: socket.empty_seed(),
+      close: fn() { Nil },
+    )
   sent
 }
 
 /// Both phases of a Phoenix connect.
 fn connect(
-  channels: beryl.Channels,
+  channels: beryl.Sockets,
   doc: String,
   token: String,
   socket_id: String,
@@ -712,10 +715,7 @@ pub fn write_mode_leave_is_announced_as_a_signal_test() {
   drain(first)
   drain(second)
 
-  process.send(
-    beryl.coordinator_subject(channels),
-    coordinator.SocketDisconnected("s-ls-second"),
-  )
+  transport.socket_disconnected(channels, "s-ls-second")
 
   let assert Ok(leave_signal) =
     collect_until(first, "\\\"type\\\":\\\"leave\\\"")

@@ -9,7 +9,7 @@
 
 Floodgate lives at `server/floodgate/` inside the Levee repository. It is a
 self-contained Gleam application: its `gleam.toml` depends only on Hex packages
-and sibling git repositories (`beryl`, `dewdrop`, `spillway`, `signet`, `silt`,
+and sibling git repositories (`beryl`, `spillway`, `signet`, `silt`,
 `windsock`), never on anything by relative path inside this repo.
 
 Since ADR-008 it is also *dual-mode*: one process serves the official
@@ -58,7 +58,7 @@ ways to resolve it, in order of preference:
    implementation both stacks depend on, and much of this logic is built on it.
    Floodgate then keeps only its server runtime (`floodgate.gleam`, `auth`,
    `document_channel`, `session`, `git`, `initial_summary`, `store` and the two
-   store backends, `server_codec`, `socketio_transport`), and Levee's
+   store backends, `socketio_transport`), and Levee's
    `Levee.Floodgate` becomes `Levee.Spillway` — no cross-repo dependency in
    either direction. **Recommended.**
 2. **Levee takes Floodgate as a Gleam git dependency.** Cheapest to execute, but
@@ -79,10 +79,11 @@ in this repo). Three of the six modules — `socketio`, `connect_document`,
 `rest` — moved into spillway; the other three (`session_logic`, `signals`,
 `nack`) turned out to be pure re-export wrappers over modules spillway already
 had, so callers now import spillway directly and the wrappers were deleted.
-`spillway/socketio` declares the four Routerlicious event names locally
-instead of importing `dewdrop/events`, because dewdrop depends on beryl — a
-server runtime spillway must stay independent of; windsock (stdlib + json
-only) is spillway's one new dependency.
+`spillway/socketio` declares its Routerlicious event names locally so spillway
+stays independent of a server runtime. Floodgate, which does depend on beryl,
+takes its event vocabulary and server codec from dewdrop (`dewdrop/events`,
+`dewdrop/server`) rather than copying them. Windsock (stdlib + json only)
+remains spillway's framing dependency.
 
 `Levee.Floodgate` became `Levee.Spillway`, calling `:spillway@*` through the
 `levee_bridge` package. `floodgate` was removed from `mix.exs` `gleam_projects`,
@@ -159,12 +160,13 @@ and through `spillway`, at two different commits, and `gleam` rejects that as
 "conflicting provided dependencies".
 
 **Resolved (2026-08-06):** the `signet` refs were aligned upstream, and a full
-`gleam update` now succeeds. Doing so pulled in beryl's monorepo split
-(`packages/beryl` + `packages/beryl_mist`, pinned to the `v0.0` tag) and its
-new supervised-startup and `beryl/transport` APIs, which floodgate has been
-migrated to — the beryl-main migration noted in ADR-008. Verified: floodgate's
-Gleam suite, both dual-mode conformance suites, and Levee's Elixir suite all
-pass on the freshly resolved tree.
+`gleam update` now succeeds. That initially pulled in beryl's monorepo split
+(`packages/beryl` + `packages/beryl_mist`) at the `v0.0` tag.
+
+**Updated (2026-08-23):** Floodgate now tracks both beryl packages on `main`
+and uses their current supervised-startup and `beryl/transport` APIs, as noted
+in ADR-008. Verified: Floodgate's Gleam suite and both dual-mode conformance
+suites pass on the freshly resolved tree.
 
 ## Consequences
 

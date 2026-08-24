@@ -2,9 +2,10 @@
 //// + op fan-out (with contents), nack, submitSignal fan-out, requestOps delta
 //// catch-up. Gleam analogue of levee's DocumentChannel.
 
-import beryl.{type RegisteredChannel}
-import beryl/channel.{type Channel, JoinError, JoinOk, NoReply, Push}
-import beryl/socket.{type Socket}
+import beryl
+import beryl/channel
+import beryl/presence
+import beryl/socket
 import dewdrop/events
 import floodgate/auth
 import floodgate/git
@@ -36,6 +37,7 @@ pub type DocAssigns {
     topic: String,
     scopes: List(String),
     connected: Bool,
+    presence_joined: Bool,
     /// The token's verified user id, and the presence key derived from it.
     ///
     /// Deliberately not read back off the session roster: `connect_core` prefers
@@ -43,6 +45,10 @@ pub type DocAssigns {
     /// is client-controlled and a socket could claim another user's presence.
     user_id: String,
   )
+}
+
+type ChannelState {
+  ChannelState(assigns: DocAssigns, target_id: Int)
 }
 
 /// A failed connect. `reason` is the Socket.IO join-error string; `code` and
@@ -78,9 +84,7 @@ type SummarizeContents {
   )
 }
 
-/// Server-originated messages delivered to a single socket's channel context via
-/// `beryl.send_info`. Signals with targeting cannot go out as a topic broadcast,
-/// so they arrive here instead and are pushed from `handle_info`.
+/// Server-originated messages delivered to one joined document channel.
 pub type DocInfo {
   SignalPush(payload: json.Json)
   /// Any other server-originated event for one socket. The presence worker uses
@@ -89,32 +93,89 @@ pub type DocInfo {
   EventPush(event: String, payload: json.Json)
 }
 
-/// Holds the `RegisteredChannel` handle `beryl.send_info` needs.
-///
-/// The handle only exists *after* `beryl.register` returns, and `register` takes
-/// the channel this module builds — so it cannot be passed in at construction.
-/// It also cannot live in `session`, because `RegisteredChannel` is opaque and
-/// parameterized on `DocAssigns`/`DocInfo`, and `document_channel` already
-/// depends on `session`. Hence a holder in this module, written once at startup
-/// and read on each targeted signal.
+type Target {
+  Target(id: Int, sender: channel.Sender(DocInfo))
+}
+
+type RegistrationState {
+  RegistrationState(
+    sockets: Option(beryl.Sockets),
+    next_id: Int,
+    targets: dict.Dict(String, Target),
+  )
+}
+
+/// Registry for targeted channel sends and presence-diff fan-out.
 pub opaque type Registration {
   Registration(Subject(RegistrationMsg))
 }
 
 type RegistrationMsg {
-  Set(RegisteredChannel(DocAssigns, DocInfo))
-  Get(Subject(Option(RegisteredChannel(DocAssigns, DocInfo))))
+  SetSockets(beryl.Sockets)
+  RegisterTarget(
+    socket_id: String,
+    topic: String,
+    sender: channel.Sender(DocInfo),
+    reply: Subject(Int),
+  )
+  UnregisterTarget(socket_id: String, topic: String, id: Int)
+  GetTarget(
+    socket_id: String,
+    topic: String,
+    reply: Subject(Option(channel.Sender(DocInfo))),
+  )
+  BroadcastPresence(presence.Diff)
 }
 
-/// Allocate an empty holder. Call before `beryl.register`.
+/// Allocate the runtime registry before building the Beryl child spec.
 pub fn new_registration() -> Registration {
   let assert Ok(started) =
-    actor.new(None)
+    actor.new(RegistrationState(None, 0, dict.new()))
     |> actor.on_message(fn(state, message) {
       case message {
-        Set(registered) -> actor.continue(Some(registered))
-        Get(reply) -> {
-          process.send(reply, state)
+        SetSockets(sockets) ->
+          actor.continue(RegistrationState(..state, sockets: Some(sockets)))
+        RegisterTarget(socket_id, topic, sender, reply) -> {
+          let id = state.next_id + 1
+          process.send(reply, id)
+          actor.continue(
+            RegistrationState(
+              ..state,
+              next_id: id,
+              targets: dict.insert(
+                state.targets,
+                target_key(socket_id, topic),
+                Target(id, sender),
+              ),
+            ),
+          )
+        }
+        UnregisterTarget(socket_id, topic, id) -> {
+          let key = target_key(socket_id, topic)
+          let targets = case dict.get(state.targets, key) {
+            Ok(Target(id: registered_id, ..)) if registered_id == id ->
+              dict.delete(state.targets, key)
+            _ -> state.targets
+          }
+          actor.continue(RegistrationState(..state, targets: targets))
+        }
+        GetTarget(socket_id, topic, reply) -> {
+          let sender =
+            dict.get(state.targets, target_key(socket_id, topic))
+            |> result.map(fn(target) { target.sender })
+            |> option.from_result
+          process.send(reply, sender)
+          actor.continue(state)
+        }
+        BroadcastPresence(diff) -> {
+          case state.sockets {
+            None -> Nil
+            Some(sockets) ->
+              presence.diff_topics(diff)
+              |> list.each(fn(topic) {
+                beryl.broadcast_presence_diff(sockets, topic, diff)
+              })
+          }
           actor.continue(state)
         }
       }
@@ -123,56 +184,126 @@ pub fn new_registration() -> Registration {
   Registration(started.data)
 }
 
-/// Record the handle `beryl.register` returned.
-pub fn set_registration(
-  registration: Registration,
-  registered: RegisteredChannel(DocAssigns, DocInfo),
-) -> Nil {
+/// Attach the Beryl runtime after `channel.child_spec` constructs it.
+pub fn set_sockets(registration: Registration, sockets: beryl.Sockets) -> Nil {
   let Registration(subject) = registration
-  process.send(subject, Set(registered))
+  process.send(subject, SetSockets(sockets))
 }
 
-fn registered_channel(
+/// Queue a presence diff for every local socket subscribed to its topics.
+pub fn broadcast_presence_diff(
   registration: Registration,
-) -> Option(RegisteredChannel(DocAssigns, DocInfo)) {
+  diff: presence.Diff,
+) -> Nil {
   let Registration(subject) = registration
-  process.call(subject, 1000, Get)
+  process.send(subject, BroadcastPresence(diff))
+}
+
+fn register_target(
+  registration: Registration,
+  socket_id: String,
+  topic: String,
+  sender: channel.Sender(DocInfo),
+) -> Int {
+  let Registration(subject) = registration
+  process.call(subject, 1000, fn(reply) {
+    RegisterTarget(socket_id, topic, sender, reply)
+  })
+}
+
+fn unregister_target(
+  registration: Registration,
+  socket_id: String,
+  topic: String,
+  id: Int,
+) -> Nil {
+  let Registration(subject) = registration
+  process.send(subject, UnregisterTarget(socket_id, topic, id))
+}
+
+fn target(
+  registration: Registration,
+  socket_id: String,
+  topic: String,
+) -> Option(channel.Sender(DocInfo)) {
+  let Registration(subject) = registration
+  process.call(subject, 1000, fn(reply) { GetTarget(socket_id, topic, reply) })
+}
+
+fn target_key(socket_id: String, topic: String) -> String {
+  socket_id <> "\n" <> topic
 }
 
 pub fn new(
-  channels: beryl.Channels,
   document_session: Session,
   registration: Registration,
   presence: Subject(presence_worker.Msg),
-) -> Channel(DocAssigns, DocInfo) {
-  channel.new(fn(topic, payload, sock) {
-    join(channels, document_session, topic, payload, sock)
-  })
-  |> channel.with_handle_in(fn(event, payload, sock) {
-    handle_in(
-      channels,
-      document_session,
-      registration,
-      presence,
-      event,
-      payload,
-      sock,
-    )
-  })
-  |> channel.with_handle_info(fn(info, sock) {
-    case info {
-      SignalPush(payload) -> Push(events.signal, payload, sock)
-      EventPush(event, payload) -> Push(event, payload, sock)
+  max_frame_bytes: Int,
+) -> channel.Handler {
+  channel.handler("document:*:*", fn(context) {
+    case
+      join(
+        document_session,
+        context.topic,
+        context.payload,
+        context.socket_id,
+        max_frame_bytes,
+      )
+    {
+      Error(error) -> join_error(error)
+      Ok(PreparedJoin(reply, assigns, actions)) -> {
+        let target_id =
+          register_target(
+            registration,
+            context.socket_id,
+            context.topic,
+            context.self,
+          )
+        let accepted =
+          channel.accept(ChannelState(assigns, target_id))
+          |> channel.on_message(fn(state, message) {
+            handle_in(
+              document_session,
+              registration,
+              presence,
+              message.event,
+              message.payload,
+              context.socket_id,
+              state.assigns,
+              max_frame_bytes,
+            )
+            |> apply_result(state, message.reply)
+          })
+          |> channel.on_info(fn(state, info) {
+            case info {
+              SignalPush(payload) ->
+                channel.next(state, [channel.push(events.signal, payload)])
+              EventPush(event, payload) ->
+                channel.next(state, [channel.push(event, payload)])
+            }
+          })
+          |> channel.on_terminate(fn(state, _reason) {
+            unregister_target(
+              registration,
+              context.socket_id,
+              context.topic,
+              state.target_id,
+            )
+            on_leave(document_session, presence, state.assigns)
+          })
+          |> channel.with_actions(actions)
+        case reply {
+          Some(payload) -> channel.with_reply(accepted, payload)
+          None -> accepted
+        }
+      }
     }
-  })
-  |> channel.with_terminate(fn(_reason, sock) {
-    on_leave(channels, document_session, presence, sock)
   })
 }
 
 /// Push one server-originated event to one socket, out of band. This is the
 /// callback `floodgate.start_with_backend` hands the presence worker; the worker
-/// cannot call `beryl.send_info` itself because it must not import this module.
+/// cannot access this module's typed channel-sender registry directly.
 pub fn push_event(
   registration: Registration,
   socket_id: String,
@@ -180,11 +311,26 @@ pub fn push_event(
   event: String,
   payload: json.Json,
 ) -> Nil {
-  case registered_channel(registration) {
+  case target(registration, socket_id, topic) {
     None -> Nil
-    Some(registered) ->
-      beryl.send_info(registered, socket_id, topic, EventPush(event, payload))
+    Some(sender) -> channel.notify(sender, EventPush(event, payload))
   }
+}
+
+type PreparedJoin {
+  PreparedJoin(
+    reply: Option(json.Json),
+    assigns: DocAssigns,
+    actions: List(channel.Action(channel.Active)),
+  )
+}
+
+type Connected {
+  Connected(
+    response: json.Json,
+    assigns: DocAssigns,
+    actions: List(channel.Action(channel.Active)),
+  )
 }
 
 /// Two wire protocols enter this channel differently. Socket.IO carries the
@@ -193,33 +339,25 @@ pub fn push_event(
 /// of IConnect arrive later on the `connect_document` event — so the socket
 /// joins first and connects in a second phase.
 fn join(
-  channels: beryl.Channels,
   document_session: Session,
   topic: String,
   payload: Dynamic,
-  sock: Socket(DocAssigns),
-) -> channel.JoinResult(DocAssigns) {
-  let client_id = socket.id(sock)
+  client_id: String,
+  max_frame_bytes: Int,
+) -> Result(PreparedJoin, ConnectError) {
   case is_connect_payload(payload) {
     True ->
-      case connect_core(channels, document_session, topic, payload, client_id) {
-        Error(error) -> join_error(error)
-        Ok(#(response, assigns)) ->
-          JoinOk(
-            reply: Some(response),
-            socket: socket.set_assigns(sock, assigns),
-          )
-      }
+      connect_core(document_session, topic, payload, client_id, max_frame_bytes)
+      |> result.map(fn(result) {
+        let Connected(response, assigns, actions) = result
+        PreparedJoin(Some(response), assigns, actions)
+      })
     False ->
       case
         authorize_topic_token(session.storage(document_session), topic, payload)
       {
-        Error(error) -> join_error(error)
-        Ok(_claims) ->
-          JoinOk(
-            reply: None,
-            socket: socket.set_assigns(sock, pending_assigns(topic)),
-          )
+        Error(error) -> Error(error)
+        Ok(_claims) -> Ok(PreparedJoin(None, pending_assigns(topic), []))
       }
   }
 }
@@ -241,12 +379,13 @@ fn pending_assigns(topic: String) -> DocAssigns {
     topic: topic,
     scopes: [],
     connected: False,
+    presence_joined: False,
     user_id: "",
   )
 }
 
-fn join_error(error: ConnectError) -> channel.JoinResult(DocAssigns) {
-  JoinError(json.object([#("reason", json.string(error.reason))]))
+fn join_error(error: ConnectError) -> channel.JoinResult(state, info) {
+  channel.reject(json.object([#("reason", json.string(error.reason))]))
 }
 
 fn connect_error_to_json(error: ConnectError) -> json.Json {
@@ -259,12 +398,12 @@ fn connect_error_to_json(error: ConnectError) -> json.Json {
 /// Authorize, open the session, fan out the join, and build the connected
 /// response. Shared by the Socket.IO join and the Phoenix `connect_document`.
 fn connect_core(
-  channels: beryl.Channels,
   document_session: Session,
   topic: String,
   payload: Dynamic,
   client_id: String,
-) -> Result(#(json.Json, DocAssigns), ConnectError) {
+  max_frame_bytes: Int,
+) -> Result(Connected, ConnectError) {
   case authorize(session.storage(document_session), topic, payload) {
     Error(error) -> Error(error)
     Ok(claims) -> {
@@ -294,34 +433,31 @@ fn connect_core(
           client_join_data(client_id, client),
           now_seconds() * 1000,
         )
-      case recovery {
-        [] -> Nil
-        recovery ->
-          beryl.broadcast_from(
-            channels,
-            client_id,
-            topic,
+      let actions = case recovery {
+        [] -> []
+        recovery -> [
+          channel.broadcast_from(
             events.op,
             recovery
               |> list.map(session.stored_message_to_json)
               |> json.preprocessed_array,
-          )
+          ),
+        ]
       }
-      case membership {
+      let actions = case membership {
         // The joining client receives its own join op in initialMessages.
         // Excluding it from fan-out avoids an early duplicate before the
         // connect response has established its client ID.
         session.Writer(sn, message) ->
-          beryl.broadcast_from(
-            channels,
-            client_id,
-            topic,
-            events.op,
-            json.preprocessed_array([
-              session.stored_message_to_json(#(sn, message)),
-            ]),
-          )
-        session.Reader -> Nil
+          list.append(actions, [
+            channel.broadcast_from(
+              events.op,
+              json.preprocessed_array([
+                session.stored_message_to_json(#(sn, message)),
+              ]),
+            ),
+          ])
+        session.Reader -> actions
       }
       // Routerlicious announces *every* connection with a room join signal, not
       // just a read-only one: an audience that is fed only by signals — Fluid
@@ -331,14 +467,12 @@ fn connect_core(
       //
       // The joining socket cannot be broadcast to yet (beryl subscribes it once
       // this returns), so its own join rides along in `initialSignals`.
-      beryl.broadcast_from(
-        channels,
-        client_id,
-        topic,
-        events.signal,
-        presence_join(client_id, client),
-      )
-      Ok(#(
+      let join_signal = presence_join(client_id, client)
+      let actions =
+        list.append(actions, [
+          channel.broadcast_from(events.signal, join_signal),
+        ])
+      Ok(Connected(
         connected_response(
           claims,
           client_id,
@@ -349,8 +483,8 @@ fn connect_core(
           summary_handle,
           summary_sequence_number,
           current_sequence_number,
-          beryl.max_inbound_frame_bytes(channels),
-          [presence_join(client_id, client)],
+          max_frame_bytes,
+          [join_signal],
         ),
         DocAssigns(
           client_id: client_id,
@@ -358,20 +492,20 @@ fn connect_core(
           topic: topic,
           scopes: types.scopes_to_strings(claims.scopes),
           connected: True,
+          presence_joined: False,
           user_id: claims.user.id,
         ),
+        actions,
       ))
     }
   }
 }
 
 fn on_leave(
-  channels: beryl.Channels,
   document_session: Session,
   presence: Subject(presence_worker.Msg),
-  sock: Socket(DocAssigns),
-) -> Nil {
-  let assigns = socket.get_assigns(sock)
+  assigns: DocAssigns,
+) -> List(channel.Action(channel.Closing)) {
   // Before the `connected` guard: this is the one funnel every termination
   // reaches — a Socket.IO close, a Phoenix close, a heartbeat-sweep eviction, or
   // an explicit `phx_leave` — and it is what makes a dropped socket stop being
@@ -380,8 +514,8 @@ fn on_leave(
   presence_worker.cleanup(presence, assigns.client_id)
   // A Phoenix socket that joined but never sent connect_document holds no
   // session membership, so there is nothing to tear down or announce.
-  use <- bool.guard(when: !assigns.connected, return: Nil)
-  case assigns.mode {
+  use <- bool.guard(when: !assigns.connected, return: [])
+  let actions = case assigns.mode {
     session.Write -> {
       let session.Left(sn, _, message) =
         session.leave_sequenced(
@@ -390,27 +524,26 @@ fn on_leave(
           assigns.client_id,
           now_seconds() * 1000,
         )
-      beryl.broadcast(
-        channels,
-        assigns.topic,
-        events.op,
-        json.preprocessed_array([
-          session.stored_message_to_json(#(sn, message)),
-        ]),
-      )
+      [
+        channel.broadcast(
+          events.op,
+          json.preprocessed_array([
+            session.stored_message_to_json(#(sn, message)),
+          ]),
+        ),
+      ]
     }
-    session.Read ->
+    session.Read -> {
       session.leave_presence(document_session, assigns.topic, assigns.client_id)
+      []
+    }
   }
   // The mirror of the unconditional join signal in `connect_core`: routerlicious
   // announces every disconnect to the room, so an audience built from signals
   // alone still drops a writer that left.
-  beryl.broadcast(
-    channels,
-    assigns.topic,
-    events.signal,
-    presence_leave(assigns.client_id),
-  )
+  list.append(actions, [
+    channel.broadcast(events.signal, presence_leave(assigns.client_id)),
+  ])
 }
 
 fn presence_join(client_id: String, client: json.Json) -> json.Json {
@@ -779,25 +912,59 @@ fn initial_clients_json(roster: List(#(String, String))) -> json.Json {
 @external(erlang, "floodgate_ffi", "now_seconds")
 fn now_seconds() -> Int
 
+type ChannelResult {
+  NoReply(DocAssigns)
+  Push(event: String, payload: json.Json, assigns: DocAssigns)
+  Actions(assigns: DocAssigns, actions: List(channel.Action(channel.Active)))
+}
+
+fn apply_result(
+  result: ChannelResult,
+  state: ChannelState,
+  reply: Option(socket.ReplyRef),
+) -> channel.Next(ChannelState) {
+  let reply_actions = [channel.reply_ok(reply, json.object([]))]
+  case result {
+    NoReply(assigns) ->
+      channel.next(ChannelState(..state, assigns: assigns), reply_actions)
+    Push(event, payload, assigns) ->
+      channel.next(ChannelState(..state, assigns: assigns), [
+        channel.push(event, payload),
+        ..reply_actions
+      ])
+    Actions(assigns, actions) ->
+      channel.next(
+        ChannelState(..state, assigns: assigns),
+        list.append(actions, reply_actions),
+      )
+  }
+}
+
 fn handle_in(
-  channels: beryl.Channels,
   document_session: Session,
   registration: Registration,
   presence: Subject(presence_worker.Msg),
   event: String,
   payload: Dynamic,
-  sock: Socket(DocAssigns),
-) -> channel.HandleResult(DocAssigns) {
-  let assigns = socket.get_assigns(sock)
+  socket_id: String,
+  assigns: DocAssigns,
+  max_frame_bytes: Int,
+) -> ChannelResult {
   case event, assigns.connected {
     e, False if e == events.connect_document ->
-      connect_phase_two(channels, document_session, payload, sock, assigns)
+      connect_phase_two(
+        document_session,
+        payload,
+        socket_id,
+        assigns,
+        max_frame_bytes,
+      )
     // Presence must never be attributable to an unauthenticated socket: before
     // connect there is no verified user id to key it by.
     e, False if e == presence_worker.event_join ->
-      Push(presence_worker.event_error, unauthenticated_presence(), sock)
+      Push(presence_worker.event_error, unauthenticated_presence(), assigns)
     e, False if e == presence_worker.event_update ->
-      Push(presence_worker.event_error, unauthenticated_presence(), sock)
+      Push(presence_worker.event_error, unauthenticated_presence(), assigns)
     // Everything below needs session membership, which only connect
     // establishes. Mirrors levee's `connected` assign guard.
     e, False if e == events.submit_op ->
@@ -806,23 +973,16 @@ fn handle_in(
         json.preprocessed_array([
           nack_json(None, 0, 400, "Client not connected"),
         ]),
-        sock,
-      )
-    _, False -> NoReply(sock)
-    e, True if e == events.submit_op ->
-      submit_op(channels, document_session, payload, sock, assigns)
-    e, True if e == events.submit_signal ->
-      submit_signals(
-        channels,
-        document_session,
-        registration,
-        payload,
-        sock,
         assigns,
       )
+    _, False -> NoReply(assigns)
+    e, True if e == events.submit_op ->
+      submit_op(document_session, payload, assigns)
+    e, True if e == events.submit_signal ->
+      submit_signals(document_session, registration, payload, assigns)
     e, True if e == presence_worker.event_join ->
       case presence_meta(payload, assigns.client_id) {
-        Error(frame) -> Push(presence_worker.event_error, frame, sock)
+        Error(frame) -> Push(presence_worker.event_error, frame, assigns)
         Ok(meta) -> {
           presence_worker.join(
             presence,
@@ -831,20 +991,29 @@ fn handle_in(
             assigns.user_id,
             meta,
           )
-          NoReply(sock)
+          NoReply(DocAssigns(..assigns, presence_joined: True))
         }
       }
     e, True if e == presence_worker.event_update ->
-      case presence_meta(payload, assigns.client_id) {
-        Error(frame) -> Push(presence_worker.event_error, frame, sock)
-        Ok(meta) -> {
+      case assigns.presence_joined, presence_meta(payload, assigns.client_id) {
+        False, _ ->
+          Push(
+            presence_worker.event_error,
+            presence_worker.error(
+              "not_joined",
+              "this connection has no presence to update",
+            ),
+            assigns,
+          )
+        _, Error(frame) -> Push(presence_worker.event_error, frame, assigns)
+        True, Ok(meta) -> {
           presence_worker.update(
             presence,
             assigns.client_id,
             assigns.topic,
             meta,
           )
-          NoReply(sock)
+          NoReply(assigns)
         }
       }
     // No rejection path at all, deliberately asymmetric with update: a duplicate
@@ -852,7 +1021,7 @@ fn handle_in(
     // error. The payload is ignored.
     e, True if e == presence_worker.event_leave -> {
       presence_worker.leave(presence, assigns.client_id)
-      NoReply(sock)
+      NoReply(DocAssigns(..assigns, presence_joined: False))
     }
     "requestOps", True ->
       Push(
@@ -862,7 +1031,7 @@ fn handle_in(
           assigns.topic,
           int_field(payload, "from", 0),
         )),
-        sock,
+        assigns,
       )
     // Without this an idle levee-mode client never advances its reference
     // sequence number and the minimum sequence number stalls for the document.
@@ -877,7 +1046,7 @@ fn handle_in(
             int_field(payload, "referenceSequenceNumber", 0),
           )
       }
-      NoReply(sock)
+      NoReply(assigns)
     }
     e, True if e == events.submit_summary ->
       Push(
@@ -890,69 +1059,65 @@ fn handle_in(
             "Submit summaries as sequenced summarize operations",
           ),
         ]),
-        sock,
+        assigns,
       )
-    _, True -> NoReply(sock)
+    _, True -> NoReply(assigns)
   }
 }
 
 /// Phoenix path only: IConnect arrives as an event after the join, and the
 /// driver listens for a pushed result rather than a reply.
 fn connect_phase_two(
-  channels: beryl.Channels,
   document_session: Session,
   payload: Dynamic,
-  sock: Socket(DocAssigns),
+  socket_id: String,
   assigns: DocAssigns,
-) -> channel.HandleResult(DocAssigns) {
+  max_frame_bytes: Int,
+) -> ChannelResult {
   case
     connect_core(
-      channels,
       document_session,
       assigns.topic,
       payload,
-      socket.id(sock),
+      socket_id,
+      max_frame_bytes,
     )
   {
-    Ok(#(response, assigns)) ->
-      Push(
-        events.connect_document_success,
-        response,
-        socket.set_assigns(sock, assigns),
+    Ok(Connected(response, connected_assigns, broadcasts)) ->
+      Actions(
+        connected_assigns,
+        list.append(broadcasts, [
+          channel.push(events.connect_document_success, response),
+        ]),
       )
     Error(error) ->
-      Push(events.connect_document_error, connect_error_to_json(error), sock)
+      Push(events.connect_document_error, connect_error_to_json(error), assigns)
   }
 }
 
 fn submit_op(
-  channels: beryl.Channels,
   document_session: Session,
   payload: Dynamic,
-  sock: Socket(DocAssigns),
   assigns: DocAssigns,
-) -> channel.HandleResult(DocAssigns) {
+) -> ChannelResult {
   case assigns.mode {
-    session.Write ->
-      submit_writable_ops(channels, document_session, payload, sock, assigns)
+    session.Write -> submit_writable_ops(document_session, payload, assigns)
     session.Read ->
       Push(
         events.nack,
         json.preprocessed_array([
           nack_json(None, 0, 403, "Read-only clients cannot submit operations"),
         ]),
-        sock,
+        assigns,
       )
   }
 }
 
 fn submit_writable_ops(
-  channels: beryl.Channels,
   document_session: Session,
   payload: Dynamic,
-  sock: Socket(DocAssigns),
   assigns: DocAssigns,
-) -> channel.HandleResult(DocAssigns) {
+) -> ChannelResult {
   case
     field(payload, "clientId", "") == assigns.client_id,
     submitted_ops(payload)
@@ -963,7 +1128,7 @@ fn submit_writable_ops(
         json.preprocessed_array([
           nack_json(None, 0, 400, "Client ID mismatch"),
         ]),
-        sock,
+        assigns,
       )
     _, Error(_) ->
       Push(
@@ -971,31 +1136,35 @@ fn submit_writable_ops(
         json.preprocessed_array([
           nack_json(None, 0, 400, "Malformed submitOp payload"),
         ]),
-        sock,
+        assigns,
       )
     True, Ok(ops) -> {
-      let nacks =
-        list.fold(ops, [], fn(nacks, op) {
+      let #(nacks, broadcasts) =
+        list.fold(ops, #([], []), fn(acc, op) {
+          let #(nacks, broadcasts) = acc
           case op.kind {
             "summarize" ->
               case list.contains(assigns.scopes, "summary:write") {
                 True ->
                   submit_summary_op(
-                    channels,
                     document_session,
                     op,
                     assigns,
                     nacks,
+                    broadcasts,
                   )
-                False -> [
-                  nack_json(
-                    Some(op),
-                    session.sequence_number(document_session, assigns.topic),
-                    403,
-                    "Summary scope required",
-                  ),
-                  ..nacks
-                ]
+                False -> #(
+                  [
+                    nack_json(
+                      Some(op),
+                      session.sequence_number(document_session, assigns.topic),
+                      403,
+                      "Summary scope required",
+                    ),
+                    ..nacks
+                  ],
+                  broadcasts,
+                )
               }
             _ ->
               case
@@ -1012,45 +1181,55 @@ fn submit_writable_ops(
                 )
               {
                 session.MessageAssigned(sn, _, message) -> {
-                  beryl.broadcast(
-                    channels,
-                    assigns.topic,
-                    events.op,
-                    json.preprocessed_array([
-                      session.stored_message_to_json(#(sn, message)),
-                    ]),
-                  )
-                  nacks
+                  #(nacks, [
+                    channel.broadcast(
+                      events.op,
+                      json.preprocessed_array([
+                        session.stored_message_to_json(#(sn, message)),
+                      ]),
+                    ),
+                    ..broadcasts
+                  ])
                 }
-                session.MessageRejected(current_sn) -> [
-                  nack_json(
-                    Some(op),
-                    current_sn,
-                    400,
-                    "Invalid client or reference sequence number",
-                  ),
-                  ..nacks
-                ]
+                session.MessageRejected(current_sn) -> #(
+                  [
+                    nack_json(
+                      Some(op),
+                      current_sn,
+                      400,
+                      "Invalid client or reference sequence number",
+                    ),
+                    ..nacks
+                  ],
+                  broadcasts,
+                )
               }
           }
         })
 
-      case nacks {
-        [] -> NoReply(sock)
+      let broadcasts = list.reverse(broadcasts)
+      let actions = case nacks {
+        [] -> broadcasts
         _ ->
-          Push(events.nack, json.preprocessed_array(list.reverse(nacks)), sock)
+          list.append(broadcasts, [
+            channel.push(
+              events.nack,
+              json.preprocessed_array(list.reverse(nacks)),
+            ),
+          ])
       }
+      Actions(assigns, actions)
     }
   }
 }
 
 fn submit_summary_op(
-  channels: beryl.Channels,
   document_session: Session,
   op: SubmittedOp,
   assigns: DocAssigns,
   nacks: List(json.Json),
-) -> List(json.Json) {
+  broadcasts: List(channel.Action(channel.Active)),
+) -> #(List(json.Json), List(channel.Action(channel.Active))) {
   case
     session.submit_summary_messages(
       document_session,
@@ -1114,26 +1293,29 @@ fn submit_summary_op(
       // computed above is what makes the ref a projection of the authoritative
       // value: whatever the session accepted is what gets published.
       publish_summary_ref(document_session, assigns.topic)
-      beryl.broadcast(
-        channels,
-        assigns.topic,
-        events.op,
-        json.preprocessed_array([
-          session.stored_message_to_json(#(summary_sn, summary_message)),
-          session.stored_message_to_json(#(response_sn, response_message)),
-        ]),
-      )
-      nacks
+      #(nacks, [
+        channel.broadcast(
+          events.op,
+          json.preprocessed_array([
+            session.stored_message_to_json(#(summary_sn, summary_message)),
+            session.stored_message_to_json(#(response_sn, response_message)),
+          ]),
+        ),
+        ..broadcasts
+      ])
     }
-    session.SummaryMessagesRejected(current_sn) -> [
-      nack_json(
-        Some(op),
-        current_sn,
-        400,
-        "Invalid client or reference sequence number",
-      ),
-      ..nacks
-    ]
+    session.SummaryMessagesRejected(current_sn) -> #(
+      [
+        nack_json(
+          Some(op),
+          current_sn,
+          400,
+          "Invalid client or reference sequence number",
+        ),
+        ..nacks
+      ],
+      broadcasts,
+    )
   }
 }
 
@@ -1512,33 +1694,30 @@ fn topic_ids(topic: String) -> Result(#(String, String), String) {
 }
 
 fn submit_signals(
-  channels: beryl.Channels,
   document_session: Session,
   registration: Registration,
   payload: Dynamic,
-  sock: Socket(DocAssigns),
   assigns: DocAssigns,
-) -> channel.HandleResult(DocAssigns) {
+) -> ChannelResult {
   case
     field(payload, "clientId", "") == assigns.client_id,
     submitted_signals(payload)
   {
     True, Ok(signals) -> {
-      list.each(signals, fn(signal) {
-        relay_signal(channels, document_session, registration, assigns, signal)
+      signals
+      |> list.each(fn(signal) {
+        relay_signal(document_session, registration, assigns, signal)
       })
-      NoReply(sock)
+      NoReply(assigns)
     }
-    _, _ -> NoReply(sock)
+    _, _ -> NoReply(assigns)
   }
 }
 
 /// Deliver one signal to the clients its targeting fields name.
 ///
-/// An untargeted signal keeps the broadcast path: it is one coordinator message
-/// rather than one per recipient, and it avoids the `session.clients` round-trip
-/// needed to resolve a recipient list. Only a signal that actually carries
-/// targeting pays for either.
+/// Every signal uses the same per-channel notification path so mixed targeted
+/// and untargeted batches retain their submitted order.
 ///
 /// Recipients come from `spillway/session_logic.determine_signal_recipients`,
 /// which is the same function levee's `Bridge.determine_signal_recipients` calls
@@ -1546,7 +1725,6 @@ fn submit_signals(
 /// the one to use rather than `signals.get_signal_recipients`, which does not
 /// intersect the targeted list with the known clients.
 fn relay_signal(
-  channels: beryl.Channels,
   document_session: Session,
   registration: Registration,
   assigns: DocAssigns,
@@ -1562,12 +1740,9 @@ fn relay_signal(
   }
   let message = json.object(message_fields)
 
-  case targeted(signal), registered_channel(registration) {
-    // Untargeted, or no registration handle to push through: broadcast, which
-    // is what this did unconditionally before targeting was honoured.
-    False, _ | _, None ->
-      beryl.broadcast(channels, assigns.topic, events.signal, message)
-    True, Some(registered) ->
+  let recipients = case targeted(signal) {
+    False -> session.clients(document_session, assigns.topic)
+    True ->
       case signal.target_client_id {
         Some(target) if target == assigns.client_id -> [target]
         _ ->
@@ -1579,23 +1754,19 @@ fn relay_signal(
             session.clients(document_session, assigns.topic),
           )
       }
-      // The Fluid client id *is* the beryl socket id — `join` assigns
-      // `socket.id(sock)` as the client id — so a recipient addresses a socket
-      // directly, with no mapping to maintain.
-      |> list.each(fn(recipient) {
-        beryl.send_info(
-          registered,
-          recipient,
-          assigns.topic,
-          SignalPush(message),
-        )
-      })
   }
+  recipients
+  |> list.each(fn(recipient) {
+    case target(registration, recipient, assigns.topic) {
+      Some(sender) -> channel.notify(sender, SignalPush(message))
+      None -> Nil
+    }
+  })
 }
 
 /// Whether a signal names recipients at all. `determine_signal_recipients`
-/// treats all-absent as "broadcast to everyone but the sender", which the
-/// broadcast path already does more cheaply.
+/// treats all-absent as "broadcast to everyone but the sender", while Fluid
+/// signals are also delivered back to their sender.
 fn targeted(signal: signals.NormalizedSignal) -> Bool {
   option.is_some(signal.targeted_clients)
   || option.is_some(signal.ignored_clients)
