@@ -9,9 +9,13 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "astro",
+    "og:generate": "playwright install chromium && node scripts/generate-og.mjs"
   },
   "dependencies": {
     "astro": "^7.2.1"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1"
   }
 }
