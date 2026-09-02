@@ -1,4 +1,4 @@
-//// Dashboard page component.
+//// Floodgate dashboard page component.
 
 import gleam/int
 import gleam/list
@@ -54,7 +54,7 @@ pub fn view(model: Model) -> Element(Msg) {
 
 fn view_welcome() -> Element(Msg) {
   div([class("card welcome-card")], [
-    h2([], [text("Welcome to Levee Admin")]),
+    h2([], [text("Welcome to Floodgate Admin")]),
     p([], [
       text(
         "Manage your tenants, users, and document access from this dashboard.",
@@ -67,11 +67,14 @@ fn view_tenants_section(model: Model) -> Element(Msg) {
   div([class("card tenants-card")], [
     h2([], [text("Your Tenants")]),
     case model.loading {
-      True -> p([class("loading")], [text("Loading...")])
+      True ->
+        p([class("loading"), attribute.role("status")], [
+          text("Loading tenants..."),
+        ])
       False ->
         case model.error {
           Some(error) ->
-            div([class("alert alert-error")], [
+            div([class("alert alert-error"), attribute.role("alert")], [
               span([class("alert-icon")], [text("!")]),
               span([class("alert-message")], [text(error)]),
             ])

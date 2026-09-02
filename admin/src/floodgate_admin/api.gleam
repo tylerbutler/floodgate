@@ -1,4 +1,4 @@
-//// HTTP API client for Levee backend.
+//// HTTP API client for the Floodgate backend.
 ////
 //// Uses gleam_fetch for browser HTTP requests with Lustre effects.
 
@@ -13,7 +13,7 @@ import gleam/json
 import gleam/option.{type Option, None, Some}
 import lustre/effect.{type Effect}
 
-@external(javascript, "../levee_admin_ffi.mjs", "get_origin")
+@external(javascript, "../floodgate_admin_ffi.mjs", "get_origin")
 pub fn get_origin() -> String
 
 /// Base URL for API requests
@@ -196,8 +196,7 @@ fn handle_response(
 
 /// Get the backend's supported authentication methods.
 ///
-/// Levee predates this endpoint, so callers should keep password auth enabled
-/// if the request fails. Floodgate returns `password_auth: false`.
+/// Keep password auth enabled if this optional capability probe fails.
 pub fn get_auth_config(
   on_response: fn(Result(AuthConfig, ApiError)) -> msg,
 ) -> Effect(msg) {

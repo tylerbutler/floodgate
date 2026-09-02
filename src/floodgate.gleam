@@ -74,7 +74,7 @@ pub type AuthConfig {
     admin_github_users: option.Option(List(String)),
     /// Admin session lifetime, from `FLOODGATE_ADMIN_SESSION_TTL_SECONDS`.
     admin_session_ttl_seconds: Int,
-    /// Directory the shared `levee_admin` Lustre SPA's build output (and its
+    /// Directory the `floodgate_admin` Lustre SPA's build output (and its
     /// `index.html`) is served from — `FLOODGATE_ADMIN_STATIC_DIR`.
     admin_static_dir: String,
   )
@@ -423,7 +423,7 @@ fn rest(
     // container probes (`wget --spider`, most orchestrators) use HEAD.
     method, ["health"] if method == http.Get || method == http.Head ->
       health_body() |> json_response(200)
-    // Static admin UI: the shared `server/levee_admin` Lustre SPA, served
+    // Static admin UI: the `floodgate_admin` Lustre SPA, served
     // from FLOODGATE_ADMIN_STATIC_DIR — see `floodgate/static` for the
     // file-serving + SPA-fallback contract.
     method, ["admin", ..path_parts]
@@ -433,7 +433,7 @@ fn rest(
     http.Get, ["auth", "github"] -> oauth_begin_response(config, req)
     http.Get, ["auth", "github", "callback"] ->
       oauth_callback_response(config, public_url, req)
-    // Auth API the admin UI expects (`server/levee_admin/src/levee_admin/api.gleam`):
+    // Auth API the admin UI expects (`admin/src/floodgate_admin/api.gleam`):
     // a capability flag the login page uses to hide its dead password form
     // under Floodgate, and the session endpoints OAuth callback sessions use.
     http.Get, ["api", "auth", "config"] -> auth_config_response()
@@ -457,7 +457,7 @@ fn rest(
     http.Post, ["api", "tenants", tenant, "token-mint"] ->
       token_mint_response(config, req, tenant)
     // Tenant management API: the minimum surface the Lustre admin UI needs
-    // (`server/levee_admin/src/levee_admin/api.gleam`), gated by
+    // (`admin/src/floodgate_admin/api.gleam`), gated by
     // FLOODGATE_ADMIN_KEY rather than the session auth levee uses — see
     // `authorize_admin`.
     http.Get, ["api", "tenants"] ->
@@ -1268,7 +1268,7 @@ fn storage_unavailable() -> response.Response(mist.ResponseData) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tenant management API
 //
-// The minimum surface the Lustre admin UI's `levee_admin/api.gleam` needs:
+// The minimum surface the Lustre admin UI's `floodgate_admin/api.gleam` needs:
 // GET/POST /api/tenants, GET/DELETE /api/tenants/:id,
 // POST /api/tenants/:id/secrets/:slot. Response shapes match what its
 // decoders expect exactly (`tenant_decoder`, `tenant_with_secrets_decoder`,
@@ -1383,7 +1383,7 @@ fn admin_not_found() -> response.Response(mist.ResponseData) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Admin auth API — the session/OAuth surface the Lustre admin UI expects
-// (`server/levee_admin/src/levee_admin/api.gleam`): GET /api/auth/config,
+// (`admin/src/floodgate_admin/api.gleam`): GET /api/auth/config,
 // GET /api/auth/me, POST /api/auth/logout, plus the GitHub OAuth entry and
 // callback the login page's "Sign in with GitHub" button navigates to. See
 // `floodgate/oauth`, `floodgate/oauth_state`, and `floodgate/admin_auth` for

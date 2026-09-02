@@ -1,7 +1,7 @@
-//// Levee Admin - Tenant Management UI
+//// Floodgate Admin - Tenant Management UI
 ////
-//// A Lustre-based single-page application for managing tenants,
-//// users, and document access in Levee.
+//// A Lustre-based single-page application for managing Floodgate tenants,
+//// users, and document access.
 
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -14,34 +14,34 @@ import lustre/element/html.{div, h1, nav, p, text}
 import lustre/event
 import modem
 
-@external(javascript, "./levee_admin_ffi.mjs", "get_query_param")
+@external(javascript, "./floodgate_admin_ffi.mjs", "get_query_param")
 fn get_query_param(name: String) -> Option(String)
 
-@external(javascript, "./levee_admin_ffi.mjs", "navigate_to")
+@external(javascript, "./floodgate_admin_ffi.mjs", "navigate_to")
 fn do_navigate_to(url: String) -> Nil
 
-@external(javascript, "./levee_admin_ffi.mjs", "get_current_path")
+@external(javascript, "./floodgate_admin_ffi.mjs", "get_current_path")
 fn get_current_path() -> String
 
-@external(javascript, "./levee_admin_ffi.mjs", "save_token")
+@external(javascript, "./floodgate_admin_ffi.mjs", "save_token")
 fn save_token(token: String) -> Nil
 
-@external(javascript, "./levee_admin_ffi.mjs", "load_token")
+@external(javascript, "./floodgate_admin_ffi.mjs", "load_token")
 fn load_token() -> Option(String)
 
-@external(javascript, "./levee_admin_ffi.mjs", "clear_token")
+@external(javascript, "./floodgate_admin_ffi.mjs", "clear_token")
 fn clear_token() -> Nil
 
-import levee_admin/api
-import levee_admin/pages/dashboard
-import levee_admin/pages/document_detail
-import levee_admin/pages/document_list
-import levee_admin/pages/login
-import levee_admin/pages/register
-import levee_admin/pages/tenant_detail
-import levee_admin/pages/tenant_new
-import levee_admin/pages/tenants
-import levee_admin/router.{type Route}
+import floodgate_admin/api
+import floodgate_admin/pages/dashboard
+import floodgate_admin/pages/document_detail
+import floodgate_admin/pages/document_list
+import floodgate_admin/pages/login
+import floodgate_admin/pages/register
+import floodgate_admin/pages/tenant_detail
+import floodgate_admin/pages/tenant_new
+import floodgate_admin/pages/tenants
+import floodgate_admin/router.{type Route}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Model
@@ -61,6 +61,7 @@ pub type Model {
     tenant_detail: tenant_detail.Model,
     document_list: document_list.Model,
     document_detail: document_detail.Model,
+    flash_message: Option(String),
   )
 }
 
@@ -69,8 +70,8 @@ pub type User {
 }
 
 fn init(_flags) -> #(Model, Effect(Msg)) {
-  // Restore Levee's bearer token when present. Floodgate uses an HttpOnly
-  // session cookie, so with no token we probe `/api/auth/me` without an
+  // Restore a bearer token when present. Floodgate also uses an HttpOnly
+  // session cookie, so without a token we probe `/api/auth/me` without an
   // Authorization header and let the browser send that cookie.
   let #(session_token, auth_effect) = case get_query_param("token") {
     Some(token) -> {
@@ -114,6 +115,7 @@ fn init(_flags) -> #(Model, Effect(Msg)) {
       tenant_detail: tenant_detail.init(""),
       document_list: document_list.init(""),
       document_detail: document_detail.init("", ""),
+      flash_message: None,
     )
 
   #(
@@ -164,6 +166,7 @@ pub type Msg {
   GitBlobResponse(Result(api.GitBlobResponse, api.ApiError))
   GitTreeResponse(Result(api.GitTreeResponse, api.ApiError))
   GitCommitResponse(Result(api.GitCommitResponse, api.ApiError))
+  DismissFlash
   Logout
 }
 
@@ -189,65 +192,86 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         None, _, router.DocumentDetail(_, _) -> router.Login
         _, _, r -> r
       }
+      let route_changed = route != model.route
 
-      let effect = case route, model.session_token {
-        router.Dashboard, Some(token) ->
-          api.list_tenants(token, DashboardTenantsResponse)
-        router.Tenants, Some(token) -> api.list_tenants(token, TenantsResponse)
-        router.TenantDetail(id), Some(token) ->
-          effect.batch([
-            api.get_tenant(token, id, GetTenantResponse),
-            api.list_documents(token, id, TenantDocumentCountResponse),
-          ])
-        router.DocumentList(tid), Some(token) ->
-          api.list_documents(token, tid, DocumentListResponse)
-        router.DocumentDetail(tid, did), Some(token) ->
-          effect.batch([
-            api.get_document(token, tid, did, DocumentDetailResponse),
-            api.get_document_deltas(
-              token,
-              tid,
-              did,
-              -1,
-              100,
-              DocumentDeltasResponse,
-            ),
-            api.get_document_summaries(
-              token,
-              tid,
-              did,
-              DocumentSummariesResponse,
-            ),
-            api.get_document_refs(token, tid, DocumentRefsResponse),
-          ])
-        _, _ -> effect.none()
+      let effect = case route_changed {
+        False -> effect.none()
+        True ->
+          case route, model.session_token {
+            router.Dashboard, Some(token) ->
+              api.list_tenants(token, DashboardTenantsResponse)
+            router.Tenants, Some(token) ->
+              api.list_tenants(token, TenantsResponse)
+            router.TenantDetail(id), Some(token) ->
+              effect.batch([
+                api.get_tenant(token, id, GetTenantResponse),
+                api.list_documents(token, id, TenantDocumentCountResponse),
+              ])
+            router.DocumentList(tid), Some(token) ->
+              api.list_documents(token, tid, DocumentListResponse)
+            router.DocumentDetail(tid, did), Some(token) ->
+              effect.batch([
+                api.get_document(token, tid, did, DocumentDetailResponse),
+                api.get_document_deltas(
+                  token,
+                  tid,
+                  did,
+                  -1,
+                  100,
+                  DocumentDeltasResponse,
+                ),
+                api.get_document_summaries(
+                  token,
+                  tid,
+                  did,
+                  DocumentSummariesResponse,
+                ),
+                api.get_document_refs(token, tid, DocumentRefsResponse),
+              ])
+            _, _ -> effect.none()
+          }
       }
 
-      let model = case route {
-        router.Tenants -> Model(..model, route: route, tenants: tenants.init())
-        router.TenantNew ->
-          Model(..model, route: route, tenant_new: tenant_new.init())
-        router.TenantDetail(id) ->
-          Model(..model, route: route, tenant_detail: tenant_detail.init(id))
-        router.Dashboard ->
-          Model(
-            ..model,
-            route: route,
-            dashboard: dashboard.start_loading(dashboard.init()),
-          )
-        router.DocumentList(tid) ->
-          Model(..model, route: route, document_list: document_list.init(tid))
-        router.DocumentDetail(tid, did) ->
-          Model(
-            ..model,
-            route: route,
-            document_detail: document_detail.init(tid, did),
-          )
-        _ -> Model(..model, route: route)
+      let model = case route_changed {
+        False -> model
+        True ->
+          case route {
+            router.Tenants ->
+              Model(..model, route: route, tenants: tenants.init())
+            router.TenantNew ->
+              Model(..model, route: route, tenant_new: tenant_new.init())
+            router.TenantDetail(id) ->
+              Model(
+                ..model,
+                route: route,
+                tenant_detail: tenant_detail.init(id),
+              )
+            router.Dashboard ->
+              Model(
+                ..model,
+                route: route,
+                dashboard: dashboard.start_loading(dashboard.init()),
+              )
+            router.DocumentList(tid) ->
+              Model(
+                ..model,
+                route: route,
+                document_list: document_list.init(tid),
+              )
+            router.DocumentDetail(tid, did) ->
+              Model(
+                ..model,
+                route: route,
+                document_detail: document_detail.init(tid, did),
+              )
+            _ -> Model(..model, route: route)
+          }
       }
 
       #(model, effect)
     }
+
+    DismissFlash -> #(Model(..model, flash_message: None), effect.none())
 
     LoginMsg(login.GitHubLogin) -> {
       // Redirect to GitHub OAuth — full page navigation
@@ -479,13 +503,19 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       )
     }
 
-    // Older Levee deployments do not expose this capability endpoint.
+    // Keep password auth enabled if this optional capability probe fails.
     AuthConfigResponse(Error(_)) -> #(model, effect.none())
 
     LogoutResponse(_) -> {
       clear_token()
       let model =
-        Model(..model, user: None, session_token: None, route: router.Login)
+        Model(
+          ..model,
+          user: None,
+          session_token: None,
+          route: router.Login,
+          flash_message: None,
+        )
       #(model, modem.push("/admin/login", None, None))
     }
 
@@ -503,7 +533,9 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       let tenants_model =
         tenants.update(
           model.tenants,
-          tenants.LoadError("Failed to load tenants"),
+          tenants.LoadError(
+            "Could not load tenants. Check your connection and try again.",
+          ),
         ).0
       #(Model(..model, tenants: tenants_model), effect.none())
     }
@@ -525,7 +557,9 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       let dashboard_model =
         dashboard.update(
           model.dashboard,
-          dashboard.LoadError("Failed to load tenants"),
+          dashboard.LoadError(
+            "Could not load tenants. Check your connection and try again.",
+          ),
         ).0
       #(Model(..model, dashboard: dashboard_model), effect.none())
     }
@@ -541,8 +575,12 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       let model =
         Model(
           ..model,
+          route: router.TenantDetail(tenant_with_secrets.id),
           tenant_new: tenant_new.init(),
           tenant_detail: detail_model,
+          flash_message: Some(
+            "Tenant created. Copy both secrets before leaving this page.",
+          ),
         )
       #(
         model,
@@ -552,7 +590,10 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
     CreateTenantResponse(Error(_error)) -> {
       let tenant_new_model =
-        tenant_new.set_error(model.tenant_new, "Failed to create tenant")
+        tenant_new.set_error(
+          model.tenant_new,
+          "Could not create the tenant. Check your connection and try again.",
+        )
       #(Model(..model, tenant_new: tenant_new_model), effect.none())
     }
 
@@ -574,7 +615,10 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
     GetTenantResponse(Error(_error)) -> {
       let detail_model =
-        tenant_detail.set_error(model.tenant_detail, "Failed to load tenant")
+        tenant_detail.set_error(
+          model.tenant_detail,
+          "Could not load this tenant. Check your connection and try again.",
+        )
       #(Model(..model, tenant_detail: detail_model), effect.none())
     }
 
@@ -593,20 +637,27 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         tenant_detail.set_regenerate_error(
           model.tenant_detail,
           slot,
-          "Failed to regenerate secret",
+          "Could not rotate this secret. Existing tokens are still valid; try again.",
         )
       #(Model(..model, tenant_detail: detail_model), effect.none())
     }
 
     DeleteTenantResponse(Ok(_response)) -> {
-      #(model, modem.push("/admin/tenants", None, None))
+      let message =
+        "Deleted tenant "
+        <> model.tenant_detail.tenant_name
+        <> ". Stored documents were not deleted."
+      #(
+        Model(..model, flash_message: Some(message)),
+        modem.push("/admin/tenants", None, None),
+      )
     }
 
     DeleteTenantResponse(Error(_error)) -> {
       let detail_model =
         tenant_detail.set_delete_error(
           model.tenant_detail,
-          "Failed to delete tenant",
+          "Could not delete this tenant. Nothing was changed; try again.",
         )
       #(Model(..model, tenant_detail: detail_model), effect.none())
     }
@@ -722,7 +773,9 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       let doc_list_model =
         document_list.update(
           model.document_list,
-          document_list.LoadError("Failed to load documents"),
+          document_list.LoadError(
+            "Could not load documents. Check your connection and try again.",
+          ),
         ).0
       #(Model(..model, document_list: doc_list_model), effect.none())
     }
@@ -750,7 +803,9 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       let doc_detail_model =
         document_detail.update(
           model.document_detail,
-          document_detail.DocumentLoadError("Failed to load document"),
+          document_detail.DocumentLoadError(
+            "Could not load this document. Check your connection and try again.",
+          ),
         ).0
       #(Model(..model, document_detail: doc_detail_model), effect.none())
     }
@@ -939,9 +994,40 @@ fn view_authenticated_layout(
   content: Element(Msg),
 ) -> Element(Msg) {
   div([class("authenticated-layout")], [
+    html.a([class("skip-link"), attribute.href("#main-content")], [
+      text("Skip to content"),
+    ]),
     view_nav(model),
-    html.main([class("main-content")], [content]),
+    html.main([class("main-content"), attribute.id("main-content")], [
+      view_flash(model.flash_message),
+      content,
+    ]),
   ])
+}
+
+fn view_flash(message: Option(String)) -> Element(Msg) {
+  case message {
+    None -> element.none()
+    Some(message) ->
+      div(
+        [
+          class("alert alert-success app-flash"),
+          attribute.role("status"),
+          attribute.aria_live("polite"),
+        ],
+        [
+          p([class("alert-message")], [text(message)]),
+          html.button(
+            [
+              class("flash-dismiss"),
+              attribute.type_("button"),
+              event.on_click(DismissFlash),
+            ],
+            [text("Dismiss")],
+          ),
+        ],
+      )
+  }
 }
 
 fn view_nav(model: Model) -> Element(Msg) {
@@ -949,9 +1035,26 @@ fn view_nav(model: Model) -> Element(Msg) {
     Some(user) -> user.display_name
     None -> "Guest"
   }
+  let dashboard_active = model.route == router.Dashboard
+  let tenants_active = case model.route {
+    router.Tenants
+    | router.TenantNew
+    | router.TenantDetail(_)
+    | router.DocumentList(_)
+    | router.DocumentDetail(_, _) -> True
+    _ -> False
+  }
 
-  nav([class("nav")], [
-    div([class("nav-brand")], [h1([], [text("Levee Admin")])]),
+  nav([class("nav"), attribute.aria_label("Primary")], [
+    div([class("nav-brand")], [
+      html.a([attribute.href("/admin/dashboard")], [
+        html.span([class("brand-name")], [text("Floodgate Admin")]),
+      ]),
+    ]),
+    div([class("nav-links")], [
+      view_nav_link("Dashboard", "/admin/dashboard", dashboard_active),
+      view_nav_link("Tenants", "/admin/tenants", tenants_active),
+    ]),
     div([class("nav-user")], [
       p([], [text(user_name)]),
       html.button([attribute.type_("button"), event.on_click(Logout)], [
@@ -959,6 +1062,18 @@ fn view_nav(model: Model) -> Element(Msg) {
       ]),
     ]),
   ])
+}
+
+fn view_nav_link(label: String, path: String, active: Bool) -> Element(Msg) {
+  let attrs = case active {
+    True -> [
+      class("nav-link nav-link-active"),
+      attribute.href(path),
+      attribute.aria_current("page"),
+    ]
+    False -> [class("nav-link"), attribute.href(path)]
+  }
+  html.a(attrs, [text(label)])
 }
 
 fn view_not_found() -> Element(Msg) {

@@ -1,4 +1,4 @@
-//// Login page component.
+//// Floodgate admin login page.
 
 import gleam/option.{type Option, None, Some}
 import lustre/attribute.{class, disabled, for, id, placeholder, type_, value}
@@ -169,7 +169,7 @@ pub fn view(model: Model, password_auth: Bool) -> Element(Msg) {
 fn view_error(error: Option(String)) -> Element(Msg) {
   case error {
     Some(message) ->
-      div([class("alert alert-error")], [
+      div([class("alert alert-error"), attribute.role("alert")], [
         span([class("alert-icon")], [text("!")]),
         span([class("alert-message")], [text(message)]),
       ])

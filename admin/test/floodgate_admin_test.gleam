@@ -3,7 +3,8 @@ import gleam/uri.{type Uri}
 import gleeunit
 import gleeunit/should
 
-import levee_admin/router
+import floodgate_admin/pages/tenant_detail
+import floodgate_admin/router
 
 pub fn main() {
   gleeunit.main()
@@ -77,6 +78,43 @@ pub fn parse_tenant_new_route_test() {
 pub fn to_path_tenant_new_test() {
   router.to_path(router.TenantNew)
   |> should.equal("/admin/tenants/new")
+}
+
+pub fn regenerate_requires_exact_confirmation_test() {
+  let model = tenant_detail.init("tenant-123")
+  let model = tenant_detail.update(model, tenant_detail.RequestRegenerate(1)).0
+  let model =
+    tenant_detail.update(
+      model,
+      tenant_detail.UpdateRegenerateConfirmation(1, "regenerate"),
+    ).0
+  let model = tenant_detail.update(model, tenant_detail.ConfirmRegenerate(1)).0
+
+  tenant_detail.get_pending_regenerate(model)
+  |> should.equal(option.None)
+}
+
+pub fn regenerate_accepts_exact_confirmation_test() {
+  let model = tenant_detail.init("tenant-123")
+  let model = tenant_detail.update(model, tenant_detail.RequestRegenerate(2)).0
+  let model =
+    tenant_detail.update(
+      model,
+      tenant_detail.UpdateRegenerateConfirmation(2, "REGENERATE"),
+    ).0
+  let model = tenant_detail.update(model, tenant_detail.ConfirmRegenerate(2)).0
+
+  tenant_detail.get_pending_regenerate(model)
+  |> should.equal(option.Some(2))
+}
+
+pub fn copy_success_is_exposed_to_the_view_test() {
+  let model = tenant_detail.init("tenant-123")
+  let model =
+    tenant_detail.update(model, tenant_detail.CopyFinished("Tenant ID", True)).0
+
+  model.copy_state
+  |> should.equal(tenant_detail.CopySuccess("Tenant ID copied."))
 }
 
 // Helper to create a URI from a path

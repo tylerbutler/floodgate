@@ -1,6 +1,6 @@
 import { Some, None } from "../gleam_stdlib/gleam/option.mjs";
 
-const TOKEN_KEY = "levee_admin:session_token";
+const TOKEN_KEY = "floodgate_admin:session_token";
 
 export function get_query_param(name) {
   const params = new URLSearchParams(window.location.search);
@@ -49,4 +49,16 @@ export function clear_token() {
   } catch (_) {
     // localStorage may be unavailable
   }
+}
+
+export function copy_to_clipboard(value, callback) {
+  if (!navigator.clipboard?.writeText) {
+    callback(false);
+    return;
+  }
+
+  navigator.clipboard.writeText(value).then(
+    () => callback(true),
+    () => callback(false),
+  );
 }

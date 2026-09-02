@@ -1,4 +1,4 @@
-//// Tenant list page component.
+//// Floodgate tenant list page.
 
 import gleam/int
 import gleam/list
@@ -84,11 +84,13 @@ pub fn view(model: Model) -> Element(Msg) {
 fn view_content(model: Model) -> Element(Msg) {
   case model.state {
     Loading ->
-      div([class("loading-state")], [p([], [text("Loading tenants...")])])
+      div([class("loading-state"), attribute.role("status")], [
+        p([], [text("Loading tenants...")]),
+      ])
 
     Error(message) ->
       div([class("error-state")], [
-        div([class("alert alert-error")], [
+        div([class("alert alert-error"), attribute.role("alert")], [
           span([class("alert-icon")], [text("!")]),
           span([class("alert-message")], [text(message)]),
         ]),

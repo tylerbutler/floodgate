@@ -1,4 +1,4 @@
-//// URL routing for the Levee Admin app.
+//// URL routing for the Floodgate Admin app.
 
 import gleam/uri.{type Uri}
 

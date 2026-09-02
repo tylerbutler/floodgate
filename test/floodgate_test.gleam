@@ -144,7 +144,7 @@ pub fn is_routerlicious_delta_fetch_matches_undertow_dialect_test() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tenant admin API — response shapes must match the Lustre UI's decoders in
-// server/levee_admin/src/levee_admin/api.gleam exactly.
+// admin/src/floodgate_admin/api.gleam exactly.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// `{id, name}` — `api.gleam`'s `tenant_decoder`. No secrets, ever.

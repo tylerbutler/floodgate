@@ -19,9 +19,10 @@ fn unique_dir() -> String {
 pub fn serves_a_real_file_with_a_matching_content_type_test() {
   let dir = unique_dir()
   write_file(dir <> "/index.html", "<html>shell</html>")
-  write_file(dir <> "/levee_admin/levee_admin.mjs", "export {}")
+  write_file(dir <> "/floodgate_admin/floodgate_admin.mjs", "export {}")
 
-  let served_response = static.serve(dir, ["levee_admin", "levee_admin.mjs"])
+  let served_response =
+    static.serve(dir, ["floodgate_admin", "floodgate_admin.mjs"])
   served_response.status |> should.equal(200)
   response.get_header(served_response, "content-type")
   |> should.equal(Ok("application/javascript; charset=utf-8"))
@@ -82,7 +83,7 @@ pub fn rejects_a_traversal_segment_buried_in_a_longer_path_test() {
   write_file(dir <> "/../secret.txt", "top secret")
 
   let served_response =
-    static.serve(dir, ["levee_admin", "..", "..", "secret.txt"])
+    static.serve(dir, ["floodgate_admin", "..", "..", "secret.txt"])
   served_response.status |> should.equal(200)
   response.get_header(served_response, "content-type")
   |> should.equal(Ok("text/html; charset=utf-8"))

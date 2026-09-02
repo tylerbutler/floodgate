@@ -1,4 +1,4 @@
-//// Create tenant form page — only requires a name, server generates everything else.
+//// Floodgate tenant form; the server generates the ID and secrets.
 
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -123,7 +123,7 @@ pub fn view(model: Model) -> Element(Msg) {
 fn view_error(state: FormState) -> Element(Msg) {
   case state {
     Error(message) ->
-      div([class("alert alert-error")], [
+      div([class("alert alert-error"), attribute.role("alert")], [
         span([class("alert-icon")], [text("!")]),
         span([class("alert-message")], [text(message)]),
       ])

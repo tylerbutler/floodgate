@@ -1,14 +1,17 @@
-//// Tenant detail page with dual secret display and per-slot regeneration.
+//// Floodgate tenant detail with dual secret display and per-slot rotation.
 
+import floodgate_admin/api
 import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import levee_admin/api
 import lustre/attribute.{class, disabled, type_}
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html.{a, button, code, div, h1, h2, p, span, text}
 import lustre/event
+
+@external(javascript, "../../floodgate_admin_ffi.mjs", "copy_to_clipboard")
+fn copy_to_clipboard(value: String, on_result: fn(Bool) -> Nil) -> Nil
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Model
@@ -23,7 +26,7 @@ pub type PageState {
 
 pub type SecretSlotState {
   SlotIdle
-  SlotConfirming
+  SlotConfirming(confirmation_input: String)
   SlotSubmitting
   SlotSuccess(String)
   SlotError(String)
@@ -34,6 +37,12 @@ pub type DeleteState {
   DeleteConfirming(confirmation_input: String)
   DeleteSubmitting
   DeleteError(String)
+}
+
+pub type CopyState {
+  CopyIdle
+  CopySuccess(String)
+  CopyError(String)
 }
 
 pub type Model {
@@ -51,6 +60,7 @@ pub type Model {
     pending_regenerate: Option(Int),
     pending_delete: Bool,
     document_count: Option(Int),
+    copy_state: CopyState,
   )
 }
 
@@ -69,6 +79,7 @@ pub fn init(tenant_id: String) -> Model {
     pending_regenerate: None,
     pending_delete: False,
     document_count: None,
+    copy_state: CopyIdle,
   )
 }
 
@@ -132,14 +143,18 @@ pub fn set_regenerate_success(
     1 ->
       Model(
         ..model,
-        secret1_state: SlotSuccess("Secret 1 regenerated"),
+        secret1_state: SlotSuccess(
+          "Secret 1 rotated. Copy this value and update affected clients now.",
+        ),
         secret1_value: new_secret,
         secret1_visible: True,
       )
     _ ->
       Model(
         ..model,
-        secret2_state: SlotSuccess("Secret 2 regenerated"),
+        secret2_state: SlotSuccess(
+          "Secret 2 rotated. Copy this value and update affected clients now.",
+        ),
         secret2_value: new_secret,
         secret2_visible: True,
       )
@@ -177,12 +192,16 @@ pub type Msg {
   ToggleSecret1Visible
   ToggleSecret2Visible
   RequestRegenerate(Int)
+  UpdateRegenerateConfirmation(Int, String)
   ConfirmRegenerate(Int)
   CancelRegenerate(Int)
   ShowDeleteConfirm
   HideDeleteConfirm
   UpdateDeleteConfirmation(String)
   ConfirmDelete
+  CopyTenantId
+  CopySecret(Int)
+  CopyFinished(String, Bool)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -203,15 +222,37 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
     RequestRegenerate(slot) -> {
       case slot {
-        1 -> #(Model(..model, secret1_state: SlotConfirming), effect.none())
-        _ -> #(Model(..model, secret2_state: SlotConfirming), effect.none())
+        1 -> #(Model(..model, secret1_state: SlotConfirming("")), effect.none())
+        _ -> #(Model(..model, secret2_state: SlotConfirming("")), effect.none())
       }
     }
 
-    ConfirmRegenerate(slot) -> #(
-      Model(..model, pending_regenerate: Some(slot)),
-      effect.none(),
-    )
+    UpdateRegenerateConfirmation(slot, input) -> {
+      case slot {
+        1 -> #(
+          Model(..model, secret1_state: SlotConfirming(input)),
+          effect.none(),
+        )
+        _ -> #(
+          Model(..model, secret2_state: SlotConfirming(input)),
+          effect.none(),
+        )
+      }
+    }
+
+    ConfirmRegenerate(slot) -> {
+      let slot_state = case slot {
+        1 -> model.secret1_state
+        _ -> model.secret2_state
+      }
+      case slot_state {
+        SlotConfirming("REGENERATE") -> #(
+          Model(..model, pending_regenerate: Some(slot)),
+          effect.none(),
+        )
+        _ -> #(model, effect.none())
+      }
+    }
 
     CancelRegenerate(slot) -> {
       case slot {
@@ -243,7 +284,41 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         _ -> #(model, effect.none())
       }
     }
+
+    CopyTenantId -> #(model, copy_effect(model.tenant_id, "Tenant ID"))
+
+    CopySecret(slot) -> {
+      let value = case slot {
+        1 -> model.secret1_value
+        _ -> model.secret2_value
+      }
+      #(model, copy_effect(value, "Secret " <> int.to_string(slot)))
+    }
+
+    CopyFinished(label, True) -> #(
+      Model(..model, copy_state: CopySuccess(label <> " copied.")),
+      effect.none(),
+    )
+
+    CopyFinished(label, False) -> #(
+      Model(
+        ..model,
+        copy_state: CopyError(
+          label <> " could not be copied. Select it and copy it manually.",
+        ),
+      ),
+      effect.none(),
+    )
   }
+}
+
+fn copy_effect(value: String, label: String) -> Effect(Msg) {
+  effect.from(fn(dispatch) {
+    copy_to_clipboard(value, fn(success) {
+      dispatch(CopyFinished(label, success))
+    })
+    Nil
+  })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -265,7 +340,9 @@ pub fn view(model: Model) -> Element(Msg) {
 fn view_content(model: Model) -> Element(Msg) {
   case model.state {
     Loading ->
-      div([class("loading-state")], [p([], [text("Loading tenant...")])])
+      div([class("loading-state"), attribute.role("status")], [
+        p([], [text("Loading tenant...")]),
+      ])
 
     NotFound ->
       div([class("empty-state card")], [
@@ -275,7 +352,7 @@ fn view_content(model: Model) -> Element(Msg) {
 
     Error(message) ->
       div([class("error-state")], [
-        div([class("alert alert-error")], [
+        div([class("alert alert-error"), attribute.role("alert")], [
           span([class("alert-icon")], [text("!")]),
           span([class("alert-message")], [text(message)]),
         ]),
@@ -283,6 +360,7 @@ fn view_content(model: Model) -> Element(Msg) {
 
     Loaded ->
       div([class("tenant-detail-content")], [
+        view_copy_state(model.copy_state),
         view_info(model),
         view_connection_urls(model),
         view_secret_card(model, 1),
@@ -292,12 +370,37 @@ fn view_content(model: Model) -> Element(Msg) {
   }
 }
 
+fn view_copy_state(state: CopyState) -> Element(Msg) {
+  case state {
+    CopyIdle -> element.none()
+    CopySuccess(message) ->
+      div(
+        [
+          class("alert alert-success"),
+          attribute.role("status"),
+          attribute.aria_live("polite"),
+        ],
+        [span([class("alert-message")], [text(message)])],
+      )
+    CopyError(message) ->
+      div([class("alert alert-error"), attribute.role("alert")], [
+        span([class("alert-message")], [text(message)]),
+      ])
+  }
+}
+
 fn view_info(model: Model) -> Element(Msg) {
   div([class("card")], [
     h2([], [text("Tenant Information")]),
     div([class("detail-row")], [
       span([class("detail-label")], [text("ID")]),
-      span([class("detail-value")], [text(model.tenant_id)]),
+      div([class("detail-value-with-action")], [
+        code([class("detail-value")], [text(model.tenant_id)]),
+        button(
+          [class("btn btn-secondary btn-sm"), event.on_click(CopyTenantId)],
+          [text("Copy ID")],
+        ),
+      ]),
     ]),
     div([class("detail-row")], [
       span([class("detail-label")], [text("Name")]),
@@ -360,15 +463,20 @@ fn view_connection_urls(model: Model) -> Element(Msg) {
       html.pre([class("code-block")], [
         code([], [
           text(
-            "const client = await LeveeClient.create({\n"
+            "import { FloodgateClient } from \"@tylerbu/floodgate-client\";\n\n"
+            <> "const client = new FloodgateClient({\n"
             <> "  connection: {\n"
             <> "    httpUrl: \""
             <> origin
             <> "\",\n"
+            <> "    socketUrl: \""
+            <> socket_url
+            <> "\",\n"
             <> "    tenantId: \""
             <> model.tenant_id
             <> "\",\n"
-            <> "    authToken: sessionToken,\n"
+            <> "    tokenProvider,\n"
+            <> "    user,\n"
             <> "  }\n"
             <> "});",
           ),
@@ -414,6 +522,13 @@ fn view_secret_card(model: Model, slot: Int) -> Element(Msg) {
               }),
             ],
           ),
+          button(
+            [
+              class("btn btn-secondary btn-sm"),
+              event.on_click(CopySecret(slot)),
+            ],
+            [text("Copy")],
+          ),
         ])
     },
     view_regenerate_section(slot, slot_state),
@@ -423,29 +538,65 @@ fn view_secret_card(model: Model, slot: Int) -> Element(Msg) {
 fn view_slot_status(state: SecretSlotState) -> Element(Msg) {
   case state {
     SlotSuccess(message) ->
-      div([class("alert alert-success")], [
-        span([class("alert-message")], [text(message)]),
-      ])
+      div(
+        [
+          class("alert alert-success"),
+          attribute.role("status"),
+          attribute.aria_live("polite"),
+        ],
+        [
+          span([class("alert-message")], [text(message)]),
+        ],
+      )
     SlotError(message) ->
-      div([class("alert alert-error")], [
-        span([class("alert-icon")], [text("!")]),
-        span([class("alert-message")], [text(message)]),
-      ])
+      div(
+        [
+          class("alert alert-error"),
+          attribute.role("alert"),
+          attribute.aria_live("assertive"),
+        ],
+        [
+          span([class("alert-icon")], [text("!")]),
+          span([class("alert-message")], [text(message)]),
+        ],
+      )
     _ -> element.none()
   }
 }
 
 fn view_regenerate_section(slot: Int, state: SecretSlotState) -> Element(Msg) {
   case state {
-    SlotConfirming ->
+    SlotConfirming(confirmation) -> {
+      let matches = confirmation == "REGENERATE"
       div([class("regenerate-confirm")], [
         p([class("delete-warning")], [
-          text("This will invalidate tokens signed with this secret. Continue?"),
+          text(
+            "Rotating this secret immediately invalidates every token signed with it.",
+          ),
+        ]),
+        div([class("form-group")], [
+          html.label(
+            [attribute.for("regenerate-confirm-" <> int.to_string(slot))],
+            [text("Type REGENERATE to continue")],
+          ),
+          html.input([
+            type_("text"),
+            attribute.id("regenerate-confirm-" <> int.to_string(slot)),
+            attribute.value(confirmation),
+            attribute.autocomplete("off"),
+            event.on_input(fn(input) {
+              UpdateRegenerateConfirmation(slot, input)
+            }),
+          ]),
         ]),
         div([class("delete-actions")], [
           button(
-            [class("btn btn-danger"), event.on_click(ConfirmRegenerate(slot))],
-            [text("Regenerate")],
+            [
+              class("btn btn-danger"),
+              disabled(!matches),
+              event.on_click(ConfirmRegenerate(slot)),
+            ],
+            [text("Rotate Secret " <> int.to_string(slot))],
           ),
           button(
             [class("btn btn-secondary"), event.on_click(CancelRegenerate(slot))],
@@ -453,13 +604,17 @@ fn view_regenerate_section(slot: Int, state: SecretSlotState) -> Element(Msg) {
           ),
         ]),
       ])
+    }
 
-    SlotSubmitting -> p([class("loading")], [text("Regenerating...")])
+    SlotSubmitting ->
+      p([class("loading"), attribute.role("status")], [
+        text("Rotating secret..."),
+      ])
 
     _ ->
       button(
         [class("btn btn-primary"), event.on_click(RequestRegenerate(slot))],
-        [text("Regenerate Secret " <> int.to_string(slot))],
+        [text("Rotate Secret " <> int.to_string(slot))],
       )
   }
 }
@@ -477,12 +632,24 @@ fn view_delete_section(model: Model) -> Element(Msg) {
         let matches = confirmation == model.tenant_id
         div([class("delete-confirm")], [
           p([class("delete-warning")], [
-            text("This action cannot be undone. Type the tenant ID to confirm:"),
+            text(
+              "This removes the tenant registration and secrets. Stored documents are not deleted.",
+            ),
           ]),
-          p([class("delete-tenant-id")], [text(model.tenant_id)]),
+          div([class("delete-id-row")], [
+            p([class("delete-tenant-id")], [text(model.tenant_id)]),
+            button(
+              [class("btn btn-secondary btn-sm"), event.on_click(CopyTenantId)],
+              [text("Copy ID")],
+            ),
+          ]),
           div([class("form-group")], [
+            html.label([attribute.for("delete-confirmation")], [
+              text("Type the tenant ID to confirm"),
+            ]),
             html.input([
               type_("text"),
+              attribute.id("delete-confirmation"),
               attribute.placeholder("Type tenant ID to confirm"),
               attribute.value(confirmation),
               event.on_input(UpdateDeleteConfirmation),
@@ -506,11 +673,14 @@ fn view_delete_section(model: Model) -> Element(Msg) {
         ])
       }
 
-      DeleteSubmitting -> p([class("loading")], [text("Deleting tenant...")])
+      DeleteSubmitting ->
+        p([class("loading"), attribute.role("status")], [
+          text("Deleting tenant..."),
+        ])
 
       DeleteError(message) ->
         div([], [
-          div([class("alert alert-error")], [
+          div([class("alert alert-error"), attribute.role("alert")], [
             span([class("alert-icon")], [text("!")]),
             span([class("alert-message")], [text(message)]),
           ]),

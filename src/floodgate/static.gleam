@@ -6,7 +6,7 @@
 //// fork of its source. Any request that does not resolve to a real file under
 //// the configured directory (including the bare `/admin` path itself) falls
 //// back to `index.html`, so the SPA's own client-side router
-//// (`levee_admin/router.gleam` + `modem`) handles it — the same SPA-fallback
+//// (`floodgate_admin/router.gleam` + `modem`) handles it — the same SPA-fallback
 //// behaviour Phoenix's static plug plus `AdminController.index/2` produce
 //// together. See `floodgate/README.md`'s Admin UI section for how the
 //// directory gets populated.

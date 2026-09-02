@@ -1,4 +1,4 @@
-//// Document list page for a tenant.
+//// Floodgate document list for a tenant.
 
 import gleam/int
 import gleam/list
@@ -86,11 +86,13 @@ pub fn view(model: Model) -> Element(Msg) {
 fn view_content(model: Model) -> Element(Msg) {
   case model.state {
     Loading ->
-      div([class("loading-state")], [p([], [text("Loading documents...")])])
+      div([class("loading-state"), attribute.role("status")], [
+        p([], [text("Loading documents...")]),
+      ])
 
     Error(message) ->
       div([class("error-state")], [
-        div([class("alert alert-error")], [
+        div([class("alert alert-error"), attribute.role("alert")], [
           span([class("alert-icon")], [text("!")]),
           span([class("alert-message")], [text(message)]),
         ]),
@@ -138,7 +140,9 @@ fn view_content(model: Model) -> Element(Msg) {
                       span([class("doc-id mono")], [text(doc.id)]),
                       span([class("doc-meta")], [
                         span([class("doc-sn")], [
-                          text("SN: " <> int.to_string(doc.sequence_number)),
+                          text(
+                            "Sequence " <> int.to_string(doc.sequence_number),
+                          ),
                         ]),
                         span(
                           [
@@ -149,6 +153,12 @@ fn view_content(model: Model) -> Element(Msg) {
                           ],
                           [],
                         ),
+                        span([class("status-label")], [
+                          text(case doc.session_alive {
+                            True -> "Active"
+                            False -> "Inactive"
+                          }),
+                        ]),
                       ]),
                     ],
                   ),

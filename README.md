@@ -110,9 +110,9 @@ can be migrated to a freshly rotated secret without an outage.
 
 ### Admin UI and authentication
 
-Floodgate serves the same Gleam/Lustre admin SPA as Levee at `/admin`; it does
-not use Phoenix, Elixir, or Mix. The container builds both Floodgate's Erlang
-shipment and the SPA's JavaScript output with the Gleam compiler.
+Floodgate serves its Gleam/Lustre admin SPA at `/admin`; it does not use
+Phoenix, Elixir, or Mix. The container builds both Floodgate's Erlang shipment
+and the SPA's JavaScript output with the Gleam compiler.
 
 Create a GitHub OAuth App with this callback:
 
@@ -145,7 +145,8 @@ DELETE /api/tenants/:id                    Delete — {"message":"Tenant unregis
 POST   /api/tenants/:id/secrets/:slot      Regenerate slot 1 or 2 — {"secret":"<new value>"}
 ```
 
-These shapes match the Lustre frontend in `admin/src/levee_admin/api.gleam`.
+These shapes match the Lustre frontend in
+`admin/src/floodgate_admin/api.gleam`.
 
 ## Presence
 

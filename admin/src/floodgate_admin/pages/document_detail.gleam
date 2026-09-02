@@ -1,4 +1,4 @@
-//// Document detail page with tabbed view for metadata, deltas, summaries, refs, and git objects.
+//// Floodgate document detail with metadata, deltas, summaries, refs, and git objects.
 
 import gleam/int
 import gleam/list
@@ -14,7 +14,7 @@ import lustre/element/html.{
 }
 import lustre/event
 
-import levee_admin/api
+import floodgate_admin/api
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Model
@@ -281,7 +281,9 @@ pub fn view(model: Model) -> Element(Msg) {
 fn view_page_content(model: Model) -> Element(Msg) {
   case model.state {
     Loading ->
-      div([class("loading-state")], [p([], [text("Loading document...")])])
+      div([class("loading-state"), attribute.role("status")], [
+        p([], [text("Loading document...")]),
+      ])
 
     NotFound ->
       div([class("empty-state card")], [
@@ -290,7 +292,7 @@ fn view_page_content(model: Model) -> Element(Msg) {
 
     Error(message) ->
       div([class("error-state")], [
-        div([class("alert alert-error")], [
+        div([class("alert alert-error"), attribute.role("alert")], [
           span([class("alert-icon")], [text("!")]),
           span([class("alert-message")], [text(message)]),
         ]),
@@ -305,13 +307,20 @@ fn view_page_content(model: Model) -> Element(Msg) {
 }
 
 fn view_tabs(model: Model) -> Element(Msg) {
-  div([class("tab-bar")], [
-    tab_button("Metadata", MetadataTab, model.active_tab),
-    tab_button("Op Stream", OpStreamTab, model.active_tab),
-    tab_button("Summaries", SummariesTab, model.active_tab),
-    tab_button("Refs", RefsTab, model.active_tab),
-    tab_button("Git Objects", GitTab, model.active_tab),
-  ])
+  div(
+    [
+      class("tab-bar"),
+      attribute.role("tablist"),
+      attribute.aria_label("Document views"),
+    ],
+    [
+      tab_button("Metadata", MetadataTab, model.active_tab),
+      tab_button("Op Stream", OpStreamTab, model.active_tab),
+      tab_button("Summaries", SummariesTab, model.active_tab),
+      tab_button("Refs", RefsTab, model.active_tab),
+      tab_button("Git Objects", GitTab, model.active_tab),
+    ],
+  )
 }
 
 fn tab_button(label: String, tab: Tab, active: Tab) -> Element(Msg) {
@@ -321,6 +330,8 @@ fn tab_button(label: String, tab: Tab, active: Tab) -> Element(Msg) {
         True -> "tab-btn tab-btn-active"
         False -> "tab-btn"
       }),
+      attribute.role("tab"),
+      attribute.aria_selected(tab == active),
       event.on_click(SwitchTab(tab)),
     ],
     [text(label)],
@@ -354,7 +365,7 @@ fn view_metadata(model: Model) -> Element(Msg) {
           span([class("detail-value mono")], [text(doc.tenant_id)]),
         ]),
         div([class("detail-row")], [
-          span([class("detail-label")], [text("Sequence #")]),
+          span([class("detail-label")], [text("Sequence number")]),
           span([class("detail-value")], [
             text(int.to_string(doc.sequence_number)),
           ]),
@@ -389,11 +400,11 @@ fn view_session_info(session: Option(api.SessionInfo)) -> Element(Msg) {
       div([class("session-info")], [
         h2([], [text("Live Session")]),
         div([class("detail-row")], [
-          span([class("detail-label")], [text("Current SN")]),
+          span([class("detail-label")], [text("Current sequence")]),
           span([class("detail-value")], [text(int.to_string(s.current_sn))]),
         ]),
         div([class("detail-row")], [
-          span([class("detail-label")], [text("Current MSN")]),
+          span([class("detail-label")], [text("Minimum sequence")]),
           span([class("detail-value")], [text(int.to_string(s.current_msn))]),
         ]),
         div([class("detail-row")], [
@@ -420,7 +431,7 @@ fn view_op_stream(model: Model) -> Element(Msg) {
     case model.deltas {
       [] ->
         case model.deltas_loading {
-          True -> p([], [text("Loading ops...")])
+          True -> p([attribute.role("status")], [text("Loading operations...")])
           False -> p([class("text-muted")], [text("No ops yet.")])
         }
       deltas ->
@@ -433,7 +444,10 @@ fn view_op_stream(model: Model) -> Element(Msg) {
             True ->
               div([class("load-more")], [
                 case model.deltas_loading {
-                  True -> p([], [text("Loading...")])
+                  True ->
+                    p([attribute.role("status")], [
+                      text("Loading more operations..."),
+                    ])
                   False ->
                     button(
                       [
@@ -489,7 +503,7 @@ fn view_summaries(model: Model) -> Element(Msg) {
     case model.summaries {
       [] ->
         case model.summaries_loading {
-          True -> p([], [text("Loading summaries...")])
+          True -> p([attribute.role("status")], [text("Loading summaries...")])
           False -> p([class("text-muted")], [text("No summaries.")])
         }
       summaries ->
@@ -526,7 +540,7 @@ fn view_sha_link_tree(sha: Option(String)) -> Element(Msg) {
   case sha {
     None -> text("-")
     Some(s) ->
-      a([class("sha-link mono"), href("#"), event.on_click(ViewTree(s))], [
+      button([class("sha-link sha-button mono"), event.on_click(ViewTree(s))], [
         text(short_sha(s)),
       ])
   }
@@ -536,9 +550,12 @@ fn view_sha_link_commit(sha: Option(String)) -> Element(Msg) {
   case sha {
     None -> text("-")
     Some(s) ->
-      a([class("sha-link mono"), href("#"), event.on_click(ViewCommit(s))], [
-        text(short_sha(s)),
-      ])
+      button(
+        [class("sha-link sha-button mono"), event.on_click(ViewCommit(s))],
+        [
+          text(short_sha(s)),
+        ],
+      )
   }
 }
 
@@ -557,7 +574,7 @@ fn view_refs(model: Model) -> Element(Msg) {
     case model.refs {
       [] ->
         case model.refs_loading {
-          True -> p([], [text("Loading refs...")])
+          True -> p([attribute.role("status")], [text("Loading refs...")])
           False -> p([class("text-muted")], [text("No refs.")])
         }
       refs ->
@@ -574,10 +591,9 @@ fn view_refs(model: Model) -> Element(Msg) {
               tr([], [
                 td([class("mono")], [text(r.ref)]),
                 td([], [
-                  a(
+                  button(
                     [
-                      class("sha-link mono"),
-                      href("#"),
+                      class("sha-link sha-button mono"),
                       event.on_click(ViewCommit(r.sha)),
                     ],
                     [text(short_sha(r.sha))],
@@ -608,8 +624,11 @@ fn view_git(model: Model) -> Element(Msg) {
           case blob {
             None ->
               case model.git_loading {
-                True -> p([], [text("Loading blob...")])
-                False -> p([], [text("Failed to load blob.")])
+                True -> p([attribute.role("status")], [text("Loading blob...")])
+                False ->
+                  p([attribute.role("alert")], [
+                    text("Could not load this blob. Try the link again."),
+                  ])
               }
             Some(b) ->
               div([class("git-object")], [
@@ -636,8 +655,11 @@ fn view_git(model: Model) -> Element(Msg) {
           case tree {
             None ->
               case model.git_loading {
-                True -> p([], [text("Loading tree...")])
-                False -> p([], [text("Failed to load tree.")])
+                True -> p([attribute.role("status")], [text("Loading tree...")])
+                False ->
+                  p([attribute.role("alert")], [
+                    text("Could not load this tree. Try the link again."),
+                  ])
               }
             Some(t) ->
               div([class("git-object")], [
@@ -663,19 +685,17 @@ fn view_git(model: Model) -> Element(Msg) {
                         td([], [
                           case entry.entry_type {
                             "tree" ->
-                              a(
+                              button(
                                 [
-                                  class("sha-link mono"),
-                                  href("#"),
+                                  class("sha-link sha-button mono"),
                                   event.on_click(ViewTree(entry.sha)),
                                 ],
                                 [text(short_sha(entry.sha))],
                               )
                             "blob" ->
-                              a(
+                              button(
                                 [
-                                  class("sha-link mono"),
-                                  href("#"),
+                                  class("sha-link sha-button mono"),
                                   event.on_click(ViewBlob(entry.sha)),
                                 ],
                                 [text(short_sha(entry.sha))],
@@ -701,8 +721,12 @@ fn view_git(model: Model) -> Element(Msg) {
           case commit {
             None ->
               case model.git_loading {
-                True -> p([], [text("Loading commit...")])
-                False -> p([], [text("Failed to load commit.")])
+                True ->
+                  p([attribute.role("status")], [text("Loading commit...")])
+                False ->
+                  p([attribute.role("alert")], [
+                    text("Could not load this commit. Try the link again."),
+                  ])
               }
             Some(c) ->
               div([class("git-object")], [
@@ -712,10 +736,9 @@ fn view_git(model: Model) -> Element(Msg) {
                 ]),
                 div([class("detail-row")], [
                   span([class("detail-label")], [text("Tree")]),
-                  a(
+                  button(
                     [
-                      class("sha-link mono"),
-                      href("#"),
+                      class("sha-link sha-button mono"),
                       event.on_click(ViewTree(c.tree)),
                     ],
                     [text(short_sha(c.tree))],
@@ -727,10 +750,9 @@ fn view_git(model: Model) -> Element(Msg) {
                     [] -> [text("(none)")]
                     parents ->
                       list.map(parents, fn(parent) {
-                        a(
+                        button(
                           [
-                            class("sha-link mono"),
-                            href("#"),
+                            class("sha-link sha-button mono"),
                             event.on_click(ViewCommit(parent)),
                           ],
                           [text(short_sha(parent) <> " ")],

@@ -1,4 +1,4 @@
-name = "levee_admin"
+name = "floodgate_admin"
 version = "0.1.0"
 target = "javascript"
 description = "Admin UI for Floodgate tenant management"
