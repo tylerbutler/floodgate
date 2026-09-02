@@ -88,6 +88,42 @@ jobs:
           test ! -f /tmp/floodgate.pid || kill "$(cat /tmp/floodgate.pid)" || true
           cat /tmp/floodgate.log || true
 
+  fluid-canonical:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: microsoft/FluidFramework
+          ref: main
+          path: fluid-framework
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          gleam-version: "1.18.1"
+          rebar3-version: "3"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.15.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.2
+          cache: pnpm
+          cache-dependency-path: |
+            fluid-framework/pnpm-lock.yaml
+            fluid-framework/packages/test/test-version-utils/compat-workspaces/full/pnpm-lock.yaml
+      - name: Run Fluid canonical suite
+        run: scripts/run-fluid-canonical-suite.sh
+        env:
+          FLUID_REPO: ${{ github.workspace }}/fluid-framework
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fluid-canonical-logs
+          if-no-files-found: warn
+          path: artifacts/fluid-canonical
+
   docker:
     runs-on: ubuntu-latest
     steps:

@@ -236,10 +236,13 @@ just build     # or: gleam build --target erlang
 just test      # or: gleam test
 just format
 just run
+just test-fluid-canonical ../FluidFramework
 ```
 
-Conformance suites live in the Levee repository's client workspace and run
-against a live server:
+The Fluid canonical gate installs a filtered upstream Fluid workspace, builds
+`@fluid-private/test-end-to-end-tests`, and runs Fluid's unmodified real-service
+suite with its custom Routerlicious endpoint configured for a local,
+memory-backed Floodgate instance.
 
 ```sh
 just test-floodgate-dual-mode          # both wire protocols, one process

@@ -116,6 +116,12 @@ test-dual-mode:
     pnpm test:routerlicious
     pnpm test:phoenix
 
+# Run Fluid's canonical Routerlicious suite against one local Floodgate
+# instance. Pass a sibling or absolute FluidFramework checkout path when the
+# default ../FluidFramework is not correct.
+test-fluid-canonical fluid_repo="../FluidFramework":
+    FLUID_REPO={{fluid_repo}} scripts/run-fluid-canonical-suite.sh
+
 test-example:
     just _test-example floodgate-example
 
