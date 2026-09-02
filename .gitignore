@@ -11,3 +11,7 @@ erl_crash.dump
 
 # Browser-automation residue (playwright MCP)
 .playwright-mcp/
+
+
+# APM dependencies
+apm_modules/
