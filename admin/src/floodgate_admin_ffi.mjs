@@ -19,6 +19,21 @@ export function get_origin() {
   return window.location.origin;
 }
 
+export function set_document_title(title) {
+  document.title = title;
+}
+
+// Move keyboard focus to an element after the next paint, so the target exists
+// once Lustre has committed the new view (used by the document tab pattern).
+export function focus_element(id) {
+  requestAnimationFrame(() => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.focus();
+    }
+  });
+}
+
 export function get_current_path() {
   return window.location.pathname;
 }

@@ -64,6 +64,8 @@ pub type AuthConfig {
     token_mint_user_id: String,
     token_mint_user_name: String,
     admin_key: String,
+    /// Explicit development-only bypass for a loopback-bound admin site.
+    local_admin_bypass: Bool,
     /// GitHub OAuth App credentials/callback for the admin session — see
     /// `floodgate/oauth.build_config` for how (and when) these are validated.
     github: oauth.GitHubConfig,
@@ -359,6 +361,7 @@ pub fn serve_with_backend(
           getenv("FLOODGATE_TOKEN_MINT_USER_ID", "floodgate-token-mint"),
           getenv("FLOODGATE_TOKEN_MINT_USER_NAME", "Floodgate Token Mint"),
           getenv("FLOODGATE_ADMIN_KEY", ""),
+          getenv("FLOODGATE_ADMIN_LOCAL_BYPASS", "") == "true",
           oauth.GitHubConfig(
             client_id: getenv("FLOODGATE_GITHUB_CLIENT_ID", ""),
             client_secret: getenv("FLOODGATE_GITHUB_CLIENT_SECRET", ""),
@@ -443,15 +446,19 @@ fn rest(
         Ok(user) -> me_response(user)
       }
     http.Post, ["api", "auth", "logout"] ->
-      case session_token(req) {
-        Error(_) -> session_unauthorized()
-        Ok(token) ->
-          case store.get_admin_session(config.storage, token) {
+      case config.local_admin_bypass {
+        True -> logout_response(public_url)
+        False ->
+          case session_token(req) {
             Error(_) -> session_unauthorized()
-            Ok(_) -> {
-              store.delete_admin_session(config.storage, token)
-              logout_response(public_url)
-            }
+            Ok(token) ->
+              case store.get_admin_session(config.storage, token) {
+                Error(_) -> session_unauthorized()
+                Ok(_) -> {
+                  store.delete_admin_session(config.storage, token)
+                  logout_response(public_url)
+                }
+              }
           }
       }
     http.Post, ["api", "tenants", tenant, "token-mint"] ->
@@ -1287,7 +1294,8 @@ fn authorize_admin(
   config: AuthConfig,
 ) -> Result(Nil, Nil) {
   case
-    admin_credentials_authorized(
+    admin_access_authorized(
+      config.local_admin_bypass,
       request.get_header(req, "authorization"),
       list.key_find(request.get_cookies(req), admin_session_cookie_name),
       config.admin_key,
@@ -1298,6 +1306,24 @@ fn authorize_admin(
     True -> Ok(Nil)
     False -> Error(Nil)
   }
+}
+
+pub fn admin_access_authorized(
+  local_admin_bypass: Bool,
+  authorization: Result(String, Nil),
+  session_cookie: Result(String, Nil),
+  admin_key: String,
+  storage: store.Backend,
+  now: Int,
+) -> Bool {
+  local_admin_bypass
+  || admin_credentials_authorized(
+    authorization,
+    session_cookie,
+    admin_key,
+    storage,
+    now,
+  )
 }
 
 /// Authorize either the automation key, a bearer admin session, or the
@@ -1403,13 +1429,26 @@ pub fn session_user(
   req: request.Request(mist.Connection),
   config: AuthConfig,
 ) -> Result(admin_auth.AdminUser, Nil) {
-  use token <- result.try(session_token(req))
-  use session <- result.try(
-    store.get_admin_session(config.storage, token) |> result.replace_error(Nil),
-  )
-  case admin_auth.session_valid(session, now_seconds()) {
-    False -> Error(Nil)
-    True -> store.get_admin_user(config.storage, session.user_id)
+  case config.local_admin_bypass {
+    True ->
+      Ok(admin_auth.new_admin_user(
+        "local",
+        "local",
+        "Local Admin",
+        "local@localhost",
+        0,
+      ))
+    False -> {
+      use token <- result.try(session_token(req))
+      use session <- result.try(
+        store.get_admin_session(config.storage, token)
+        |> result.replace_error(Nil),
+      )
+      case admin_auth.session_valid(session, now_seconds()) {
+        False -> Error(Nil)
+        True -> store.get_admin_user(config.storage, session.user_id)
+      }
+    }
   }
 }
 

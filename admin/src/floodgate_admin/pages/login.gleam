@@ -19,6 +19,9 @@ pub type Model {
     password: String,
     error: Option(String),
     loading: Bool,
+    /// True once the operator chose GitHub sign-in and a full-page redirect to
+    /// the OAuth provider is under way.
+    github_redirecting: Bool,
     /// Set when form is submitted; parent should check and make API call
     pending_submit: Option(SubmitData),
   )
@@ -30,8 +33,15 @@ pub fn init() -> Model {
     password: "",
     error: None,
     loading: False,
+    github_redirecting: False,
     pending_submit: None,
   )
+}
+
+/// Reflect that a GitHub OAuth redirect is starting, so the UI can show
+/// progress before the browser leaves the page.
+pub fn start_github_redirect(model: Model) -> Model {
+  Model(..model, github_redirecting: True, error: None)
 }
 
 /// Clear the pending submit and set loading state
@@ -79,9 +89,14 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
 
     Submit -> {
-      // Set pending_submit so parent can make API call
-      let data = SubmitData(email: model.email, password: model.password)
-      #(Model(..model, pending_submit: Some(data)), effect.none())
+      // Ignore repeat submits while a sign-in is already in flight.
+      case model.loading {
+        True -> #(model, effect.none())
+        False -> {
+          let data = SubmitData(email: model.email, password: model.password)
+          #(Model(..model, pending_submit: Some(data)), effect.none())
+        }
+      }
     }
 
     GitHubLogin -> {
@@ -129,7 +144,7 @@ pub fn view(model: Model, password_auth: Bool) -> Element(Msg) {
               [
                 type_("submit"),
                 class("btn btn-primary"),
-                disabled(model.loading),
+                disabled(model.loading || model.github_redirecting),
               ],
               [
                 case model.loading {
@@ -150,10 +165,27 @@ pub fn view(model: Model, password_auth: Bool) -> Element(Msg) {
           type_("button"),
           class("btn btn-github"),
           event.on_click(GitHubLogin),
-          disabled(model.loading),
+          disabled(model.loading || model.github_redirecting),
         ],
-        [text("Sign in with GitHub")],
+        [
+          case model.github_redirecting {
+            True -> text("Redirecting to GitHub…")
+            False -> text("Sign in with GitHub")
+          },
+        ],
       ),
+      case model.github_redirecting {
+        True ->
+          p(
+            [
+              class("auth-footer"),
+              attribute.role("status"),
+              attribute.aria_live("polite"),
+            ],
+            [text("Taking you to GitHub to sign in…")],
+          )
+        False -> element.none()
+      },
       case password_auth {
         True ->
           p([class("auth-footer")], [
@@ -170,7 +202,7 @@ fn view_error(error: Option(String)) -> Element(Msg) {
   case error {
     Some(message) ->
       div([class("alert alert-error"), attribute.role("alert")], [
-        span([class("alert-icon")], [text("!")]),
+        span([class("alert-icon"), attribute.aria_hidden(True)], [text("!")]),
         span([class("alert-message")], [text(message)]),
       ])
     None -> element.none()

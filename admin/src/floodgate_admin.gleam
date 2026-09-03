@@ -32,6 +32,9 @@ fn load_token() -> Option(String)
 @external(javascript, "./floodgate_admin_ffi.mjs", "clear_token")
 fn clear_token() -> Nil
 
+@external(javascript, "./floodgate_admin_ffi.mjs", "set_document_title")
+fn set_document_title(title: String) -> Nil
+
 import floodgate_admin/api
 import floodgate_admin/pages/dashboard
 import floodgate_admin/pages/document_detail
@@ -62,6 +65,9 @@ pub type Model {
     document_list: document_list.Model,
     document_detail: document_detail.Model,
     flash_message: Option(String),
+    /// Route the operator was on when a protected call failed with 401/403, so
+    /// re-authentication can return them there instead of always the dashboard.
+    return_to: Option(Route),
   )
 }
 
@@ -87,18 +93,17 @@ fn init(_flags) -> #(Model, Effect(Msg)) {
 
   // Parse the initial route from the current URL path,
   // applying auth guards for protected routes
-  let initial_route = case uri.parse(get_current_path()) {
+  let requested_route = case uri.parse(get_current_path()) {
     Ok(parsed_uri) -> router.parse(parsed_uri)
     Error(_) -> router.Login
   }
-  let initial_route = case session_token, initial_route {
-    None, router.Dashboard -> router.Login
-    None, router.Tenants -> router.Login
-    None, router.TenantNew -> router.Login
-    None, router.TenantDetail(_) -> router.Login
-    None, router.DocumentList(_) -> router.Login
-    None, router.DocumentDetail(_, _) -> router.Login
-    _, route -> route
+  let return_to = case is_protected_route(requested_route) {
+    True -> Some(requested_route)
+    False -> None
+  }
+  let initial_route = case session_token, is_protected_route(requested_route) {
+    None, True -> router.Login
+    _, _ -> requested_route
   }
 
   let model =
@@ -116,6 +121,7 @@ fn init(_flags) -> #(Model, Effect(Msg)) {
       document_list: document_list.init(""),
       document_detail: document_detail.init("", ""),
       flash_message: None,
+      return_to: return_to,
     )
 
   #(
@@ -124,6 +130,7 @@ fn init(_flags) -> #(Model, Effect(Msg)) {
       modem.init(on_url_change),
       auth_effect,
       api.get_auth_config(AuthConfigResponse),
+      title_effect(initial_route),
     ]),
   )
 }
@@ -175,6 +182,165 @@ fn on_url_change(uri: Uri) -> Msg {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Route helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn is_protected_route(route: Route) -> Bool {
+  case route {
+    router.Dashboard
+    | router.Tenants
+    | router.TenantNew
+    | router.TenantDetail(_)
+    | router.DocumentList(_)
+    | router.DocumentDetail(_, _) -> True
+    router.Login | router.Register | router.NotFound -> False
+  }
+}
+
+/// Data to fetch when a protected route becomes active. Shared by URL changes
+/// and post-authentication navigation so both paths load identically.
+fn load_for_route(route: Route, token: String) -> Effect(Msg) {
+  case route {
+    router.Dashboard -> api.list_tenants(token, DashboardTenantsResponse)
+    router.Tenants -> api.list_tenants(token, TenantsResponse)
+    router.TenantDetail(id) ->
+      effect.batch([
+        api.get_tenant(token, id, GetTenantResponse),
+        api.list_documents(token, id, TenantDocumentCountResponse),
+      ])
+    router.DocumentList(tid) ->
+      api.list_documents(token, tid, DocumentListResponse)
+    router.DocumentDetail(tid, did) ->
+      effect.batch([
+        api.get_document(token, tid, did, DocumentDetailResponse),
+        api.get_document_deltas(
+          token,
+          tid,
+          did,
+          -1,
+          document_detail.page_size,
+          DocumentDeltasResponse,
+        ),
+        api.get_document_summaries(token, tid, did, DocumentSummariesResponse),
+        api.get_document_refs(token, tid, DocumentRefsResponse),
+      ])
+    _ -> effect.none()
+  }
+}
+
+/// Reset the page sub-model a route owns to its initial state on entry.
+fn reset_page_for_route(model: Model, route: Route) -> Model {
+  case route {
+    router.Tenants -> Model(..model, route:, tenants: tenants.init())
+    router.TenantNew -> Model(..model, route:, tenant_new: tenant_new.init())
+    router.TenantDetail(id) ->
+      Model(..model, route:, tenant_detail: tenant_detail.init(id))
+    router.Dashboard ->
+      Model(
+        ..model,
+        route:,
+        dashboard: dashboard.start_loading(dashboard.init()),
+      )
+    router.DocumentList(tid) ->
+      Model(..model, route:, document_list: document_list.init(tid))
+    router.DocumentDetail(tid, did) ->
+      Model(..model, route:, document_detail: document_detail.init(tid, did))
+    _ -> Model(..model, route:)
+  }
+}
+
+/// A per-route document title, so browser history and assistive technology get
+/// a meaningful, distinct label for each SPA view.
+fn page_title(route: Route) -> String {
+  case route {
+    router.Login -> "Sign in · Floodgate Admin"
+    router.Register -> "Create account · Floodgate Admin"
+    router.Dashboard -> "Dashboard · Floodgate Admin"
+    router.Tenants -> "Tenants · Floodgate Admin"
+    router.TenantNew -> "New tenant · Floodgate Admin"
+    router.TenantDetail(id) -> "Tenant " <> id <> " · Floodgate Admin"
+    router.DocumentList(_) -> "Documents · Floodgate Admin"
+    router.DocumentDetail(_, did) -> "Document " <> did <> " · Floodgate Admin"
+    router.NotFound -> "Not found · Floodgate Admin"
+  }
+}
+
+fn title_effect(route: Route) -> Effect(Msg) {
+  effect.from(fn(_dispatch) { set_document_title(page_title(route)) })
+}
+
+/// End the session locally and return to sign-in. Clears the bearer token,
+/// records the current route so re-authentication can come back to it, and
+/// shows a session-expired message instead of a Retry that would 401 again.
+fn expire_session(model: Model) -> #(Model, Effect(Msg)) {
+  clear_token()
+  let return_to = case model.route {
+    router.Login | router.Register -> model.return_to
+    other -> Some(other)
+  }
+  let login_model =
+    login.set_error(
+      model.login,
+      "Your session expired. Sign in again to continue.",
+    )
+  #(
+    Model(
+      ..model,
+      user: None,
+      session_token: None,
+      route: router.Login,
+      login: login_model,
+      return_to: return_to,
+    ),
+    effect.batch([
+      modem.push("/admin/login", None, None),
+      title_effect(router.Login),
+    ]),
+  )
+}
+
+/// Route a failed protected call: expire the session on 401/403, otherwise run
+/// the page-specific recovery so the operator keeps a useful, accurate message.
+fn handle_error(
+  model: Model,
+  error: api.ApiError,
+  recover: fn() -> #(Model, Effect(Msg)),
+) -> #(Model, Effect(Msg)) {
+  case api.is_session_expired(error) {
+    True -> expire_session(model)
+    False -> recover()
+  }
+}
+
+/// Complete sign-in: adopt the session, then navigate to the intended return
+/// route (or the dashboard) and load it through the shared route dispatch.
+fn enter_session(
+  model: Model,
+  user: User,
+  token: String,
+) -> #(Model, Effect(Msg)) {
+  let target = option.unwrap(model.return_to, router.Dashboard)
+  let base =
+    Model(
+      ..model,
+      user: Some(user),
+      session_token: Some(token),
+      login: login.init(),
+      register: register.init(),
+      return_to: None,
+    )
+  let model = reset_page_for_route(base, target)
+  #(
+    model,
+    effect.batch([
+      load_for_route(target, token),
+      modem.push(router.to_path(target), None, None),
+      title_effect(target),
+    ]),
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Update
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -193,89 +359,31 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         _, _, r -> r
       }
       let route_changed = route != model.route
+      let title = title_effect(route)
 
-      let effect = case route_changed {
-        False -> effect.none()
-        True ->
-          case route, model.session_token {
-            router.Dashboard, Some(token) ->
-              api.list_tenants(token, DashboardTenantsResponse)
-            router.Tenants, Some(token) ->
-              api.list_tenants(token, TenantsResponse)
-            router.TenantDetail(id), Some(token) ->
-              effect.batch([
-                api.get_tenant(token, id, GetTenantResponse),
-                api.list_documents(token, id, TenantDocumentCountResponse),
-              ])
-            router.DocumentList(tid), Some(token) ->
-              api.list_documents(token, tid, DocumentListResponse)
-            router.DocumentDetail(tid, did), Some(token) ->
-              effect.batch([
-                api.get_document(token, tid, did, DocumentDetailResponse),
-                api.get_document_deltas(
-                  token,
-                  tid,
-                  did,
-                  -1,
-                  100,
-                  DocumentDeltasResponse,
-                ),
-                api.get_document_summaries(
-                  token,
-                  tid,
-                  did,
-                  DocumentSummariesResponse,
-                ),
-                api.get_document_refs(token, tid, DocumentRefsResponse),
-              ])
-            _, _ -> effect.none()
+      case route_changed {
+        False -> #(model, title)
+        True -> {
+          let load = case model.session_token {
+            Some(token) -> load_for_route(route, token)
+            None -> effect.none()
           }
+          let model = reset_page_for_route(model, route)
+          #(model, effect.batch([load, title]))
+        }
       }
-
-      let model = case route_changed {
-        False -> model
-        True ->
-          case route {
-            router.Tenants ->
-              Model(..model, route: route, tenants: tenants.init())
-            router.TenantNew ->
-              Model(..model, route: route, tenant_new: tenant_new.init())
-            router.TenantDetail(id) ->
-              Model(
-                ..model,
-                route: route,
-                tenant_detail: tenant_detail.init(id),
-              )
-            router.Dashboard ->
-              Model(
-                ..model,
-                route: route,
-                dashboard: dashboard.start_loading(dashboard.init()),
-              )
-            router.DocumentList(tid) ->
-              Model(
-                ..model,
-                route: route,
-                document_list: document_list.init(tid),
-              )
-            router.DocumentDetail(tid, did) ->
-              Model(
-                ..model,
-                route: route,
-                document_detail: document_detail.init(tid, did),
-              )
-            _ -> Model(..model, route: route)
-          }
-      }
-
-      #(model, effect)
     }
 
     DismissFlash -> #(Model(..model, flash_message: None), effect.none())
 
     LoginMsg(login.GitHubLogin) -> {
-      // Redirect to GitHub OAuth — full page navigation
-      #(model, effect.from(fn(_dispatch) { do_navigate_to("/auth/github") }))
+      // Redirect to GitHub OAuth — full page navigation. Show progress first so
+      // the click is acknowledged before the browser leaves the page.
+      let login_model = login.start_github_redirect(model.login)
+      #(
+        Model(..model, login: login_model),
+        effect.from(fn(_dispatch) { do_navigate_to("/auth/github") }),
+      )
     }
 
     LoginMsg(login_msg) -> {
@@ -414,23 +522,15 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           email: response.user.email,
           display_name: response.user.display_name,
         )
-      let model =
-        Model(
-          ..model,
-          user: Some(user),
-          session_token: Some(response.token),
-          route: router.Dashboard,
-          login: login.init(),
-        )
-      let nav_effect = modem.push("/admin/dashboard", None, None)
-      let load_effect =
-        api.list_tenants(response.token, DashboardTenantsResponse)
-      #(model, effect.batch([nav_effect, load_effect]))
+      enter_session(model, user, response.token)
     }
 
     LoginResponse(Error(_error)) -> {
       let login_model =
-        login.set_error(model.login, "Invalid email or password")
+        login.set_error(
+          model.login,
+          "That email and password didn't match. Try again.",
+        )
       #(Model(..model, login: login_model), effect.none())
     }
 
@@ -442,23 +542,16 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           email: response.user.email,
           display_name: response.user.display_name,
         )
-      let model =
-        Model(
-          ..model,
-          user: Some(user),
-          session_token: Some(response.token),
-          route: router.Dashboard,
-          register: register.init(),
-        )
-      let nav_effect = modem.push("/admin/dashboard", None, None)
-      let load_effect =
-        api.list_tenants(response.token, DashboardTenantsResponse)
-      #(model, effect.batch([nav_effect, load_effect]))
+      enter_session(model, user, response.token)
     }
 
-    RegisterResponse(Error(_error)) -> {
-      let register_model =
-        register.set_error(model.register, "Registration failed")
+    RegisterResponse(Error(error)) -> {
+      let message = case error {
+        api.ServerError(409, _) ->
+          "An account with that email already exists. Sign in instead."
+        _ -> api.error_message(error)
+      }
+      let register_model = register.set_error(model.register, message)
       #(Model(..model, register: register_model), effect.none())
     }
 
@@ -470,22 +563,16 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           display_name: api_user.display_name,
         )
       let token = option.unwrap(model.session_token, "")
-      let model =
-        Model(
-          ..model,
-          user: Some(user),
-          session_token: Some(token),
-          route: router.Dashboard,
-        )
-      let nav_effect = modem.push("/admin/dashboard", None, None)
-      let load_effect = api.list_tenants(token, DashboardTenantsResponse)
-      #(model, effect.batch([nav_effect, load_effect]))
+      enter_session(model, user, token)
     }
 
-    MeResponse(Error(_error)) -> {
-      // Token was invalid — clear it and stay on login
-      clear_token()
-      #(Model(..model, session_token: None), effect.none())
+    MeResponse(Error(error)) -> {
+      // Only a genuine auth failure means the token is bad. A transient network
+      // or server error should not discard a token that may still be valid.
+      case api.is_session_expired(error) {
+        True -> expire_session(model)
+        False -> #(model, effect.none())
+      }
     }
 
     AuthConfigResponse(Ok(config)) -> {
@@ -529,12 +616,13 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(Model(..model, tenants: tenants_model), effect.none())
     }
 
-    TenantsResponse(Error(_error)) -> {
+    TenantsResponse(Error(error)) -> {
+      use <- handle_error(model, error)
       let tenants_model =
         tenants.update(
           model.tenants,
           tenants.LoadError(
-            "Could not load tenants. Check your connection and try again.",
+            "Couldn't load tenants. " <> api.error_message(error),
           ),
         ).0
       #(Model(..model, tenants: tenants_model), effect.none())
@@ -553,12 +641,13 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(Model(..model, dashboard: dashboard_model), effect.none())
     }
 
-    DashboardTenantsResponse(Error(_error)) -> {
+    DashboardTenantsResponse(Error(error)) -> {
+      use <- handle_error(model, error)
       let dashboard_model =
         dashboard.update(
           model.dashboard,
           dashboard.LoadError(
-            "Could not load tenants. Check your connection and try again.",
+            "Couldn't load tenants. " <> api.error_message(error),
           ),
         ).0
       #(Model(..model, dashboard: dashboard_model), effect.none())
@@ -588,11 +677,12 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       )
     }
 
-    CreateTenantResponse(Error(_error)) -> {
+    CreateTenantResponse(Error(error)) -> {
+      use <- handle_error(model, error)
       let tenant_new_model =
         tenant_new.set_error(
           model.tenant_new,
-          "Could not create the tenant. Check your connection and try again.",
+          "Couldn't create the tenant. " <> api.error_message(error),
         )
       #(Model(..model, tenant_new: tenant_new_model), effect.none())
     }
@@ -613,11 +703,12 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(Model(..model, tenant_detail: detail_model), effect.none())
     }
 
-    GetTenantResponse(Error(_error)) -> {
+    GetTenantResponse(Error(error)) -> {
+      use <- handle_error(model, error)
       let detail_model =
         tenant_detail.set_error(
           model.tenant_detail,
-          "Could not load this tenant. Check your connection and try again.",
+          "Couldn't load this tenant. " <> api.error_message(error),
         )
       #(Model(..model, tenant_detail: detail_model), effect.none())
     }
@@ -632,12 +723,14 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(Model(..model, tenant_detail: detail_model), effect.none())
     }
 
-    RegenerateSecretResponse(slot, Error(_error)) -> {
+    RegenerateSecretResponse(slot, Error(error)) -> {
+      use <- handle_error(model, error)
       let detail_model =
         tenant_detail.set_regenerate_error(
           model.tenant_detail,
           slot,
-          "Could not rotate this secret. Existing tokens are still valid; try again.",
+          "Couldn't rotate this secret. Existing tokens still work. "
+            <> api.error_message(error),
         )
       #(Model(..model, tenant_detail: detail_model), effect.none())
     }
@@ -653,11 +746,13 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       )
     }
 
-    DeleteTenantResponse(Error(_error)) -> {
+    DeleteTenantResponse(Error(error)) -> {
+      use <- handle_error(model, error)
       let detail_model =
         tenant_detail.set_delete_error(
           model.tenant_detail,
-          "Could not delete this tenant. Nothing was changed; try again.",
+          "Couldn't delete this tenant. Nothing was changed. "
+            <> api.error_message(error),
         )
       #(Model(..model, tenant_detail: detail_model), effect.none())
     }
@@ -700,33 +795,39 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           let tid = doc_detail_model.tenant_id
           let did = doc_detail_model.document_id
 
-          // Check for pending deltas load
+          // Only the idle-to-loading transition starts a request. Other page
+          // messages cannot duplicate a request that is already in flight.
           let deltas_effect = case
-            document_detail.get_pending_deltas_load(doc_detail_model)
+            model.document_detail.deltas_loading,
+            doc_detail_model.deltas_loading
           {
-            True ->
+            False, True ->
               api.get_document_deltas(
                 token,
                 tid,
                 did,
                 doc_detail_model.deltas_from,
-                100,
+                document_detail.page_size,
                 DocumentDeltasResponse,
               )
-            False -> effect.none()
+            _, _ -> effect.none()
           }
 
-          // Check for pending git object load
           let git_effect = case
-            document_detail.get_pending_git_action(doc_detail_model)
+            model.document_detail.git_loading,
+            doc_detail_model.git_loading
           {
-            document_detail.GitBlobView(sha, None) ->
-              api.get_admin_blob(token, tid, sha, GitBlobResponse)
-            document_detail.GitTreeView(sha, None) ->
-              api.get_admin_tree(token, tid, sha, False, GitTreeResponse)
-            document_detail.GitCommitView(sha, None) ->
-              api.get_admin_commit(token, tid, sha, GitCommitResponse)
-            _ -> effect.none()
+            False, True ->
+              case doc_detail_model.git_view {
+                document_detail.GitBlobView(sha, None) ->
+                  api.get_admin_blob(token, tid, sha, GitBlobResponse)
+                document_detail.GitTreeView(sha, None) ->
+                  api.get_admin_tree(token, tid, sha, False, GitTreeResponse)
+                document_detail.GitCommitView(sha, None) ->
+                  api.get_admin_commit(token, tid, sha, GitCommitResponse)
+                _ -> effect.none()
+              }
+            _, _ -> effect.none()
           }
 
           effect.batch([deltas_effect, git_effect])
@@ -769,12 +870,13 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(Model(..model, document_list: doc_list_model), effect.none())
     }
 
-    DocumentListResponse(Error(_)) -> {
+    DocumentListResponse(Error(error)) -> {
+      use <- handle_error(model, error)
       let doc_list_model =
         document_list.update(
           model.document_list,
           document_list.LoadError(
-            "Could not load documents. Check your connection and try again.",
+            "Couldn't load documents. " <> api.error_message(error),
           ),
         ).0
       #(Model(..model, document_list: doc_list_model), effect.none())
@@ -799,12 +901,13 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(Model(..model, document_detail: doc_detail_model), effect.none())
     }
 
-    DocumentDetailResponse(Error(_)) -> {
+    DocumentDetailResponse(Error(error)) -> {
+      use <- handle_error(model, error)
       let doc_detail_model =
         document_detail.update(
           model.document_detail,
           document_detail.DocumentLoadError(
-            "Could not load this document. Check your connection and try again.",
+            "Couldn't load this document. " <> api.error_message(error),
           ),
         ).0
       #(Model(..model, document_detail: doc_detail_model), effect.none())
@@ -819,11 +922,12 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(Model(..model, document_detail: doc_detail_model), effect.none())
     }
 
-    DocumentDeltasResponse(Error(_)) -> {
+    DocumentDeltasResponse(Error(error)) -> {
+      use <- handle_error(model, error)
       let doc_detail_model =
         document_detail.update(
           model.document_detail,
-          document_detail.DeltasLoadError("Failed to load deltas"),
+          document_detail.DeltasLoadError(api.error_message(error)),
         ).0
       #(Model(..model, document_detail: doc_detail_model), effect.none())
     }
@@ -837,11 +941,12 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(Model(..model, document_detail: doc_detail_model), effect.none())
     }
 
-    DocumentSummariesResponse(Error(_)) -> {
+    DocumentSummariesResponse(Error(error)) -> {
+      use <- handle_error(model, error)
       let doc_detail_model =
         document_detail.update(
           model.document_detail,
-          document_detail.SummariesLoadError("Failed to load summaries"),
+          document_detail.SummariesLoadError(api.error_message(error)),
         ).0
       #(Model(..model, document_detail: doc_detail_model), effect.none())
     }
@@ -855,11 +960,12 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(Model(..model, document_detail: doc_detail_model), effect.none())
     }
 
-    DocumentRefsResponse(Error(_)) -> {
+    DocumentRefsResponse(Error(error)) -> {
+      use <- handle_error(model, error)
       let doc_detail_model =
         document_detail.update(
           model.document_detail,
-          document_detail.RefsLoadError("Failed to load refs"),
+          document_detail.RefsLoadError(api.error_message(error)),
         ).0
       #(Model(..model, document_detail: doc_detail_model), effect.none())
     }
@@ -873,11 +979,12 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(Model(..model, document_detail: doc_detail_model), effect.none())
     }
 
-    GitBlobResponse(Error(_)) -> {
+    GitBlobResponse(Error(error)) -> {
+      use <- handle_error(model, error)
       let doc_detail_model =
         document_detail.update(
           model.document_detail,
-          document_detail.GitLoadError("Failed to load blob"),
+          document_detail.GitLoadError(api.error_message(error)),
         ).0
       #(Model(..model, document_detail: doc_detail_model), effect.none())
     }
@@ -891,11 +998,12 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(Model(..model, document_detail: doc_detail_model), effect.none())
     }
 
-    GitTreeResponse(Error(_)) -> {
+    GitTreeResponse(Error(error)) -> {
+      use <- handle_error(model, error)
       let doc_detail_model =
         document_detail.update(
           model.document_detail,
-          document_detail.GitLoadError("Failed to load tree"),
+          document_detail.GitLoadError(api.error_message(error)),
         ).0
       #(Model(..model, document_detail: doc_detail_model), effect.none())
     }
@@ -909,11 +1017,12 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(Model(..model, document_detail: doc_detail_model), effect.none())
     }
 
-    GitCommitResponse(Error(_)) -> {
+    GitCommitResponse(Error(error)) -> {
+      use <- handle_error(model, error)
       let doc_detail_model =
         document_detail.update(
           model.document_detail,
-          document_detail.GitLoadError("Failed to load commit"),
+          document_detail.GitLoadError(api.error_message(error)),
         ).0
       #(Model(..model, document_detail: doc_detail_model), effect.none())
     }
@@ -932,7 +1041,31 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn view(model: Model) -> Element(Msg) {
-  div([class("app")], [view_content(model)])
+  div([class("app")], [view_route_announcer(model.route), view_content(model)])
+}
+
+/// Off-screen live region that names the current view. Because it stays in the
+/// DOM and only its text changes, screen readers announce SPA navigation that
+/// would otherwise be silent.
+fn view_route_announcer(route: Route) -> Element(Msg) {
+  div(
+    [class("sr-only"), attribute.role("status"), attribute.aria_live("polite")],
+    [text(announce_label(route))],
+  )
+}
+
+fn announce_label(route: Route) -> String {
+  case route {
+    router.Login -> "Sign in"
+    router.Register -> "Create account"
+    router.Dashboard -> "Dashboard"
+    router.Tenants -> "Tenants"
+    router.TenantNew -> "Create tenant"
+    router.TenantDetail(_) -> "Tenant detail"
+    router.DocumentList(_) -> "Documents"
+    router.DocumentDetail(_, _) -> "Document detail"
+    router.NotFound -> "Page not found"
+  }
 }
 
 fn view_content(model: Model) -> Element(Msg) {

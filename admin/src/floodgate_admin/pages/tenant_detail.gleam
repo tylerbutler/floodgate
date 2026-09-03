@@ -7,7 +7,7 @@ import gleam/string
 import lustre/attribute.{class, disabled, type_}
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
-import lustre/element/html.{a, button, code, div, h1, h2, p, span, text}
+import lustre/element/html.{a, button, code, div, h1, h2, li, ol, p, span, text}
 import lustre/event
 
 @external(javascript, "../../floodgate_admin_ffi.mjs", "copy_to_clipboard")
@@ -353,7 +353,7 @@ fn view_content(model: Model) -> Element(Msg) {
     Error(message) ->
       div([class("error-state")], [
         div([class("alert alert-error"), attribute.role("alert")], [
-          span([class("alert-icon")], [text("!")]),
+          span([class("alert-icon"), attribute.aria_hidden(True)], [text("!")]),
           span([class("alert-message")], [text(message)]),
         ]),
       ])
@@ -363,6 +363,7 @@ fn view_content(model: Model) -> Element(Msg) {
         view_copy_state(model.copy_state),
         view_info(model),
         view_connection_urls(model),
+        view_rotation_help(),
         view_secret_card(model, 1),
         view_secret_card(model, 2),
         view_delete_section(model),
@@ -486,6 +487,47 @@ fn view_connection_urls(model: Model) -> Element(Msg) {
   ])
 }
 
+fn view_rotation_help() -> Element(Msg) {
+  div([class("card help-card")], [
+    h2([], [text("How secret rotation works")]),
+    p([], [
+      text(
+        "This tenant has two signing secrets. Both verify client tokens, but "
+        <> "only the Primary (Secret 1) signs newly minted tokens. Rotating one "
+        <> "slot replaces just that value and leaves the other working, so you "
+        <> "can retire a secret without downtime.",
+      ),
+    ]),
+    p([class("help-subhead")], [text("Zero-downtime rotation")]),
+    ol([class("steps")], [
+      li([], [
+        text(
+          "Rotate the Standby (Secret 2) to generate the next secret. The "
+          <> "Primary keeps verifying, so current tokens stay valid.",
+        ),
+      ]),
+      li([], [
+        text(
+          "Update your clients or token service to sign with the new Standby "
+          <> "value. Both secrets verify during the switch.",
+        ),
+      ]),
+      li([], [
+        text(
+          "Once all traffic uses the new value, rotate the Primary (Secret 1) "
+          <> "to retire the old secret.",
+        ),
+      ]),
+    ]),
+    p([class("help-warning")], [
+      text(
+        "Rotating a secret immediately invalidates every token still signed "
+        <> "with its old value. Don't rotate both slots at once.",
+      ),
+    ]),
+  ])
+}
+
 fn view_secret_card(model: Model, slot: Int) -> Element(Msg) {
   let #(slot_state, secret_value, is_visible) = case slot {
     1 -> #(model.secret1_state, model.secret1_value, model.secret1_visible)
@@ -497,13 +539,21 @@ fn view_secret_card(model: Model, slot: Int) -> Element(Msg) {
     _ -> ToggleSecret2Visible
   }
 
+  let #(slot_title, slot_purpose) = case slot {
+    1 -> #("Secret 1 · Primary", "Signs new tokens and verifies existing ones.")
+    _ -> #("Secret 2 · Standby", "Verifies existing tokens only.")
+  }
+
   div([class("card")], [
-    h2([], [text("Secret " <> int.to_string(slot))]),
+    h2([], [text(slot_title)]),
+    p([class("form-help")], [text(slot_purpose)]),
     view_slot_status(slot_state),
     case string.is_empty(secret_value) {
       True ->
         p([class("form-help")], [
-          text("Secret value is hidden. Regenerate to see the new value."),
+          text(
+            "No secret is stored in this slot yet. Rotate it to generate one.",
+          ),
         ])
       False ->
         div([class("secret-display")], [
@@ -556,7 +606,7 @@ fn view_slot_status(state: SecretSlotState) -> Element(Msg) {
           attribute.aria_live("assertive"),
         ],
         [
-          span([class("alert-icon")], [text("!")]),
+          span([class("alert-icon"), attribute.aria_hidden(True)], [text("!")]),
           span([class("alert-message")], [text(message)]),
         ],
       )
@@ -681,7 +731,7 @@ fn view_delete_section(model: Model) -> Element(Msg) {
       DeleteError(message) ->
         div([], [
           div([class("alert alert-error"), attribute.role("alert")], [
-            span([class("alert-icon")], [text("!")]),
+            span([class("alert-icon"), attribute.aria_hidden(True)], [text("!")]),
             span([class("alert-message")], [text(message)]),
           ]),
           button(

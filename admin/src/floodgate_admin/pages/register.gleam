@@ -94,22 +94,27 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
 
     Submit -> {
-      // Validate passwords match
-      case model.password == model.confirm_password {
-        False -> {
-          let model = Model(..model, error: Some("Passwords do not match"))
-          #(model, effect.none())
-        }
-        True -> {
-          // Set pending_submit so parent can make API call
-          let data =
-            SubmitData(
-              email: model.email,
-              password: model.password,
-              display_name: model.display_name,
-            )
-          #(Model(..model, pending_submit: Some(data)), effect.none())
-        }
+      // Ignore repeat submits while a registration is already in flight.
+      case model.loading {
+        True -> #(model, effect.none())
+        False ->
+          // Validate passwords match
+          case model.password == model.confirm_password {
+            False -> {
+              let model = Model(..model, error: Some("Passwords do not match"))
+              #(model, effect.none())
+            }
+            True -> {
+              // Set pending_submit so parent can make API call
+              let data =
+                SubmitData(
+                  email: model.email,
+                  password: model.password,
+                  display_name: model.display_name,
+                )
+              #(Model(..model, pending_submit: Some(data)), effect.none())
+            }
+          }
       }
     }
   }
@@ -195,7 +200,7 @@ fn view_error(error: Option(String)) -> Element(Msg) {
   case error {
     Some(message) ->
       div([class("alert alert-error"), attribute.role("alert")], [
-        span([class("alert-icon")], [text("!")]),
+        span([class("alert-icon"), attribute.aria_hidden(True)], [text("!")]),
         span([class("alert-message")], [text(message)]),
       ])
     None -> element.none()

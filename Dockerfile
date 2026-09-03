@@ -50,8 +50,8 @@ COPY admin/src src
 COPY admin/index.html index.html
 RUN gleam build --target javascript
 
-# === Stage 2: Runtime ===
-FROM erlang:28-slim AS runtime
+# === Stage 2: Runtime base ===
+FROM erlang:28-slim AS runtime-base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates wget \
@@ -96,3 +96,10 @@ HEALTHCHECK --interval=5s --timeout=3s --start-period=15s --retries=5 \
 # fails with "exec format error".
 ENTRYPOINT ["/bin/sh", "./entrypoint.sh"]
 CMD ["run"]
+
+# Development image for a loopback-published admin site. The default `runtime`
+# target below stays authenticated.
+FROM runtime-base AS local
+ENV FLOODGATE_ADMIN_LOCAL_BYPASS=true
+
+FROM runtime-base AS runtime

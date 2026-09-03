@@ -147,3 +147,27 @@ pub fn expired_cookie_session_does_not_authorize_admin_api_test() {
   )
   |> should.be_false
 }
+
+pub fn local_admin_bypass_requires_explicit_opt_in_test() {
+  let backend = memory_store.new()
+
+  floodgate.admin_access_authorized(
+    True,
+    Error(Nil),
+    Error(Nil),
+    "",
+    backend,
+    0,
+  )
+  |> should.be_true
+
+  floodgate.admin_access_authorized(
+    False,
+    Error(Nil),
+    Error(Nil),
+    "",
+    backend,
+    0,
+  )
+  |> should.be_false
+}

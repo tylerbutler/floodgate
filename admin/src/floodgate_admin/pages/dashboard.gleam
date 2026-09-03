@@ -47,7 +47,6 @@ pub fn view(model: Model) -> Element(Msg) {
     div([class("dashboard-content")], [
       view_welcome(),
       view_tenants_section(model),
-      view_quick_actions(),
     ]),
   ])
 }
@@ -75,7 +74,9 @@ fn view_tenants_section(model: Model) -> Element(Msg) {
         case model.error {
           Some(error) ->
             div([class("alert alert-error"), attribute.role("alert")], [
-              span([class("alert-icon")], [text("!")]),
+              span([class("alert-icon"), attribute.aria_hidden(True)], [
+                text("!"),
+              ]),
               span([class("alert-message")], [text(error)]),
             ])
           None ->
@@ -131,19 +132,5 @@ fn view_tenant_preview(tenants: List(Tenant)) -> Element(Msg) {
           text("View all tenants"),
         ])
     },
-  ])
-}
-
-fn view_quick_actions() -> Element(Msg) {
-  div([class("card quick-actions-card")], [
-    h2([], [text("Quick Actions")]),
-    ul([class("action-list")], [
-      li([], [
-        a([href("/admin/tenants/new")], [text("Create New Tenant")]),
-      ]),
-      li([], [
-        a([href("/admin/tenants")], [text("View All Tenants")]),
-      ]),
-    ]),
   ])
 }

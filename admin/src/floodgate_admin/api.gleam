@@ -45,6 +45,37 @@ pub type ApiError {
   ServerError(Int, String)
 }
 
+/// True when a protected call failed because the session is no longer valid.
+///
+/// Call sites use this to return the operator to sign-in instead of offering a
+/// Retry that repeats the same 401/403 forever.
+pub fn is_session_expired(error: ApiError) -> Bool {
+  case error {
+    ServerError(401, _) | ServerError(403, _) -> True
+    _ -> False
+  }
+}
+
+/// One actionable recovery sentence per failure kind, so call sites stop
+/// collapsing distinct failures into a single generic "check your connection"
+/// line. Each result is a complete sentence to keep the copy translatable.
+pub fn error_message(error: ApiError) -> String {
+  case error {
+    NetworkError(_) ->
+      "Can't reach the server. Check your connection, then try again."
+    DecodeError(_) ->
+      "The server's response couldn't be read. Try again in a moment."
+    ServerError(401, _) | ServerError(403, _) ->
+      "Your session expired. Sign in again to continue."
+    ServerError(404, _) -> "That item no longer exists."
+    ServerError(429, _) ->
+      "The server is busy right now. Wait a moment, then try again."
+    ServerError(status, _) if status >= 500 ->
+      "The server ran into a problem. Wait a moment, then try again."
+    ServerError(_, _) -> "Something went wrong. Try again."
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Decoders
 // ─────────────────────────────────────────────────────────────────────────────

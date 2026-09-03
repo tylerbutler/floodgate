@@ -58,13 +58,23 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     UpdateName(name) -> #(Model(..model, name: name), effect.none())
 
     Submit -> {
-      let trimmed = string.trim(model.name)
-      case string.is_empty(trimmed) {
-        True -> #(
-          Model(..model, state: Error("Name is required")),
-          effect.none(),
-        )
-        False -> #(Model(..model, pending_submit: Some(trimmed)), effect.none())
+      // Ignore repeat submits while a tenant create is already in flight, so a
+      // double-click can't create two tenants.
+      case model.state {
+        Submitting -> #(model, effect.none())
+        _ -> {
+          let trimmed = string.trim(model.name)
+          case string.is_empty(trimmed) {
+            True -> #(
+              Model(..model, state: Error("Name is required")),
+              effect.none(),
+            )
+            False -> #(
+              Model(..model, pending_submit: Some(trimmed)),
+              effect.none(),
+            )
+          }
+        }
       }
     }
   }
@@ -124,7 +134,7 @@ fn view_error(state: FormState) -> Element(Msg) {
   case state {
     Error(message) ->
       div([class("alert alert-error"), attribute.role("alert")], [
-        span([class("alert-icon")], [text("!")]),
+        span([class("alert-icon"), attribute.aria_hidden(True)], [text("!")]),
         span([class("alert-message")], [text(message)]),
       ])
     _ -> element.none()

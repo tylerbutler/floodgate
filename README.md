@@ -30,9 +30,21 @@ Or as a container:
 
 ```sh
 docker compose up -d --wait      # http://localhost:3000
+FLOODGATE_HOST_PORT=3004 docker compose up -d --wait  # when 3000 is busy
 docker compose logs -f floodgate
 docker compose down -v
 ```
+
+For a direct development image with passwordless local admin access:
+
+```sh
+docker build --target local -t floodgate:local-admin .
+docker run --rm -p 127.0.0.1:3000:3000 \
+  -e FLOODGATE_JWT_SECRET=dev-secret \
+  floodgate:local-admin
+```
+
+The default Dockerfile target does not enable the bypass.
 
 ## Configuration
 
@@ -48,6 +60,7 @@ docker compose down -v
 | `FLOODGATE_ADMIN_GITHUB_USERS` | *(unset)* | Comma-separated GitHub usernames permitted to become admins. Unset denies OAuth login |
 | `FLOODGATE_ADMIN_SESSION_TTL_SECONDS` | `604800` | Admin browser session lifetime |
 | `FLOODGATE_ADMIN_STATIC_DIR` | `priv/static/admin` | Built Lustre admin UI directory |
+| `FLOODGATE_ADMIN_LOCAL_BYPASS` | *(unset)* | Development-only browser auth bypass. Enable only when Floodgate is reachable exclusively through loopback. |
 | `FLOODGATE_ADMIN_KEY` | *(unset)* | Bearer key for the tenant management API (see Multi-tenancy). Unset disables that API entirely |
 | `FLOODGATE_TOKEN_MINT_SECRET` | *(unset)* | Enables the token-mint endpoint |
 | `FLOODGATE_TOKEN_MINT_USER_ID` | `floodgate-token-mint` | User id in minted tokens |
@@ -113,6 +126,11 @@ can be migrated to a freshly rotated secret without an outage.
 Floodgate serves its Gleam/Lustre admin SPA at `/admin`; it does not use
 Phoenix, Elixir, or Mix. The container builds both Floodgate's Erlang shipment
 and the SPA's JavaScript output with the Gleam compiler.
+
+The development Compose stack builds the Dockerfile's `local` target and binds
+port 3000 to `127.0.0.1`, so `http://localhost:3000/admin` opens as a synthetic
+local administrator without OAuth. Never publish the local target on a
+non-loopback interface.
 
 Create a GitHub OAuth App with this callback:
 
