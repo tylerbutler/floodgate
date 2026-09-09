@@ -65,11 +65,76 @@ import {
 	isFloodgateRunning,
 	isLeveeProxyTarget,
 } from "./floodgate-target.js";
-import { uniqueDocId } from "./helpers.js";
+import { acknowledgedHandle, submitSummary, uniqueDocId } from "./helpers.js";
 
 const floodgateAvailable = await isFloodgateRunning();
 
 const testClient = createFloodgateTestClient("routerlicious-compat-user");
+
+async function publishSnapshot(documentId: string, content: string, head = "") {
+	const graph = await createBlobTreeCommitGraph(
+		FLOODGATE_TENANT_ID,
+		content,
+		content,
+		documentId,
+	);
+	const service = await createFloodgateServiceFactory().createDocumentService(
+		createFloodgateResolvedUrl(documentId),
+	);
+	const connection = await service.connectToDeltaStream(testClient);
+	try {
+		const ack = await submitSummary(connection, graph.treeSha, head, 1);
+		return { ...graph, published: acknowledgedHandle(ack) };
+	} finally {
+		connection.dispose();
+	}
+}
+
+describe.runIf(floodgateAvailable && !isLeveeProxyTarget)(
+	"Floodgate published ref ownership",
+	() => {
+		it("protects document heads and hides foreign heads from direct and list reads", async () => {
+			const a = uniqueDocId("ref-owner-a");
+			const b = uniqueDocId("ref-owner-b");
+			const version = await publishSnapshot(a, "A");
+			for (const ref of [`heads/${a}`, `refs/heads/${a}`]) {
+				const response = await floodgateFetch(
+					FLOODGATE_REST_ENDPOINTS.gitRefs(FLOODGATE_TENANT_ID),
+					{
+						method: "POST",
+						documentId: b,
+						body: { ref, sha: version.published },
+					},
+				);
+				expect(response.status).toBe(403);
+			}
+			const foreign = await floodgateFetch(
+				FLOODGATE_REST_ENDPOINTS.gitRef(FLOODGATE_TENANT_ID, `heads/${a}`),
+				{ documentId: b },
+			);
+			expect(foreign.status).toBe(404);
+			const refs = await floodgateFetch(
+				FLOODGATE_REST_ENDPOINTS.gitRefs(FLOODGATE_TENANT_ID),
+				{ documentId: b },
+			);
+			expect(refs.status).toBe(200);
+			expect(await refs.json()).not.toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ ref: `refs/heads/${a}` }),
+				]),
+			);
+			const reservedBeforeCreate = await floodgateFetch(
+				FLOODGATE_REST_ENDPOINTS.gitRefs(FLOODGATE_TENANT_ID),
+				{
+					method: "POST",
+					documentId: b,
+					body: { ref: `heads/${b}`, sha: version.published },
+				},
+			);
+			expect(reservedBeforeCreate.status).toBe(403);
+		});
+	},
+);
 
 function message(
 	clientSequenceNumber: number,

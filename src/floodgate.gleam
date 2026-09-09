@@ -11,6 +11,7 @@ import beryl/wire
 import beryl_mist
 import floodgate/admin_auth
 import floodgate/auth
+import floodgate/doc_state
 import floodgate/document_channel
 import floodgate/git
 import floodgate/initial_summary
@@ -575,14 +576,31 @@ fn rest(
       }
     }
     http.Get, ["repos", tenant, "commits"] ->
-      commits_response(storage, config, public_url, req, tenant)
+      commits_response(
+        document_session,
+        storage,
+        config,
+        public_url,
+        req,
+        tenant,
+      )
     http.Get, ["repos", tenant, "git", "refs"] ->
-      refs_response(storage, config, public_url, req, tenant)
+      refs_response(document_session, storage, config, public_url, req, tenant)
     http.Post, ["repos", tenant, "git", "refs"] ->
-      create_ref_response(storage, config, public_url, req, tenant)
+      create_ref_response(document_session, config, public_url, req, tenant)
     method, ["repos", tenant, "git", "refs", ..ref_parts]
       if method == http.Get || method == http.Patch
-    -> ref_response(storage, config, public_url, req, tenant, ref_parts, method)
+    ->
+      ref_response(
+        document_session,
+        storage,
+        config,
+        public_url,
+        req,
+        tenant,
+        ref_parts,
+        method,
+      )
     method, ["repos", tenant, "git", kind]
       if method == http.Post
       && { kind == "blobs" || kind == "trees" || kind == "commits" }
@@ -888,6 +906,7 @@ fn authorize_storage_write(
 }
 
 fn commits_response(
+  document_session: session.Session,
   storage: store.Backend,
   config: AuthConfig,
   public_url: String,
@@ -910,25 +929,38 @@ fn commits_response(
       case list.key_find(query, "sha"), count {
         Error(_), _ | _, Error(_) -> bad_request()
         Ok(requested), Ok(count) -> {
-          let sha = case
-            git.get_ref(storage, tenant, "refs/heads/" <> requested)
-          {
-            Ok(ref_sha) -> ref_sha
-            Error(_) -> requested
+          let resolved = case requested == claims.document_id {
+            True ->
+              session.published_summary(
+                document_session,
+                topic(tenant, claims.document_id),
+              )
+              |> result.map(fn(summary) {
+                option.map(summary, fn(value) { value.0 })
+              })
+            False -> Ok(option.Some(requested))
           }
-          // The ref lookup above stays tenant-scoped — refs are shared — but
-          // the commit objects it points at live in the token's document.
-          git.commit_history_response(
-            storage,
-            public_url,
-            tenant,
-            topic(tenant, claims.document_id),
-            sha,
-            count,
-          )
-          |> json.preprocessed_array
-          |> json.to_string
-          |> json_response(200)
+          case resolved {
+            Error(_) -> storage_unavailable()
+            Ok(summary) -> {
+              let history = case summary {
+                option.None -> []
+                option.Some(sha) ->
+                  git.commit_history_response(
+                    storage,
+                    public_url,
+                    tenant,
+                    topic(tenant, claims.document_id),
+                    sha,
+                    count,
+                  )
+              }
+              history
+              |> json.preprocessed_array
+              |> json.to_string
+              |> json_response(200)
+            }
+          }
         }
       }
     }
@@ -936,6 +968,7 @@ fn commits_response(
 }
 
 fn refs_response(
+  document_session: session.Session,
   storage: store.Backend,
   config: AuthConfig,
   public_url: String,
@@ -944,17 +977,31 @@ fn refs_response(
 ) -> response.Response(mist.ResponseData) {
   case authorize_storage_read(req, config, tenant) {
     Error(e) -> auth_error_response(e)
-    Ok(_) ->
-      git.list_refs(storage, tenant)
-      |> list.map(fn(ref) { git.ref_response(public_url, tenant, ref.0, ref.1) })
-      |> json.preprocessed_array
-      |> json.to_string
-      |> json_response(200)
+    Ok(claims) ->
+      case
+        session.published_summary(
+          document_session,
+          topic(tenant, claims.document_id),
+        )
+      {
+        Error(_) -> storage_unavailable()
+        Ok(_) ->
+          git.list_refs(storage, tenant)
+          |> list.filter(fn(ref) {
+            !foreign_document_ref(storage, tenant, claims.document_id, ref.0)
+          })
+          |> list.map(fn(ref) {
+            git.ref_response(public_url, tenant, ref.0, ref.1)
+          })
+          |> json.preprocessed_array
+          |> json.to_string
+          |> json_response(200)
+      }
   }
 }
 
 fn create_ref_response(
-  storage: store.Backend,
+  document_session: session.Session,
   config: AuthConfig,
   public_url: String,
   req: request.Request(mist.Connection),
@@ -962,14 +1009,24 @@ fn create_ref_response(
 ) -> response.Response(mist.ResponseData) {
   case authorize_storage_write(req, config, tenant) {
     Error(e) -> auth_error_response(e)
-    Ok(_) ->
+    Ok(claims) ->
       case git.decode_ref(read_body(req)) {
         Error(_) -> bad_request()
         Ok(ref) -> {
-          case git.create_ref(storage, tenant, ref.0, ref.1) {
-            Error(Nil) -> storage_unavailable()
-            Ok(False) -> conflict()
-            Ok(True) ->
+          case
+            session.write_ref(
+              document_session,
+              tenant,
+              claims.document_id,
+              ref.0,
+              ref.1,
+              True,
+            )
+          {
+            session.RefUnavailable -> storage_unavailable()
+            session.RefConflict -> conflict()
+            session.RefReserved -> reserved_ref_response()
+            session.RefWritten ->
               git.ref_response(public_url, tenant, ref.0, ref.1)
               |> json.to_string
               |> json_response(201)
@@ -980,6 +1037,7 @@ fn create_ref_response(
 }
 
 fn ref_response(
+  document_session: session.Session,
   storage: store.Backend,
   config: AuthConfig,
   public_url: String,
@@ -991,16 +1049,36 @@ fn ref_response(
   let ref = "refs/" <> string.join(ref_parts, "/")
   case method {
     http.Get ->
-      case
-        authorize_storage_read(req, config, tenant),
-        git.get_ref(storage, tenant, ref)
-      {
-        Error(e), _ -> auth_error_response(e)
-        _, Error(_) -> not_found()
-        Ok(_), Ok(sha) ->
-          git.ref_response(public_url, tenant, ref, sha)
-          |> json.to_string
-          |> json_response(200)
+      case authorize_storage_read(req, config, tenant) {
+        Error(e) -> auth_error_response(e)
+        Ok(claims) ->
+          case foreign_document_ref(storage, tenant, claims.document_id, ref) {
+            True -> not_found()
+            False -> {
+              let resolved = case
+                git.head_document(ref) == option.Some(claims.document_id)
+              {
+                True ->
+                  session.published_summary(
+                    document_session,
+                    topic(tenant, claims.document_id),
+                  )
+                  |> result.map(fn(summary) {
+                    option.map(summary, fn(value) { value.0 })
+                  })
+                False ->
+                  Ok(option.from_result(git.get_ref(storage, tenant, ref)))
+              }
+              case resolved {
+                Error(_) -> storage_unavailable()
+                Ok(option.None) -> not_found()
+                Ok(option.Some(sha)) ->
+                  git.ref_response(public_url, tenant, ref, sha)
+                  |> json.to_string
+                  |> json_response(200)
+              }
+            }
+          }
       }
     http.Patch ->
       case
@@ -1009,10 +1087,21 @@ fn ref_response(
       {
         Error(e), _ -> auth_error_response(e)
         _, Error(_) -> bad_request()
-        Ok(_), Ok(sha) ->
-          case git.put_ref(storage, tenant, ref, sha) {
-            Error(Nil) -> storage_unavailable()
-            Ok(Nil) ->
+        Ok(claims), Ok(sha) ->
+          case
+            session.write_ref(
+              document_session,
+              tenant,
+              claims.document_id,
+              ref,
+              sha,
+              False,
+            )
+          {
+            session.RefUnavailable -> storage_unavailable()
+            session.RefReserved -> reserved_ref_response()
+            session.RefConflict -> conflict()
+            session.RefWritten ->
               git.ref_response(public_url, tenant, ref, sha)
               |> json.to_string
               |> json_response(200)
@@ -1020,6 +1109,25 @@ fn ref_response(
       }
     _ -> not_found()
   }
+}
+
+fn foreign_document_ref(
+  storage: store.Backend,
+  tenant: String,
+  caller_document: String,
+  ref: String,
+) -> Bool {
+  case git.head_document(ref) {
+    option.Some(document_id) if document_id != caller_document ->
+      doc_state.stored_document_exists(storage, topic(tenant, document_id))
+    _ -> False
+  }
+}
+
+fn reserved_ref_response() -> response.Response(mist.ResponseData) {
+  json.object([#("error", json.string("document head is server-owned"))])
+  |> json.to_string
+  |> json_response(403)
 }
 
 fn decode_sha(body: String) -> Result(String, Nil) {

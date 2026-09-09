@@ -55,6 +55,7 @@ import gleam/otp/actor
 import gleam/otp/factory_supervisor
 import gleam/otp/static_supervisor
 import gleam/otp/supervision
+import gleam/result
 import gleam/string
 import spillway/sequencing
 
@@ -177,6 +178,17 @@ pub type Msg {
   SequenceNumber(topic: String, reply: Subject(Int))
   InitializeSummary(topic: String, handle: String, sn: Int, reply: Subject(Nil))
   SetSummary(topic: String, handle: String, sn: Int, reply: Subject(Nil))
+  PublishedSummary(
+    reply: Subject(Result(Option(#(String, Int)), git.PublicationError)),
+  )
+  WriteHeadRef(
+    tenant: String,
+    ref: String,
+    sha: String,
+    create: Bool,
+    own_head: Bool,
+    reply: Subject(RefWriteResult),
+  )
   UpdateClientRsn(topic: String, client_id: String, rsn: Int)
   /// Self-scheduled: stop if nobody is connected and nothing has touched this
   /// document within the idle window. See `idle`.
@@ -247,6 +259,13 @@ pub type LeaveResult {
 pub type SubmitSummaryResult {
   SummaryAssigned(summary_sn: Int, response_sn: Int, msn: Int)
   SummaryRejected(current_sn: Int)
+}
+
+pub type RefWriteResult {
+  RefWritten
+  RefConflict
+  RefReserved
+  RefUnavailable
 }
 
 pub type SubmitSummaryMessagesResult {
@@ -725,7 +744,7 @@ pub fn roster(session: Session, topic: String) -> List(#(String, String)) {
 /// require a document to exist, so it must not be able to spawn an actor.
 pub fn exists(session: Session, topic: String) -> Bool {
   case doc_registry.lookup(registry(session), topic) {
-    Ok(_) -> True
+    Ok(subject) -> process.call(subject, 1000, Exists(topic, _))
     Error(Nil) -> doc_state.stored_document_exists(session.storage, topic)
   }
 }
@@ -781,6 +800,84 @@ pub fn initialize_summary(
 /// `Error(Nil)` when the document has never been summarized.
 pub fn summary(session: Session, topic: String) -> Result(#(String, Int), Nil) {
   store.get_summary(session.storage, topic)
+}
+
+/// Call only after authorization. Unknown documents without refs remain cold.
+pub fn published_summary(
+  session: Session,
+  topic: String,
+) -> Result(Option(#(String, Int)), git.PublicationError) {
+  let has_ref = case string.split(topic, ":") {
+    ["document", tenant, document_id] ->
+      result.is_ok(git.get_ref(
+        session.storage,
+        tenant,
+        git.summary_ref(document_id),
+      ))
+    _ -> False
+  }
+  case
+    doc_state.stored_document_exists(session.storage, topic)
+    || has_ref
+    || result.is_ok(doc_registry.lookup(registry(session), topic))
+  {
+    False -> Ok(None)
+    True -> {
+      case
+        exception.rescue(fn() {
+          process.call(resolve(session, topic), 10_000, PublishedSummary)
+        })
+      {
+        Ok(result) -> result
+        Error(_) -> Error(git.StorageUnavailable)
+      }
+    }
+  }
+}
+
+pub fn write_ref(
+  session: Session,
+  tenant: String,
+  caller_document: String,
+  ref: String,
+  sha: String,
+  create: Bool,
+) -> RefWriteResult {
+  case git.head_document(ref) {
+    None -> write_generic_ref(session.storage, tenant, ref, sha, create)
+    Some(document_id) ->
+      process.call(
+        resolve(session, store.topic(tenant, document_id)),
+        10_000,
+        WriteHeadRef(
+          tenant,
+          ref,
+          sha,
+          create,
+          document_id == caller_document,
+          _,
+        ),
+      )
+  }
+}
+
+fn write_generic_ref(
+  storage: store.Backend,
+  tenant: String,
+  ref: String,
+  sha: String,
+  create: Bool,
+) -> RefWriteResult {
+  let outcome = case create {
+    True -> git.create_ref(storage, tenant, ref, sha)
+    False ->
+      git.put_ref(storage, tenant, ref, sha) |> result.map(fn(_) { True })
+  }
+  case outcome {
+    Ok(True) -> RefWritten
+    Ok(False) -> RefConflict
+    Error(Nil) -> RefUnavailable
+  }
 }
 
 /// How many documents are currently held in memory. Documents are a cache over
@@ -921,31 +1018,63 @@ fn start_document(
 /// changing ages out even while it is being read; that is harmless, because
 /// stopping is just a cache drop and this rebuilds it.
 fn doc(storage: store.Backend, topic: String, state: DocState) -> Doc {
+  let assert Ok(document) = recover_document(storage, topic, state)
+  document
+}
+
+fn recover_document(
+  storage: store.Backend,
+  topic: String,
+  state: DocState,
+) -> Result(Doc, git.PublicationError) {
   case state.doc {
-    Some(document) -> Doc(..document, last_touched_ms: doc_state.now_ms())
+    Some(document) -> Ok(Doc(..document, last_touched_ms: doc_state.now_ms()))
     None -> {
-      let assert Ok(recovery) = doc_state.recover(storage, topic)
+      use recovery <- result.try(doc_state.recover(storage, topic))
       list.each(recovery.warnings, log_summary_recovery(topic, _))
       let #(handle, sn) = recovery.document.summary
-      case handle {
-        "" -> Nil
-        _ -> {
-          case store.get_summary(storage, topic) == Ok(#(handle, sn)) {
-            False -> persist_summary(storage, topic, handle, sn)
-            True ->
-              case string.split(topic, ":") {
-                ["document", tenant, document_id] -> {
-                  let assert Ok(Nil) =
-                    git.ensure_summary_ref(storage, tenant, document_id, handle)
-                  Nil
-                }
-                _ -> Nil
-              }
-          }
-        }
-      }
-      recovery.document
+      use Nil <- result.try(
+        case
+          handle != "" && store.get_summary(storage, topic) != Ok(#(handle, sn))
+        {
+          True ->
+            store.put_summary(storage, topic, handle, sn)
+            |> result.replace_error(git.StorageUnavailable)
+          False -> Ok(Nil)
+        },
+      )
+      use Nil <- result.try(reconcile_ref(
+        storage,
+        topic,
+        recovery.document.summary,
+      ))
+      Ok(recovery.document)
     }
+  }
+}
+
+fn summary_option(summary: #(String, Int)) -> Option(#(String, Int)) {
+  case summary.0 {
+    "" -> None
+    _ -> Some(summary)
+  }
+}
+
+fn reconcile_ref(
+  storage: store.Backend,
+  topic: String,
+  summary: #(String, Int),
+) -> Result(Nil, git.PublicationError) {
+  case string.split(topic, ":") {
+    ["document", tenant, document_id] ->
+      git.reconcile_summary_ref(
+        storage,
+        tenant,
+        document_id,
+        summary_option(summary),
+      )
+      |> result.replace_error(git.StorageUnavailable)
+    _ -> Ok(Nil)
   }
 }
 
@@ -1022,6 +1151,34 @@ fn handle(
   message: Msg,
 ) -> actor.Next(DocState, Msg) {
   case message {
+    PublishedSummary(reply) -> {
+      let recovered = {
+        use document <- result.try(recover_document(storage, topic, state))
+        use Nil <- result.try(reconcile_ref(storage, topic, document.summary))
+        Ok(document)
+      }
+      case recovered {
+        Error(error) -> {
+          process.send(reply, Error(error))
+          actor.continue(state)
+        }
+        Ok(document) -> {
+          process.send(reply, Ok(summary_option(document.summary)))
+          case already_exists(storage, topic, state) {
+            True -> cache(state, document)
+            False -> actor.continue(state)
+          }
+        }
+      }
+    }
+    WriteHeadRef(tenant, ref, sha, create, own_head, reply) -> {
+      let outcome = case own_head || already_exists(storage, topic, state) {
+        True -> RefReserved
+        False -> write_generic_ref(storage, tenant, ref, sha, create)
+      }
+      process.send(reply, outcome)
+      actor.continue(state)
+    }
     Create(topic, reply) -> {
       let existing = already_exists(storage, topic, state)
       persist_document(storage, topic)

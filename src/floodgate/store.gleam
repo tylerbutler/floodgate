@@ -64,6 +64,7 @@ pub type Backend {
     get_object: fn(String, String) -> Result(String, Nil),
     put_ref: fn(String, String, String) -> Result(Nil, Nil),
     create_ref: fn(String, String, String) -> Result(Bool, Nil),
+    delete_ref: fn(String, String) -> Result(Nil, Nil),
     get_ref: fn(String, String) -> Result(String, Nil),
     list_refs: fn(String) -> List(#(String, String)),
     create_tenant: fn(String) -> TenantWithSecrets,
@@ -196,6 +197,14 @@ pub fn get_ref(
   ref: String,
 ) -> Result(String, Nil) {
   backend.get_ref(tenant, ref)
+}
+
+pub fn delete_ref(
+  backend: Backend,
+  tenant: String,
+  ref: String,
+) -> Result(Nil, Nil) {
+  backend.delete_ref(tenant, ref)
 }
 
 /// References are always returned in path order, independent of backend.

@@ -1384,3 +1384,92 @@ pub fn recovery_rejects_damaged_or_conflicting_publication_test() {
   let assert Error(git.CorruptPublication(_)) =
     doc_state.recover(backend, topic)
 }
+
+pub fn historian_reads_reconcile_refs_without_creating_documents_test() {
+  assert_ref_reconciliation(memory_store.new())
+}
+
+pub fn assert_ref_reconciliation(backend: store.Backend) -> Nil {
+  let topic = store.topic("ref-read", "doc")
+  let tree = summary_fixture.tree(backend, topic, "head")
+  let head = summary_fixture.commit(backend, topic, tree, [], "head")
+  let assert Ok(Nil) = store.put_summary(backend, topic, head, 5)
+  let document_session = session.start_with_backend(backend)
+  list.each(["missing", "older", "ahead"], fn(ref) {
+    case ref {
+      "missing" -> Nil
+      _ -> {
+        let assert Ok(Nil) = git.put_ref(backend, "ref-read", "heads/doc", ref)
+        Nil
+      }
+    }
+    session.published_summary(document_session, topic)
+    |> should.equal(Ok(Some(#(head, 5))))
+    git.get_ref(backend, "ref-read", "heads/doc") |> should.equal(Ok(head))
+  })
+  let empty = store.topic("ref-read", "empty")
+  let cached = session.cached_documents(document_session)
+  session.published_summary(document_session, empty) |> should.equal(Ok(None))
+  session.cached_documents(document_session) |> should.equal(cached)
+  let assert Ok(Nil) = git.put_ref(backend, "ref-read", "heads/empty", head)
+  session.published_summary(document_session, empty) |> should.equal(Ok(None))
+  git.get_ref(backend, "ref-read", "heads/empty") |> should.equal(Error(Nil))
+  session.exists(document_session, empty) |> should.be_false
+  store.list_refs(backend, "ref-read")
+  |> should.equal([#("refs/heads/doc", head)])
+  store.delete_ref(backend, "ref-read", "refs/heads/empty")
+  |> should.equal(Ok(Nil))
+  session.write_ref(
+    document_session,
+    "ref-read",
+    "doc",
+    "heads/doc",
+    head,
+    True,
+  )
+  |> should.equal(session.RefReserved)
+  session.write_ref(
+    document_session,
+    "ref-read",
+    "other",
+    "refs/heads/doc",
+    head,
+    False,
+  )
+  |> should.equal(session.RefReserved)
+  session.write_ref(
+    document_session,
+    "ref-read",
+    "doc",
+    "heads/generic",
+    head,
+    True,
+  )
+  |> should.equal(session.RefWritten)
+  let generic = store.topic("ref-read", "generic")
+  session.exists(document_session, generic) |> should.be_false
+  session.create_initialized(document_session, generic, fn() { Ok(None) })
+  |> should.equal(session.Created)
+  session.write_ref(
+    document_session,
+    "ref-read",
+    "doc",
+    "heads/generic",
+    head,
+    False,
+  )
+  |> should.equal(session.RefReserved)
+}
+
+pub fn failed_ref_repair_surfaces_error_and_retries_test() {
+  let backend = memory_store.new()
+  let topic = store.topic("ref-failure", "doc")
+  let tree = summary_fixture.tree(backend, topic, "head")
+  let head = summary_fixture.commit(backend, topic, tree, [], "head")
+  let assert Ok(Nil) = store.put_summary(backend, topic, head, 5)
+  let failing = store.Backend(..backend, put_ref: fn(_, _, _) { Error(Nil) })
+  session.published_summary(session.start_with_backend(failing), topic)
+  |> should.equal(Error(git.StorageUnavailable))
+  session.published_summary(session.start_with_backend(backend), topic)
+  |> should.equal(Ok(Some(#(head, 5))))
+}

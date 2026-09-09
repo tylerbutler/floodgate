@@ -42,6 +42,7 @@ pub type Msg {
   PutObject(String, String, String, Subject(Nil))
   GetObject(String, String, Subject(Result(String, Nil)))
   PutRef(String, String, String, Subject(Nil))
+  DeleteRef(String, String, Subject(Nil))
   CreateRef(String, String, String, Subject(Bool))
   GetRef(String, String, Subject(Result(String, Nil)))
   ListRefs(String, Subject(List(#(String, String))))
@@ -171,6 +172,9 @@ fn backend(
     create_ref: fn(tenant, ref, sha) {
       Ok(process.call(subject(), 1000, CreateRef(tenant, ref, sha, _)))
     },
+    delete_ref: fn(tenant, ref) {
+      Ok(process.call(subject(), 1000, DeleteRef(tenant, ref, _)))
+    },
     get_ref: fn(tenant, ref) {
       process.call(subject(), 1000, GetRef(tenant, ref, _))
     },
@@ -277,6 +281,12 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
       process.send(reply, Nil)
       actor.continue(
         State(..state, refs: dict.insert(state.refs, #(tenant, ref), sha)),
+      )
+    }
+    DeleteRef(tenant, ref, reply) -> {
+      process.send(reply, Nil)
+      actor.continue(
+        State(..state, refs: dict.delete(state.refs, #(tenant, ref))),
       )
     }
     CreateRef(tenant, ref, sha, reply) -> {

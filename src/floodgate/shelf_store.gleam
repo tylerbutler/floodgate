@@ -179,6 +179,15 @@ fn backend(
     create_ref: fn(tenant, ref, sha) {
       create_ref(resolve, tenant, ref, sha, False, retry_attempts)
     },
+    delete_ref: fn(tenant, ref) {
+      run(resolve, fn(tables) {
+        use _ <- result.try(
+          set.delete_key(from: tables.refs, key: #(tenant, ref)),
+        )
+        bag.delete_object(from: tables.refs_index, key: tenant, value: ref)
+      })
+      |> result.replace_error(Nil)
+    },
     get_ref: fn(tenant, ref) {
       optional(
         run(resolve, fn(tables) {

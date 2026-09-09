@@ -60,6 +60,10 @@ pub fn shelf_recovers_acknowledged_summary_history_test() {
   floodgate_test.assert_summary_recovery(shelf_store.new(unique_dir()))
 }
 
+pub fn shelf_reconciles_summary_refs_and_their_index_test() {
+  floodgate_test.assert_ref_reconciliation(shelf_store.new(unique_dir()))
+}
+
 /// The memory backend's actor holds every document, op, and ref for the
 /// runtime, so before it was supervised its death left every `store.*` call
 /// timing out forever with nothing to restart it. Its state does not survive —

@@ -8,6 +8,7 @@
 import floodgate/store
 import gleam/json
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
 import gleam/string
@@ -147,13 +148,7 @@ pub fn summary_ref(document_id: String) -> String {
   "refs/heads/" <> document_id
 }
 
-/// Publish a document's summary commit.
-///
-/// Always written *after* the session's own summary pointer, so the only state a
-/// crash can leave is a ref that lags. That direction is safe: a client
-/// discovering an older snapshot replays more ops, which is what loading any
-/// older version does anyway. The reverse — ref ahead of the summary pointer —
-/// would have a client load a snapshot and then replay ops already inside it.
+/// Publish the actor's summary pointer after its durable proposal and response.
 pub fn publish_summary_ref(
   storage: store.Backend,
   tenant: String,
@@ -163,22 +158,28 @@ pub fn publish_summary_ref(
   put_ref(storage, tenant, summary_ref(document_id), sha)
 }
 
-/// Write the summary ref if it is missing, leaving an existing one alone.
-///
-/// Repairs the one crash prefix that is not benign: a summary pointer written
-/// with no ref at all, which makes `GET /commits?sha=<documentId>` fall through
-/// to treating the document id as a sha and fail, so the document cannot be
-/// loaded. A ref that merely lags is left as-is — it is safe, self-heals on the
-/// next summary, and a client is free to move refs through the Historian API.
-pub fn ensure_summary_ref(
+/// Reconcile the server-owned ref under the document actor's ownership.
+pub fn reconcile_summary_ref(
   storage: store.Backend,
   tenant: String,
   document_id: String,
-  sha: String,
+  summary: Option(#(String, Int)),
 ) -> Result(Nil, Nil) {
-  case get_ref(storage, tenant, summary_ref(document_id)) {
-    Ok(_) -> Ok(Nil)
-    Error(Nil) -> publish_summary_ref(storage, tenant, document_id, sha)
+  case summary {
+    None -> store.delete_ref(storage, tenant, summary_ref(document_id))
+    Some(#(sha, _)) ->
+      case get_ref(storage, tenant, summary_ref(document_id)) {
+        Ok(existing) if existing == sha -> Ok(Nil)
+        _ -> publish_summary_ref(storage, tenant, document_id, sha)
+      }
+  }
+}
+
+pub fn head_document(ref: String) -> Option(String) {
+  let normalized = rest.normalize_ref(ref)
+  case string.starts_with(normalized, "refs/heads/") {
+    True -> Some(string.drop_start(normalized, 11))
+    False -> None
   }
 }
 
