@@ -1,3 +1,4 @@
+import exception
 import floodgate
 import floodgate/auth
 import floodgate/git
@@ -14,6 +15,7 @@ import gleeunit
 import gleeunit/should
 import signet/jwt
 import signet/types
+import summary_fixture
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -1084,4 +1086,130 @@ pub fn submit_summary_is_durable_before_it_acks_test() {
   // mean it landed too.
   store.get_summary(backend, topic)
   |> should.equal(Ok(#("handle-1", summary_sn)))
+}
+
+pub fn summary_publication_writes_ref_before_reply_test() {
+  let backend = memory_store.new()
+  let events = process.new_subject()
+  let recording =
+    store.Backend(
+      ..backend,
+      put_op: fn(topic, sn, body) {
+        let result = backend.put_op(topic, sn, body)
+        process.send(events, case sn {
+          1 -> "proposal"
+          _ -> "response"
+        })
+        result
+      },
+      put_summary: fn(topic, sha, sn) {
+        let result = backend.put_summary(topic, sha, sn)
+        process.send(events, "pointer")
+        result
+      },
+      put_ref: fn(tenant, ref, sha) {
+        let result = backend.put_ref(tenant, ref, sha)
+        process.send(events, "ref")
+        result
+      },
+    )
+  let document_session = session.start_with_backend(recording)
+  let topic = store.topic("publish-order", "doc")
+  session.join(document_session, topic, "writer") |> should.be_false
+  let assert session.SummaryMessagesAssigned(1, 2, _, _, _) =
+    session.submit_summary_messages(
+      document_session,
+      topic,
+      "writer",
+      1,
+      0,
+      fn(sn, _, _, _, current) {
+        let tree = summary_fixture.tree(recording, topic, "snapshot")
+        let commit =
+          summary_fixture.commit(recording, topic, tree, [], "summary")
+        process.send(events, "objects")
+        #(
+          summary_fixture.proposal(sn, 0, tree, current.0),
+          summary_fixture.ack(sn, commit),
+          Some(commit),
+        )
+      },
+    )
+  process.send(events, "reply")
+  collect_write_events(events)
+  |> should.equal(["objects", "proposal", "response", "pointer", "ref", "reply"])
+  let assert Ok(#(sha, 1)) = session.summary(document_session, topic)
+  git.get_ref(backend, "publish-order", "heads/doc") |> should.equal(Ok(sha))
+}
+
+fn collect_write_events(events: process.Subject(String)) -> List(String) {
+  let assert Ok(event) = process.receive(events, 1000)
+  case event {
+    "reply" -> ["reply"]
+    _ -> [event, ..collect_write_events(events)]
+  }
+}
+
+pub fn initialized_summary_is_published_before_created_test() {
+  let backend = memory_store.new()
+  let document_session = session.start_with_backend(backend)
+  let topic = store.topic("initial-publish", "doc")
+  let assert session.Created =
+    session.create_initialized(document_session, topic, fn() {
+      let tree = summary_fixture.tree(backend, topic, "initial")
+      let sha = summary_fixture.commit(backend, topic, tree, [], "initial")
+      Ok(Some(#(sha, 10)))
+    })
+  let assert Ok(#(sha, 10)) = session.summary(document_session, topic)
+  git.get_ref(backend, "initial-publish", "heads/doc") |> should.equal(Ok(sha))
+}
+
+pub fn timed_out_call_does_not_replace_a_live_publisher_test() {
+  let backend = memory_store.new()
+  let entered = process.new_subject()
+  let finished = process.new_subject()
+  let blocked =
+    store.Backend(..backend, put_ref: fn(tenant, ref, sha) {
+      let release = process.new_subject()
+      process.send(entered, release)
+      let assert Ok(Nil) = process.receive(release, 5000)
+      backend.put_ref(tenant, ref, sha)
+    })
+  let document_session = session.start_with_backend(blocked)
+  let topic = store.topic("blocked-publication", "doc")
+  session.join(document_session, topic, "writer") |> should.be_false
+  let assert Ok(owner) = session.document_owner(document_session, topic)
+  let _ =
+    process.spawn_unlinked(fn() {
+      let result =
+        exception.rescue(fn() {
+          session.submit_summary_messages(
+            document_session,
+            topic,
+            "writer",
+            1,
+            0,
+            fn(sn, _, _, _, current) {
+              let tree = summary_fixture.tree(backend, topic, "blocked")
+              let sha =
+                summary_fixture.commit(backend, topic, tree, [], "blocked")
+              #(
+                summary_fixture.proposal(sn, 0, tree, current.0),
+                summary_fixture.ack(sn, sha),
+                Some(sha),
+              )
+            },
+          )
+        })
+      process.send(finished, result)
+    })
+  let assert Ok(release) = process.receive(entered, 1000)
+  // This call times out while the publisher is blocked, not after it died.
+  let result =
+    exception.rescue(fn() { session.join(document_session, topic, "late") })
+  process.send(release, Nil)
+  let assert Error(_) = result
+  session.document_owner(document_session, topic) |> should.equal(Ok(owner))
+  let assert Ok(_) = process.receive(finished, 2000)
+  store.get_ops(backend, topic) |> list.length |> should.equal(2)
 }

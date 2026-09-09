@@ -42,9 +42,8 @@ fn json_encode(value: Dynamic) -> String
 /// the commit sha with its sequence number, or `None` when the payload carries no
 /// summary.
 ///
-/// Objects only. `refs/heads/<document_id>` is published by the caller once the
-/// session has committed the summary pointer, so a crash can only leave the ref
-/// lagging, never leading. See `git.publish_summary_ref`.
+/// Objects only. The document actor writes the summary pointer and publication
+/// ref before it replies to the document-create request.
 ///
 /// Scoped by `topic` rather than tenant because objects belong to a document —
 /// see `git.create`. Nothing in here needs the tenant on its own.

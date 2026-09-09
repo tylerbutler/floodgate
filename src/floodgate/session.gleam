@@ -41,6 +41,7 @@
 import exception
 import floodgate/doc_registry
 import floodgate/doc_state.{type Doc, Doc}
+import floodgate/git
 import floodgate/memory_store
 import floodgate/store
 import gleam/dict
@@ -54,6 +55,7 @@ import gleam/otp/actor
 import gleam/otp/factory_supervisor
 import gleam/otp/static_supervisor
 import gleam/otp/supervision
+import gleam/string
 import spillway/sequencing
 
 /// A handle onto a document session.
@@ -503,18 +505,23 @@ fn call_doc(
   timeout: Int,
   make: fn(Subject(reply)) -> Msg,
 ) -> reply {
-  case
-    exception.rescue(fn() {
-      process.call(resolve(session, topic), timeout, make)
-    })
-  {
+  let subject = resolve(session, topic)
+  case exception.rescue(fn() { process.call(subject, timeout, make) }) {
     Ok(value) -> value
     Error(_) -> {
-      // Drop the row we just failed against so the owner starts a fresh actor
-      // rather than handing back the same corpse.
-      doc_registry.delete(registry(session), topic)
-      process.call(start_document_actor(session, topic), timeout, make)
+      case subject_is_alive(subject) {
+        True -> panic as "Document actor call failed while its owner is alive"
+        False ->
+          process.call(start_document_actor(session, topic), timeout, make)
+      }
     }
+  }
+}
+
+fn subject_is_alive(subject: Subject(Msg)) -> Bool {
+  case process.subject_owner(subject) {
+    Ok(pid) -> process.is_alive(pid)
+    Error(Nil) -> False
   }
 }
 
@@ -537,7 +544,11 @@ pub fn create_initialized(
   topic: String,
   build: fn() -> Result(Option(#(String, Int)), Nil),
 ) -> CreateInitializedResult {
-  call_doc(session, topic, 10_000, CreateInitialized(topic, build, _))
+  process.call(resolve(session, topic), 10_000, CreateInitialized(
+    topic,
+    build,
+    _,
+  ))
 }
 
 pub fn join(session: Session, topic: String, client_id: String) -> Bool {
@@ -628,7 +639,7 @@ pub fn submit_summary(
   response_contents: String,
   handle: Option(String),
 ) -> SubmitSummaryResult {
-  call_doc(session, topic, 1000, SubmitSummary(
+  process.call(resolve(session, topic), 1000, SubmitSummary(
     topic,
     client_id,
     csn,
@@ -649,7 +660,7 @@ pub fn submit_summary_messages(
   build: fn(Int, Int, Int, List(#(String, String)), #(String, Int)) ->
     #(String, String, Option(String)),
 ) -> SubmitSummaryMessagesResult {
-  call_doc(session, topic, 1000, SubmitSummaryMessages(
+  process.call(resolve(session, topic), 1000, SubmitSummaryMessages(
     topic,
     client_id,
     csn,
@@ -807,8 +818,16 @@ fn handle_owner(
       // than starting a duplicate. This is why starts go through one process.
       case doc_registry.lookup(state.registry, topic) {
         Ok(subject) -> {
-          process.send(reply, Ok(subject))
-          actor.continue(state)
+          case subject_is_alive(subject) {
+            True -> {
+              process.send(reply, Ok(subject))
+              actor.continue(state)
+            }
+            False -> {
+              doc_registry.delete(state.registry, topic)
+              start_child(state, topic, reply)
+            }
+          }
         }
         Error(Nil) -> start_child(state, topic, reply)
       }
@@ -1375,8 +1394,8 @@ fn handle(
       actor.continue(state)
     }
     InitializeSummary(topic, handle, sn, reply) -> {
-      persist_summary(storage, topic, handle, sn)
       let document = doc(storage, topic, state)
+      persist_summary(storage, topic, handle, sn)
       process.send(reply, Nil)
       cache(
         state,
@@ -1387,8 +1406,8 @@ fn handle(
       )
     }
     SetSummary(topic, handle, sn, reply) -> {
-      persist_summary(storage, topic, handle, sn)
       let document = doc(storage, topic, state)
+      persist_summary(storage, topic, handle, sn)
       process.send(reply, Nil)
       cache(state, Doc(..document, summary: #(handle, sn)))
     }
@@ -1450,7 +1469,14 @@ fn persist_summary(
 ) -> Nil {
   let assert Ok(Nil) =
     store.put_summary(storage, topic, handle, sequence_number)
-  Nil
+  case string.split(topic, ":") {
+    ["document", tenant, document_id] -> {
+      let assert Ok(Nil) =
+        git.publish_summary_ref(storage, tenant, document_id, handle)
+      Nil
+    }
+    _ -> Nil
+  }
 }
 
 pub fn stored_message_to_json(op: #(Int, String)) -> json.Json {

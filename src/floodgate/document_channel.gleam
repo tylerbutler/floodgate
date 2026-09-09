@@ -1290,11 +1290,6 @@ fn submit_summary_op(
       summary_message,
       response_message,
     ) -> {
-      // Now that the ops and the session's summary pointer are committed, make
-      // the ref match it. Reading the pointer back rather than reusing the sha
-      // computed above is what makes the ref a projection of the authoritative
-      // value: whatever the session accepted is what gets published.
-      publish_summary_ref(document_session, assigns.topic)
       #(nacks, [
         channel.broadcast(
           events.op,
@@ -1354,31 +1349,10 @@ fn summarize_contents_decoder() -> decode.Decoder(SummarizeContents) {
   decode.success(SummarizeContents(handle, message, parents, head))
 }
 
-/// Point `refs/heads/<document_id>` at whatever summary commit the session
-/// currently holds. A no-op when there is none.
-fn publish_summary_ref(document_session: Session, topic: String) -> Nil {
-  case topic_ids(topic), session.summary(document_session, topic) {
-    Ok(#(tenant, document_id)), Ok(#(handle, _sn)) if handle != "" -> {
-      // Best-effort: a failed publish leaves a lagging ref, which
-      // `doc_state.rehydrate` repairs on the document's next cold start.
-      let _ =
-        git.publish_summary_ref(
-          session.storage(document_session),
-          tenant,
-          document_id,
-          handle,
-        )
-      Nil
-    }
-    _, _ -> Nil
-  }
-}
-
 /// Store the summary's commit object and return its sha.
 ///
-/// Deliberately does *not* publish `refs/heads/<document_id>`: that happens in
-/// `submit_summary_op` once the session has committed its own summary pointer, so
-/// the ref can only ever lag, never lead. See `git.publish_summary_ref`.
+/// The document actor publishes the pointer and ref after storing the proposal
+/// and its response.
 fn persist_summary(
   storage: store.Backend,
   topic: String,
@@ -1704,13 +1678,6 @@ fn membership_change(op: #(Int, String)) -> Result(MembershipChange, Nil) {
       |> result.map(MemberLeft)
       |> result.replace_error(Nil)
     _ -> Error(Nil)
-  }
-}
-
-fn topic_ids(topic: String) -> Result(#(String, String), String) {
-  case string.split(topic, ":") {
-    ["document", tenant, document_id] -> Ok(#(tenant, document_id))
-    _ -> Error("Invalid document topic")
   }
 }
 
