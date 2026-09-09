@@ -93,12 +93,54 @@ async function publishSnapshot(documentId: string, content: string, head = "") {
 describe.runIf(floodgateAvailable && !isLeveeProxyTarget)(
 	"Floodgate published ref ownership",
 	() => {
+		it("rejects malformed history parameters and returns an empty unpublished history", async () => {
+			const documentId = uniqueDocId("empty-history");
+			const path = `/repos/${FLOODGATE_TENANT_ID}/commits`;
+			for (const query of [
+				"",
+				"?sha=",
+				`?sha=${documentId}&count=0`,
+				`?sha=${documentId}&count=-1`,
+				`?sha=${documentId}&count=1.5`,
+				`?sha=${documentId}&count=invalid`,
+			]) {
+				expect(
+					(await floodgateFetch(`${path}${query}`, { documentId })).status,
+				).toBe(400);
+			}
+			const history = await floodgateFetch(`${path}?sha=${documentId}`, {
+				documentId,
+			});
+			expect(history.status).toBe(200);
+			expect(await history.json()).toEqual([]);
+		});
+
 		it("restricts commit versions to their published document chain", async () => {
 			const a = uniqueDocId("version-owner-a");
 			const b = uniqueDocId("version-owner-b");
 			const first = await publishSnapshot(a, "A1");
 			const second = await publishSnapshot(a, "A2", first.published);
-			await publishSnapshot(b, "B");
+			const own = await publishSnapshot(b, "B");
+			const service =
+				await createFloodgateServiceFactory().createDocumentService(
+					createFloodgateResolvedUrl(b),
+				);
+			const connection = await service.connectToDeltaStream(testClient);
+			try {
+				const rejected = await submitSummary(
+					connection,
+					first.treeSha,
+					second.published,
+					1,
+				);
+				expect(rejected.type).toBe("summaryNack");
+			} finally {
+				connection.dispose();
+			}
+			const storage = await service.connectToStorage();
+			expect(
+				(await storage.getVersions(null, 10)).map((version) => version.id),
+			).toEqual([own.published]);
 			for (const path of [
 				`/repos/${FLOODGATE_TENANT_ID}/commits?sha=${a}&count=3`,
 				`/repos/${FLOODGATE_TENANT_ID}/commits?sha=${first.published}&count=3`,
@@ -147,6 +189,20 @@ describe.runIf(floodgateAvailable && !isLeveeProxyTarget)(
 						method: "POST",
 						documentId: b,
 						body: { ref, sha: version.published },
+					},
+				);
+				expect(response.status).toBe(403);
+			}
+			for (const documentId of [a, b]) {
+				const response = await floodgateFetch(
+					FLOODGATE_REST_ENDPOINTS.gitRef(
+						FLOODGATE_TENANT_ID,
+						`heads/${documentId}`,
+					),
+					{
+						method: "PATCH",
+						documentId: b,
+						body: { sha: version.published },
 					},
 				);
 				expect(response.status).toBe(403);
@@ -1311,64 +1367,65 @@ describe.runIf(floodgateAvailable)(
 			"loads versions, snapshot trees, and blobs through the official storage service",
 			async () => {
 				const documentId = uniqueDocId("floodgate-storage-load");
-				const content = "official storage load";
-				const graph = await createBlobTreeCommitGraph(
+				const first = await publishSnapshot(documentId, "first snapshot");
+				const second = await publishSnapshot(
+					documentId,
+					"second snapshot",
+					first.published,
+				);
+				const staged = await createBlobTreeCommitGraph(
 					FLOODGATE_TENANT_ID,
-					content,
-					"Floodgate official storage load",
+					"unpublished",
+					"staged version",
 					documentId,
 				);
-				const commitResponse = await floodgateFetch(
-					FLOODGATE_REST_ENDPOINTS.gitCreateCommit(FLOODGATE_TENANT_ID),
-					{
-						method: "POST",
-						body: {
-							tree: graph.treeSha,
-							parents: [graph.commitSha],
-							message: "Floodgate official storage load child",
-							author: {
-								name: "Floodgate Conformance Suite",
-								email: "conformance@floodgate.local",
-								date: new Date().toISOString(),
-							},
-						},
-						documentId,
-						scopes: ["doc:read", "summary:write"],
-					},
-				);
-				expect(commitResponse.status).toBe(201);
-				const { sha: childCommitSha } = await commitResponse.json();
-				const refResponse = await floodgateFetch(
-					FLOODGATE_REST_ENDPOINTS.gitRefs(FLOODGATE_TENANT_ID),
-					{
-						method: "POST",
-						body: {
-							ref: `refs/heads/${documentId}`,
-							sha: childCommitSha,
-						},
-						documentId,
-						scopes: ["doc:read", "summary:write"],
-					},
-				);
-				expect(refResponse.status).toBe(201);
-
 				const service =
 					await createFloodgateServiceFactory().createDocumentService(
 						createFloodgateResolvedUrl(documentId),
 					);
 				const storage = await service.connectToStorage();
-				const versions = await storage.getVersions(null, 2);
-
-				expect(versions).toMatchObject([
-					{ id: childCommitSha, treeId: graph.treeSha },
-					{ id: graph.commitSha, treeId: graph.treeSha },
+				const connection = await service.connectToDeltaStream(
+					createFloodgateTestClient("stale-storage-summary"),
+				);
+				try {
+					const rejected = await submitSummary(
+						connection,
+						staged.treeSha,
+						first.published,
+						1,
+					);
+					expect(rejected.type).toBe("summaryNack");
+				} finally {
+					connection.dispose();
+				}
+				const versions = await storage.getVersions(null, 3);
+				expect(versions.map((version) => version.id)).toEqual([
+					second.published,
+					first.published,
 				]);
-
-				const snapshot = await storage.getSnapshotTree(versions[0]);
-				expect(snapshot?.blobs["file.txt"]).toBe(graph.blobSha);
-
-				const blob = await storage.readBlob(graph.blobSha);
-				expect(Buffer.from(blob).toString()).toBe(content);
+				expect(
+					(await storage.getVersions(null, 1)).map((version) => version.id),
+				).toEqual([second.published]);
+				expect(
+					(await storage.getVersions(first.published, 3)).map(
+						(version) => version.id,
+					),
+				).toEqual([first.published]);
+				for (const [index, content] of [
+					"second snapshot",
+					"first snapshot",
+				].entries()) {
+					const snapshot = await storage.getSnapshotTree(versions[index]);
+					const blobId = snapshot?.blobs["file.txt"];
+					expect(blobId).toBeDefined();
+					if (!blobId) throw new Error("Snapshot has no file.txt blob");
+					expect(Buffer.from(await storage.readBlob(blobId)).toString()).toBe(
+						content,
+					);
+				}
+				expect(
+					(await storage.getVersions(null, 1)).map((version) => version.id),
+				).toEqual([second.published]);
 			},
 		);
 

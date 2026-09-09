@@ -1154,7 +1154,7 @@ fn collect_write_events(events: process.Subject(String)) -> List(String) {
 pub fn initialized_summary_is_published_before_created_test() {
   let backend = memory_store.new()
   let document_session = session.start_with_backend(backend)
-  let topic = store.topic("initial-publish", "doc")
+  let topic = store.topic("initial-publish", "doc:branch")
   let assert session.Created =
     session.create_initialized(document_session, topic, fn() {
       let tree = summary_fixture.tree(backend, topic, "initial")
@@ -1162,7 +1162,14 @@ pub fn initialized_summary_is_published_before_created_test() {
       Ok(Some(#(sha, 10)))
     })
   let assert Ok(#(sha, 10)) = session.summary(document_session, topic)
-  git.get_ref(backend, "initial-publish", "heads/doc") |> should.equal(Ok(sha))
+  git.get_ref(backend, "initial-publish", "heads/doc:branch")
+  |> should.equal(Ok(sha))
+  let assert Ok(Nil) =
+    store.delete_ref(backend, "initial-publish", "refs/heads/doc:branch")
+  session.published_summary(document_session, topic)
+  |> should.equal(Ok(Some(#(sha, 10))))
+  git.get_ref(backend, "initial-publish", "heads/doc:branch")
+  |> should.equal(Ok(sha))
 }
 
 pub fn timed_out_call_does_not_replace_a_live_publisher_test() {
@@ -1205,6 +1212,10 @@ pub fn timed_out_call_does_not_replace_a_live_publisher_test() {
       process.send(finished, result)
     })
   let assert Ok(release) = process.receive(entered, 1000)
+  let independent = store.topic("blocked-publication", "independent")
+  session.join(document_session, independent, "other") |> should.be_false
+  let assert session.Assigned(1, _) =
+    session.submit(document_session, independent, "other", 1, 0, "unblocked")
   // This call times out while the publisher is blocked, not after it died.
   let result =
     exception.rescue(fn() { session.join(document_session, topic, "late") })
@@ -1450,6 +1461,8 @@ pub fn assert_ref_reconciliation(backend: store.Backend) -> Nil {
   session.exists(document_session, generic) |> should.be_false
   session.create_initialized(document_session, generic, fn() { Ok(None) })
   |> should.equal(session.Created)
+  git.get_ref(backend, "ref-read", "heads/generic")
+  |> should.equal(Error(Nil))
   session.write_ref(
     document_session,
     "ref-read",
@@ -1472,10 +1485,134 @@ pub fn failed_ref_repair_surfaces_error_and_retries_test() {
   |> should.equal(Error(git.StorageUnavailable))
   session.published_summary(session.start_with_backend(backend), topic)
   |> should.equal(Ok(Some(#(head, 5))))
+  let unreadable =
+    store.Backend(
+      ..backend,
+      get_ref: fn(_, _) { panic as "Ref storage is unavailable" },
+      create_ref: fn(_, _, _) { panic as "Ref storage is unavailable" },
+    )
+  session.published_summary(session.start_with_backend(unreadable), topic)
+  |> should.equal(Error(git.StorageUnavailable))
+  session.write_ref(
+    session.start_with_backend(unreadable),
+    "ref-failure",
+    "doc",
+    "heads/other",
+    head,
+    True,
+  )
+  |> should.equal(session.RefUnavailable)
+  let stray = store.topic("ref-failure", "stray")
+  let assert Ok(Nil) = git.put_ref(backend, "ref-failure", "heads/stray", head)
+  let undeletable =
+    store.Backend(..backend, delete_ref: fn(_, _) { Error(Nil) })
+  session.published_summary(session.start_with_backend(undeletable), stray)
+  |> should.equal(Error(git.StorageUnavailable))
+  session.published_summary(session.start_with_backend(backend), stray)
+  |> should.equal(Ok(None))
+  git.get_ref(backend, "ref-failure", "heads/stray")
+  |> should.equal(Error(Nil))
 }
 
 pub fn published_commit_ownership_and_legacy_adoption_test() {
   assert_commit_ownership(memory_store.new())
+}
+
+pub fn publication_failures_preserve_the_durable_prefix_test() {
+  assert_publication_failure_prefixes(memory_store.new())
+}
+
+pub fn assert_publication_failure_prefixes(backend: store.Backend) -> Nil {
+  list.each(["object", "proposal", "response", "pointer", "ref"], fn(stage) {
+    let topic = store.topic("failure-prefix", stage)
+    let tree = summary_fixture.tree(backend, topic, stage)
+    let commits = process.new_subject()
+    let failing =
+      store.Backend(
+        ..backend,
+        put_object: fn(namespace, sha, body) {
+          case stage {
+            "object" -> Error(Nil)
+            _ -> backend.put_object(namespace, sha, body)
+          }
+        },
+        put_op: fn(topic, sn, body) {
+          case stage, sn {
+            "proposal", 1 | "response", 2 -> Error(Nil)
+            _, _ -> backend.put_op(topic, sn, body)
+          }
+        },
+        put_summary: fn(topic, sha, sn) {
+          case stage {
+            "pointer" -> Error(Nil)
+            _ -> backend.put_summary(topic, sha, sn)
+          }
+        },
+        put_ref: fn(tenant, ref, sha) {
+          case stage {
+            "ref" -> Error(Nil)
+            _ -> backend.put_ref(tenant, ref, sha)
+          }
+        },
+      )
+    let publishing = session.start_with_backend(failing)
+    session.join(publishing, topic, "writer") |> should.be_false
+    let assert Ok(owner) = session.document_owner(publishing, topic)
+    let result =
+      exception.rescue(fn() {
+        session.submit_summary_messages(
+          publishing,
+          topic,
+          "writer",
+          1,
+          0,
+          fn(sn, _, _, _, current) {
+            let sha = summary_fixture.commit(failing, topic, tree, [], stage)
+            process.send(commits, sha)
+            #(
+              summary_fixture.proposal(sn, 0, tree, current.0),
+              summary_fixture.ack(sn, sha),
+              Some(sha),
+            )
+          },
+        )
+      })
+    let assert Error(_) = result
+    process.is_alive(owner) |> should.be_false
+    let commit = case stage {
+      "object" -> ""
+      _ -> {
+        let assert Ok(sha) = process.receive(commits, 1000)
+        sha
+      }
+    }
+    let durable = store.get_ops(backend, topic)
+    let count = case stage {
+      "object" | "proposal" -> 0
+      "response" -> 1
+      _ -> 2
+    }
+    list.length(durable) |> should.equal(count)
+    let expected = case stage {
+      "pointer" | "ref" -> Some(#(commit, 1))
+      _ -> None
+    }
+    // Shelf's one-file cap closes the failed document before recovery.
+    let assert Ok(Nil) =
+      store.put_document(
+        backend,
+        store.topic("failure-prefix", "evict-" <> stage),
+      )
+    let recovered = session.start_with_backend(backend)
+    session.published_summary(recovered, topic) |> should.equal(Ok(expected))
+    session.published_summary(recovered, topic) |> should.equal(Ok(expected))
+    store.get_ops(backend, topic) |> should.equal(durable)
+    session.sequence_number(recovered, topic) |> should.equal(count)
+    session.join(recovered, topic, "after") |> should.be_true
+    let assert session.Assigned(next, _) =
+      session.submit(recovered, topic, "after", 1, count, "next")
+    next |> should.equal(count + 1)
+  })
 }
 
 pub fn assert_commit_ownership(backend: store.Backend) -> Nil {
@@ -1487,6 +1624,11 @@ pub fn assert_commit_ownership(backend: store.Backend) -> Nil {
   store.get_object(backend, a, staged) |> should.not_equal(Error(Nil))
   store.get_object(backend, b, staged) |> should.equal(Error(Nil))
   git.fetch(backend, b, tree) |> should.not_equal(Error(Nil))
+  let staged_session = session.start_with_backend(backend)
+  session.published_summary(staged_session, a) |> should.equal(Ok(None))
+  session.exists(staged_session, a) |> should.be_false
+  session.create_initialized(staged_session, a, fn() { Ok(None) })
+  |> should.equal(session.Created)
   let legacy =
     store.Backend(..backend, put_object: fn(_, sha, body) {
       backend.put_object(tenant, sha, body)
@@ -1505,4 +1647,86 @@ pub fn assert_commit_ownership(backend: store.Backend) -> Nil {
   store.get_object(backend, a, orphan) |> should.equal(Error(Nil))
   session.published_summary(document_session, b) |> should.equal(Ok(None))
   store.get_object(backend, b, head) |> should.equal(Error(Nil))
+  summary_fixture.commit(backend, b, tree, [], "staged")
+  |> should.equal(staged)
+  git.fetch_commit(backend, b, staged)
+  |> should.equal(git.fetch_commit(backend, a, staged))
+  git.published_history_response(
+    backend,
+    "http://localhost",
+    tenant,
+    a,
+    head,
+    Some(staged),
+    10,
+  )
+  |> should.equal(Ok(None))
+  let assert Ok(Some(history)) =
+    git.published_history_response(
+      backend,
+      "http://localhost",
+      tenant,
+      a,
+      head,
+      Some(root),
+      10,
+    )
+  list.length(history) |> should.equal(1)
+  let damaged =
+    store.Backend(..backend, get_object: fn(namespace, sha) {
+      case namespace == a && sha == root {
+        True -> Error(Nil)
+        False -> backend.get_object(namespace, sha)
+      }
+    })
+  let assert Error(git.CorruptPublication(_)) =
+    git.published_history_response(
+      damaged,
+      "http://localhost",
+      tenant,
+      a,
+      head,
+      None,
+      1,
+    )
+
+  let initial = store.topic(tenant, "legacy-initial")
+  let assert Ok(Nil) = store.put_summary(backend, initial, root, 0)
+  session.published_summary(document_session, initial)
+  |> should.equal(Ok(Some(#(root, 0))))
+  git.fetch_commit(backend, initial, root)
+  |> should.equal(store.get_object(backend, tenant, root))
+
+  let acknowledged = store.topic(tenant, "legacy-ack")
+  let proposal = summary_fixture.proposal(5, 0, tree, root)
+  let ack = summary_fixture.ack(5, head)
+  let assert Ok(Nil) = store.put_op(backend, acknowledged, 5, proposal)
+  let assert Ok(Nil) = store.put_op(backend, acknowledged, 6, ack)
+  session.published_summary(document_session, acknowledged)
+  |> should.equal(Ok(Some(#(head, 5))))
+  store.get_ops(backend, acknowledged)
+  |> should.equal([#(5, proposal), #(6, ack)])
+  git.fetch_commit(backend, acknowledged, root)
+  |> should.equal(store.get_object(backend, tenant, root))
+
+  let partial = store.topic(tenant, "legacy-partial")
+  let assert Ok(Nil) = store.put_summary(backend, partial, head, 5)
+  let failing =
+    store.Backend(..backend, put_object: fn(namespace, sha, body) {
+      case namespace == partial && sha == root {
+        True -> Error(Nil)
+        False -> backend.put_object(namespace, sha, body)
+      }
+    })
+  session.published_summary(session.start_with_backend(failing), partial)
+  |> should.equal(Error(git.StorageUnavailable))
+  git.fetch_commit(backend, partial, head)
+  |> should.equal(store.get_object(backend, tenant, head))
+  git.fetch_commit(backend, partial, root) |> should.equal(Error(Nil))
+  git.get_ref(backend, tenant, "heads/legacy-partial")
+  |> should.equal(Error(Nil))
+  session.published_summary(document_session, partial)
+  |> should.equal(Ok(Some(#(head, 5))))
+  git.fetch_commit(backend, partial, root)
+  |> should.equal(store.get_object(backend, tenant, root))
 }

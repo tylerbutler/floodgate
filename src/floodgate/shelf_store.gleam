@@ -141,7 +141,7 @@ fn backend(
     supervise: supervise,
     open: fn() { Nil },
     put_document: fn(topic) { doc_store.put_marker(docs, topic) },
-    has_document: fn(topic) { doc_store.exists(docs, topic) },
+    has_document: fn(topic) { doc_store.has_marker(docs, topic) },
     put_op: fn(topic, sequence_number, contents) {
       doc_store.put_op(docs, topic, sequence_number, contents)
     },

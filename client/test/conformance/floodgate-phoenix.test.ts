@@ -21,6 +21,7 @@ import type {
 	IClient,
 	IDocumentDeltaConnection,
 } from "@fluidframework/driver-definitions/internal";
+import type { ISequencedDocumentMessage } from "@fluidframework/protocol-definitions";
 import {
 	InsecureLeveeTokenProvider,
 	LeveeDocumentServiceFactory,
@@ -30,6 +31,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { FLOODGATE_SOCKET_EVENTS } from "./floodgate-contract.js";
 import {
+	createBlobTreeCommitGraph,
 	createFloodgateResolvedUrl,
 	createFloodgateServiceFactory,
 	createFloodgateTestClient,
@@ -37,7 +39,7 @@ import {
 	FLOODGATE_JWT_SECRET,
 	FLOODGATE_TENANT_ID,
 } from "./floodgate-target.js";
-import { uniqueDocId } from "./helpers.js";
+import { acknowledgedHandle, submitSummary, uniqueDocId } from "./helpers.js";
 
 /**
  * Separate opt-in from the Routerlicious suite so either wire protocol can be
@@ -269,6 +271,69 @@ describe.runIf(phoenixAvailable)(
 describe.runIf(phoenixAvailable)(
 	"Floodgate conformance — cross-mode collaboration",
 	() => {
+		it("publishes one summary child across Phoenix and Socket.IO, then accepts the loser's retry", async () => {
+			const documentId = uniqueDocId("cross-mode-summary");
+			await createDocument(documentId);
+			const graphs = await Promise.all(
+				["base", "phoenix", "routerlicious"].map((content) =>
+					createBlobTreeCommitGraph(
+						FLOODGATE_TENANT_ID,
+						content,
+						`Cross-mode ${content}`,
+						documentId,
+					),
+				),
+			);
+			const phoenix = await connectPhoenix(documentId);
+			const service =
+				await createFloodgateServiceFactory().createDocumentService(
+					createFloodgateResolvedUrl(documentId),
+				);
+			const routerlicious = await service.connectToDeltaStream(
+				createFloodgateTestClient("routerlicious-summary-peer"),
+			);
+			const responses: ISequencedDocumentMessage[] = [];
+			const collect = (_id: string, messages: ISequencedDocumentMessage[]) => {
+				responses.push(
+					...messages.filter((message) => message.type === "summaryAck"),
+				);
+			};
+			routerlicious.on("op", collect);
+			try {
+				const base = acknowledgedHandle(
+					await submitSummary(phoenix, graphs[0].treeSha, "", 1),
+				);
+				const [a, b] = await Promise.all([
+					submitSummary(phoenix, graphs[1].treeSha, base, 2),
+					submitSummary(routerlicious, graphs[2].treeSha, base, 1),
+				]);
+				expect([a.type, b.type].sort()).toEqual(["summaryAck", "summaryNack"]);
+				const phoenixWon = a.type === "summaryAck";
+				const winner = acknowledgedHandle(phoenixWon ? a : b);
+				const retry = acknowledgedHandle(
+					await submitSummary(
+						phoenixWon ? routerlicious : phoenix,
+						graphs[phoenixWon ? 2 : 1].treeSha,
+						winner,
+						phoenixWon ? 2 : 3,
+					),
+				);
+				const storage = await service.connectToStorage();
+				expect(
+					(await storage.getVersions(null, 10)).map((version) => version.id),
+				).toEqual([retry, winner, base]);
+				expect(responses.map(acknowledgedHandle)).toEqual([
+					base,
+					winner,
+					retry,
+				]);
+			} finally {
+				routerlicious.off("op", collect);
+				phoenix.dispose();
+				routerlicious.dispose();
+			}
+		});
+
 		it("fans an op from a Phoenix client to a Routerlicious client", async () => {
 			const documentId = uniqueDocId("cross-mode");
 			await createDocument(documentId);

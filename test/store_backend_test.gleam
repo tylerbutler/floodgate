@@ -68,6 +68,13 @@ pub fn shelf_preserves_document_commit_ownership_and_legacy_history_test() {
   floodgate_test.assert_commit_ownership(shelf_store.new(unique_dir()))
 }
 
+pub fn shelf_recovers_failed_publication_after_closing_document_files_test() {
+  setenv("FLOODGATE_MAX_OPEN_DOCUMENTS", "1")
+  let backend = shelf_store.new(unique_dir())
+  setenv("FLOODGATE_MAX_OPEN_DOCUMENTS", "")
+  floodgate_test.assert_publication_failure_prefixes(backend)
+}
+
 /// The memory backend's actor holds every document, op, and ref for the
 /// runtime, so before it was supervised its death left every `store.*` call
 /// timing out forever with nothing to restart it. Its state does not survive —

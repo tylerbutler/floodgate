@@ -28,7 +28,7 @@ A document was a *row*: every op in one `ops.dets`, every blob in one
 
 **A document is a file.** `floodgate/doc_store` opens one shelf table per
 document at `{data_dir}/documents/t{hex tenant}/d{hex document id}.dets`,
-holding that document's marker, ops, summary pointer, and git objects in one
+holding that document's marker, ops, summary pointer, and commits in one
 tagged key space — one file, one DETS handle, one ETS mirror.
 
 1. **The runtime model does not change.** shelf's per-table ETS-in-front-of-DETS
@@ -38,15 +38,17 @@ tagged key space — one file, one DETS handle, one ETS mirror.
 
 2. **Only non-document-scoped data stays shared.** Refs (plus their index),
    tenants, admin users, and admin sessions remain in `shelf_store`'s tables.
-   Refs stay shared deliberately: `GET /repos/:tenant/git/refs` lists a whole
-   tenant's refs, which per-document files would turn into a filesystem walk,
-   and a copied document's ref is reconstructible from its summary pointer —
-   `doc_state.restore_summary_ref` already does exactly that repair.
+   Tenant namespaces hold shared blobs and trees. The ref index supports
+   tenant-wide lookup without a document-file walk; the REST handler filters
+   foreign document heads. The document actor reconstructs its reserved head
+   from trusted publication state through `git.reconcile_summary_ref`.
 
-3. **Git objects become document-scoped.** `store.put_obj`/`get_obj` are keyed
-   by topic. The Historian routes are tenant-scoped URLs, but the caller's token
-   already carries `documentId` and the handlers were discarding it. This is
-   what lets a document's storage be self-contained.
+3. **Amended: only commits require document ownership.** The original decision
+   to store all git objects per document is superseded. Commits use the
+   document topic; blobs and trees use the tenant namespace so official driver
+   upload caches can reuse objects between documents. Reads retain the old
+   document-scoped blob/tree fallback. Historian handlers use the token's
+   `documentId` for commit reads despite their tenant-scoped URLs.
 
 4. **One supervised owner actor.** It opens tables (serializing opens, which
    would otherwise build two ETS mirrors over one DETS file) and owns their ETS
@@ -67,9 +69,12 @@ tagged key space — one file, one DETS handle, one ETS mirror.
    `FLOODGATE_MAX_OPEN_DOCUMENTS`. This is what converts (1) into a bound on
    *active* documents.
 
-7. **Reads never create.** Opening a shelf table creates its DETS file, so reads
-   pass `create: False` and miss instead. `has_document` is then a `stat`, not
-   an open.
+7. **Reads never create unknown documents.** Opening a shelf table creates its
+   DETS file, so reads pass `create: False` and miss instead. The old
+   file-existence-only `has_document` rule is superseded: a file can contain
+   only staged commits. Shelf reads the document marker; session existence
+   also accepts stored ops or a summary pointer. A staged commit cannot cause
+   a later document-create conflict.
 
 ## Why this is acceptable
 
@@ -86,34 +91,66 @@ tagged key space — one file, one DETS handle, one ETS mirror.
   sanitise-or-hash conditional. shelf's `base_directory` validation sits
   underneath. Opening is not `let assert`ed, so a bad id cannot take the node
   down.
-- **Unauthenticated probes cost a `stat`.** `doc_state.stored_document_exists`
-  is reachable unauthenticated; without the read/write split it would open — and
-  therefore create — a file per probe.
+- **Unknown-document probes do not open files.**
+  `doc_state.stored_document_exists` is reachable unauthenticated. A missing
+  file remains a miss; an existing file may need a marker read to distinguish
+  a document from staged objects. The open-file cap still applies.
 
 ## Consequences
 
-- **Cross-document blob dedup within a tenant is gone.** Two documents uploading
-  identical bytes store them twice. This is the price of a self-contained
-  document, and it is the intended trade.
-- **A blob is only readable with a token for the document it was written under.**
-  Previously any token for the tenant would do. The official drivers always use
-  the document's own token, so this is a tightening rather than a break.
+- **Superseded: document-only blob/tree access and duplicate storage.** New
+  blobs and trees support tenant-wide reuse. Raw commits require document
+  ownership, and version reads require membership in that document's
+  published first-parent chain.
+- **A document file is not a self-contained archive.** A copy also needs its
+  referenced shared blobs and trees.
 - **`GET /repos/:tenant/git/blobs/:sha` authorizes before reading.** The fetch
   used to be evaluated as part of the case subject, so an unauthenticated
   request still did the read.
-- **Cold opens cost more.** shelf streams the whole DETS file through its decoder
-  into ETS, so a document with a large summary blob pays that on each cold open,
-  and that blob is resident while the document is active. Memory is now bounded
-  by *active* documents, not by document *size*.
-- **The old shared `objects.dets` is retained read-only** as a fallback on a
-  per-document miss, so pre-split blobs stay readable without a migration that
-  would have to walk each ref's commit → tree → blob graph to attribute every
-  sha. Nothing writes to it any more.
+- **Cold opens read the document file into ETS.** Its ops, commits, and any
+  legacy document-scoped objects remain resident until eviction. Tenant-shared
+  objects have their own storage lifetime.
+- **Legacy objects remain readable.** The old shared `objects.dets` remains a
+  read-only fallback for the exact namespace key. New tenant-shared blobs and
+  trees use the existing namespaced `doc_store` files. There is no unrestricted
+  tenant fallback for client-supplied commit SHAs.
 - **No migration for ops/summaries/markers.** Their shared tables are gone; a
   pre-split data directory reads back empty. Accepted deliberately — there is no
   deployed data to preserve.
 - **Config:** `FLOODGATE_MAX_OPEN_DOCUMENTS` (default 1024, `0` disables).
   `FLOODGATE_DOC_IDLE_MS` is reused rather than adding a second window.
+
+## Published history and recovery
+
+The document actor owns publication pointers and reserved `refs/heads/<id>`
+refs. It accepts an uploaded tree with an empty head/parent list for the first
+summary, or the current published commit as both `head` and sole parent. An
+initial-summary commit also counts as a published head. Competing proposals
+cannot publish siblings.
+
+Publication writes objects, the proposal, its ack, the pointer, and the ref
+before a success reply. The pointer records the proposal sequence number.
+Summary-bearing actor calls do not replay after an ambiguous failure.
+
+Cold recovery reads the complete durable op log and the pointer, validates
+server-authored ack/proposal pairs and their commit chains, then selects the
+latest trusted publication. Under actor ownership, it copies exact legacy
+commit bytes into the document namespace and repairs the pointer/ref. Recovery
+does not add ops. Ref reconciliation replaces stale or ahead refs and removes
+a stray ref when no publication exists.
+
+Authorized history and own-head REST reads trigger this recovery without a
+socket connection. A known damaged chain or failed repair returns 503 rather
+than empty or partial history. A foreign or unpublished history ID returns 404.
+Clients cannot write reserved heads (403); unrelated generic refs retain their
+create/update behavior. Neither a supplied SHA nor a ref can authorize legacy
+commit adoption.
+
+The backend matrix covers failed publication writes and partial legacy copies
+on memory and Shelf, including close/reopen through the one-file cap. The
+opt-in `floodgate-summary-recovery.test.ts` case starts an owned Shelf process,
+restarts it on the same directory, reads old versions before opening a socket,
+and extends the recovered head. See the README for its command.
 
 ## Known risks
 

@@ -150,7 +150,7 @@ connect it and grant this repository Actions access before publishing. CI uses
 | `FLOODGATE_TOKEN_MINT_USER_ID` | `floodgate-token-mint` | User id in minted tokens |
 | `FLOODGATE_TOKEN_MINT_USER_NAME` | `Floodgate Token Mint` | User name in minted tokens |
 | `FLOODGATE_STORAGE_BACKEND` | `shelf` | `shelf`/`ets` (persistent DETS) or `memory` — also selects where tenants persist |
-| `FLOODGATE_DATA_DIR` | `priv/floodgate_data` | Shelf DETS directory. One file per document under `documents/t<hex tenant>/d<hex document id>.dets`, plus shared files for refs, tenants, and admin data |
+| `FLOODGATE_DATA_DIR` | `priv/floodgate_data` | Shelf DETS directory. One file per document under `documents/t<hex tenant>/d<hex document id>.dets`, plus tenant-shared blobs/trees and shared refs, tenants, and admin data |
 | `FLOODGATE_DOC_IDLE_MS` | `300000` (5 min) | Drop a document from memory once it has no connected client and has gone this long untouched — **both** its sequence state and its open DETS file. Only ever a cache drop: writes are already on disk, and everything is rebuilt from storage on the next touch. `0` disables eviction. |
 | `FLOODGATE_MAX_OPEN_DOCUMENTS` | `1024` | Document files open at once. At the cap, the least recently used is closed to make room, so a burst of opens cannot exhaust file descriptors before the idle sweep runs. `0` disables the cap. |
 | `FLOODGATE_PUBLIC_URL` | `http://localhost:<port>` | Externally reachable base URL |
@@ -332,6 +332,47 @@ POST   /repos/:tenant/git/{blobs,trees,commits}       Create a git object
 GET    /repos/:tenant/git/{blobs,trees,commits}/:sha  Read a git object
 ```
 
+### Published summary versions
+
+A version ID is a published commit SHA. Uploading a tree or commit stages
+an object; it does not publish a version. Submit `summarize` through either
+Socket.IO or Phoenix with these fields:
+
+| Field | First summary | Later summary |
+|---|---|---|
+| `handle` | Uploaded tree SHA | Uploaded tree SHA |
+| `head` | `""` | Current published commit SHA `H` |
+| `parents` | `[]` | `[H]` |
+
+A document's initial summary already counts as a published head. A stale
+proposal receives a sequenced `summaryNack`; retry against the accepted head.
+
+The document actor writes the summary objects, proposal, response, summary
+pointer, and head ref in that order. It replies with normal publication success
+after the ref write. The pointer stores the proposal sequence number, not the
+acknowledgement sequence number. After an interrupted publication, the actor
+can recover a durable server `summaryAck` from the complete op log and finish
+the pointer/ref writes without adding another proposal or response. An
+authorized history or own-head read triggers recovery before any socket opens.
+
+Use `GET /repos/:tenant/commits?sha=<document-id>&count=<positive-count>` for
+newest-first, first-parent history. Use a published commit SHA as `sha` to read
+from an older version. The default count is one. The official storage service
+supports `getVersions`, `getSnapshotTree`, and `readBlob`; loading an older
+snapshot does not change the live head.
+
+Commits belong to documents. Blobs and trees remain tenant-shared so driver
+upload caches can reuse them. Recovery copies legacy tenant commits into the
+document namespace only when a stored pointer or valid server acknowledgement
+establishes publication. A request SHA or a ref cannot establish ownership.
+
+Own documents without a summary return `[]`. Foreign or unpublished history
+IDs return 404; malformed history parameters return 400. Damaged known
+publication objects and failed recovery/ref writes return 503. Clients cannot
+POST or PATCH reserved document-head refs (403). Ref lists omit foreign
+document heads but retain unrelated generic refs. Raw commit GET can read an
+own staged commit, but it cannot read another document's distinct commit.
+
 ## Development
 
 Install the tools from `mise.toml` with `mise install`. Keep Just for top-level
@@ -353,6 +394,17 @@ For Gleam-only work, use `trellis run check`, `trellis run test`, or
 package. Run `trellis doctor` to check workspace and changelog configuration.
 No server changelog history existed before this setup; Trellis creates the
 version sections on release.
+
+The persistent summary case starts its own Shelf-backed server, publishes two
+versions, restarts the process with the same data directory, reads both
+snapshots before reconnecting, and publishes a third child. It uses a temporary
+directory and a free local port, and removes only its own process and data.
+Without the compatibility opt-in, it does not start a server.
+
+```sh
+FLOODGATE_ROUTERLICIOUS_COMPAT=1 pnpm --dir client exec vitest run \
+  test/conformance/floodgate-summary-recovery.test.ts
+```
 
 The Fluid canonical gate installs a filtered upstream Fluid workspace, builds
 `@fluid-private/test-end-to-end-tests`, and runs Fluid's unmodified real-service

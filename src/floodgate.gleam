@@ -936,7 +936,7 @@ fn commits_response(
           }
       }
       case list.key_find(query, "sha"), count {
-        Error(_), _ | _, Error(_) -> bad_request()
+        Error(_), _ | Ok(""), _ | _, Error(_) -> bad_request()
         Ok(requested), Ok(count) -> {
           let document_topic = topic(tenant, claims.document_id)
           case session.published_summary(document_session, document_topic) {

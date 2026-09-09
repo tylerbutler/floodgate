@@ -794,10 +794,8 @@ pub fn initialize_summary(
   call_doc(session, topic, 1000, InitializeSummary(topic, handle, sn, _))
 }
 
-/// The latest summary, straight from storage — same reasoning as `since`. The
-/// summary pointer is the last of `SubmitSummary`'s three writes and the ack
-/// follows all of them, so observing the ack means this read sees it.
-/// `Error(Nil)` when the document has never been summarized.
+/// The stored pointer can lag a durable ack after an interrupted publication.
+/// Use `published_summary` for an authorized read that must finish recovery.
 pub fn summary(session: Session, topic: String) -> Result(#(String, Int), Nil) {
   store.get_summary(session.storage, topic)
 }
@@ -807,31 +805,29 @@ pub fn published_summary(
   session: Session,
   topic: String,
 ) -> Result(Option(#(String, Int)), git.PublicationError) {
-  let has_ref = case string.split(topic, ":") {
-    ["document", tenant, document_id] ->
-      result.is_ok(git.get_ref(
-        session.storage,
-        tenant,
-        git.summary_ref(document_id),
-      ))
-    _ -> False
-  }
   case
-    doc_state.stored_document_exists(session.storage, topic)
-    || has_ref
-    || result.is_ok(doc_registry.lookup(registry(session), topic))
-  {
-    False -> Ok(None)
-    True -> {
-      case
-        exception.rescue(fn() {
-          process.call(resolve(session, topic), 10_000, PublishedSummary)
-        })
-      {
-        Ok(result) -> result
-        Error(_) -> Error(git.StorageUnavailable)
+    exception.rescue(fn() {
+      let has_ref = case string.split(topic, ":") {
+        ["document", tenant, document_id, ..rest] ->
+          result.is_ok(git.get_ref(
+            session.storage,
+            tenant,
+            git.summary_ref(string.join([document_id, ..rest], ":")),
+          ))
+        _ -> False
       }
-    }
+      case
+        doc_state.stored_document_exists(session.storage, topic)
+        || has_ref
+        || result.is_ok(doc_registry.lookup(registry(session), topic))
+      {
+        False -> Ok(None)
+        True -> process.call(resolve(session, topic), 10_000, PublishedSummary)
+      }
+    })
+  {
+    Ok(result) -> result
+    Error(_) -> Error(git.StorageUnavailable)
   }
 }
 
@@ -843,21 +839,28 @@ pub fn write_ref(
   sha: String,
   create: Bool,
 ) -> RefWriteResult {
-  case git.head_document(ref) {
-    None -> write_generic_ref(session.storage, tenant, ref, sha, create)
-    Some(document_id) ->
-      process.call(
-        resolve(session, store.topic(tenant, document_id)),
-        10_000,
-        WriteHeadRef(
-          tenant,
-          ref,
-          sha,
-          create,
-          document_id == caller_document,
-          _,
-        ),
-      )
+  case
+    exception.rescue(fn() {
+      case git.head_document(ref) {
+        None -> write_generic_ref(session.storage, tenant, ref, sha, create)
+        Some(document_id) ->
+          process.call(
+            resolve(session, store.topic(tenant, document_id)),
+            10_000,
+            WriteHeadRef(
+              tenant,
+              ref,
+              sha,
+              create,
+              document_id == caller_document,
+              _,
+            ),
+          )
+      }
+    })
+  {
+    Ok(result) -> result
+    Error(_) -> RefUnavailable
   }
 }
 
@@ -1071,11 +1074,11 @@ fn reconcile_ref(
   summary: #(String, Int),
 ) -> Result(Nil, git.PublicationError) {
   case string.split(topic, ":") {
-    ["document", tenant, document_id] ->
+    ["document", tenant, document_id, ..rest] ->
       git.reconcile_summary_ref(
         storage,
         tenant,
-        document_id,
+        string.join([document_id, ..rest], ":"),
         summary_option(summary),
       )
       |> result.replace_error(git.StorageUnavailable)
@@ -1187,8 +1190,9 @@ fn handle(
     Create(topic, reply) -> {
       let existing = already_exists(storage, topic, state)
       persist_document(storage, topic)
+      let document = doc(storage, topic, state)
       process.send(reply, existing)
-      cache(state, doc(storage, topic, state))
+      cache(state, document)
     }
     CreateInitialized(topic, build, reply) -> {
       let existing = already_exists(storage, topic, state)
@@ -1210,7 +1214,10 @@ fn handle(
                   persist_summary(storage, topic, handle, sn)
                   #(sequencing.from_checkpoint(sn, sn), #(handle, sn))
                 }
-                None -> #(sequencing.new(), #("", 0))
+                None -> {
+                  let assert Ok(Nil) = reconcile_ref(storage, topic, #("", 0))
+                  #(sequencing.new(), #("", 0))
+                }
               }
               process.send(reply, Created)
               cache(
@@ -1657,9 +1664,14 @@ fn persist_summary(
   let assert Ok(Nil) =
     store.put_summary(storage, topic, handle, sequence_number)
   case string.split(topic, ":") {
-    ["document", tenant, document_id] -> {
+    ["document", tenant, document_id, ..rest] -> {
       let assert Ok(Nil) =
-        git.publish_summary_ref(storage, tenant, document_id, handle)
+        git.publish_summary_ref(
+          storage,
+          tenant,
+          string.join([document_id, ..rest], ":"),
+          handle,
+        )
       Nil
     }
     _ -> Nil

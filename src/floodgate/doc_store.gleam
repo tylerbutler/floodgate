@@ -430,17 +430,8 @@ fn hex(value: String) -> String {
   bit_array.from_string(value) |> bit_array.base16_encode
 }
 
-/// Whether a document has anything stored, answered from the filesystem.
-///
-/// Exact, not an approximation: the file is created by the first write of any
-/// kind and never by a read, so "the file is there" is precisely "the marker,
-/// an op, a summary, or an object was stored" — the union
-/// `doc_state.stored_document_exists` asks for, in one `stat`.
-///
-/// Deliberately does not open the table. `doc_state.stored_document_exists` is
-/// reachable from unauthenticated REST paths, so opening a file per probe would
-/// let an unauthenticated caller exhaust file descriptors with requests for
-/// document ids that do not exist.
+/// Whether any data file exists, without opening it. A file containing only
+/// staged commits does not imply that the document has been created.
 pub fn exists(docs: DocStore, topic: String) -> Bool {
   case doc_registry.lookup(docs.registry, topic) {
     Ok(_) -> True
@@ -461,6 +452,10 @@ pub fn open_count(docs: DocStore) -> Int {
 
 pub fn put_marker(docs: DocStore, topic: String) -> Result(Nil, Nil) {
   put(docs, topic, #(key_marker, ""), topic)
+}
+
+pub fn has_marker(docs: DocStore, topic: String) -> Bool {
+  get(docs, topic, #(key_marker, "")) |> result.is_ok
 }
 
 pub fn put_op(

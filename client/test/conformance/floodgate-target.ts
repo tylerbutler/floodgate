@@ -138,17 +138,21 @@ export const FLOODGATE_TARGET_LABEL =
  */
 export const isLeveeProxyTarget = FLOODGATE_TARGET_LABEL === "levee-proxy";
 
-export function createFloodgateResolvedUrl(documentId: string): IResolvedUrl {
+export function createFloodgateResolvedUrl(
+	documentId: string,
+	httpUrl = FLOODGATE_HTTP_URL,
+	socketUrl = FLOODGATE_SOCKET_URL,
+): IResolvedUrl {
 	return {
 		type: "fluid",
 		id: documentId,
-		url: `${FLOODGATE_HTTP_URL}/${FLOODGATE_TENANT_ID}/${documentId}`,
+		url: `${httpUrl}/${FLOODGATE_TENANT_ID}/${documentId}`,
 		tokens: {},
 		endpoints: {
-			ordererUrl: FLOODGATE_HTTP_URL,
-			deltaStorageUrl: `${FLOODGATE_HTTP_URL}/documents/${FLOODGATE_TENANT_ID}/${documentId}/deltas`,
-			deltaStreamUrl: FLOODGATE_SOCKET_URL,
-			storageUrl: `${FLOODGATE_HTTP_URL}/repos/${FLOODGATE_TENANT_ID}`,
+			ordererUrl: httpUrl,
+			deltaStorageUrl: `${httpUrl}/documents/${FLOODGATE_TENANT_ID}/${documentId}/deltas`,
+			deltaStreamUrl: socketUrl,
+			storageUrl: `${httpUrl}/repos/${FLOODGATE_TENANT_ID}`,
 		},
 	};
 }
