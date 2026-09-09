@@ -625,8 +625,8 @@ describe.runIf(floodgateAvailable && !isLeveeProxyTarget)(
 						contents: {
 							handle: graph.treeSha,
 							message: "Floodgate summary",
-							parents: [graph.commitSha],
-							head: graph.commitSha,
+							parents: [],
+							head: "",
 						},
 					},
 				]);
@@ -664,9 +664,7 @@ describe.runIf(floodgateAvailable && !isLeveeProxyTarget)(
 				expect(commitResponse.status).toBe(200);
 				const commit = await commitResponse.json();
 				expect(commit.tree.sha).toBe(graph.treeSha);
-				expect(commit.parents).toEqual([
-					expect.objectContaining({ sha: graph.commitSha }),
-				]);
+				expect(commit.parents).toEqual([]);
 			} finally {
 				connection.dispose();
 			}
@@ -730,8 +728,8 @@ describe.runIf(floodgateAvailable && !isLeveeProxyTarget)(
 					contents: {
 						handle: graph.treeSha,
 						message: "Floodgate summary context",
-						parents: [graph.commitSha],
-						head: graph.commitSha,
+						parents: [],
+						head: "",
 					},
 				},
 			]);

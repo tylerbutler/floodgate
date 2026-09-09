@@ -26,6 +26,7 @@ import gleam/pair
 import gleam/result
 import gleam/string
 import signet/types.{type TokenClaims}
+import silt/object
 import spillway/connect_document
 import spillway/session_logic
 import spillway/signals
@@ -1237,7 +1238,7 @@ fn submit_summary_op(
       assigns.client_id,
       op.client_sequence_number,
       op.reference_sequence_number,
-      fn(summary_sn, response_sn, msn, _roster) {
+      fn(summary_sn, response_sn, msn, _roster, current_summary) {
         let outcome = case summarize_contents(op.contents) {
           Error(reason) -> #(None, reason)
           Ok(contents) -> {
@@ -1247,6 +1248,7 @@ fn submit_summary_op(
                 session.storage(document_session),
                 assigns.topic,
                 contents,
+                current_summary,
                 op.reference_sequence_number,
                 protocol_minimum_sequence_number(
                   history,
@@ -1381,13 +1383,32 @@ fn persist_summary(
   storage: store.Backend,
   topic: String,
   contents: SummarizeContents,
+  current_summary: #(String, Int),
   reference_sequence_number: Int,
   minimum_sequence_number: Int,
   history: List(#(Int, String)),
 ) -> Result(String, String) {
+  let expected_parents = case current_summary.0 {
+    "" -> []
+    head -> [head]
+  }
+  use Nil <- result.try(
+    case
+      contents.parents == expected_parents,
+      contents.head == current_summary.0
+    {
+      False, _ -> Error("Summary parent is not the published head")
+      _, False -> Error("Summary head is not the published head")
+      True, True -> Ok(Nil)
+    },
+  )
   case git.fetch(storage, topic, contents.handle) {
     Error(_) -> Error("Summary tree does not exist")
-    Ok(_) -> {
+    Ok(body) -> {
+      use _ <- result.try(
+        object.decode_tree(body)
+        |> result.replace_error("Summary handle is not a tree"),
+      )
       use tree <- result.try(summary_tree_handle(
         storage,
         topic,

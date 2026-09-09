@@ -10,6 +10,7 @@ import beryl/wire/codec
 import floodgate
 import floodgate/auth
 import floodgate/document_channel
+import floodgate/git
 import floodgate/memory_store
 import floodgate/session
 import floodgate/store
@@ -17,9 +18,12 @@ import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
 import gleam/json
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
+import silt/object
+import summary_fixture
 
 const secret = "phoenix-test-secret"
 
@@ -800,4 +804,194 @@ pub fn protocol_attributes_use_the_msn_at_the_reference_sequence_number_test() {
   |> should.equal(0)
   document_channel.protocol_minimum_sequence_number([#(1, "not json")], 1)
   |> should.equal(0)
+}
+
+pub fn summary_proposals_validate_published_head_and_tree_kind_test() {
+  list.each([False, True], fn(serialized) {
+    list.each(
+      [
+        "first",
+        "child",
+        "parents",
+        "multiple",
+        "head",
+        "missing",
+        "blob",
+        "commit",
+      ],
+      fn(kind) {
+        let doc =
+          "summary-"
+          <> kind
+          <> case serialized {
+            True -> "-string"
+            False -> "-object"
+          }
+        let #(channels, document_session, sent) = start_socket(doc)
+        let storage = session.storage(document_session)
+        let topic = store.topic(tenant, doc)
+        let tree = summary_fixture.tree(storage, topic, doc)
+        let parent = summary_fixture.commit(storage, topic, tree, [], "initial")
+        let head = case kind {
+          "first" -> ""
+          _ -> {
+            session.initialize_summary(document_session, topic, parent, 0)
+            parent
+          }
+        }
+        connect(
+          channels,
+          doc,
+          token_for(doc, ["doc:read", "doc:write", "summary:write"]),
+          doc,
+        )
+        let assert Ok(_) = collect_until(sent, "connect_document_success")
+        let handle = case kind {
+          "missing" -> "missing-tree"
+          "commit" -> parent
+          "blob" -> {
+            let assert Ok(sha) =
+              git.create(storage, topic, "blobs", "{\"content\":\"blob\"}")
+            sha
+          }
+          _ -> tree
+        }
+        let contents =
+          json.object([
+            #("handle", json.string(handle)),
+            #(
+              "head",
+              json.string(case kind {
+                "head" -> tree
+                _ -> head
+              }),
+            ),
+            #(
+              "parents",
+              json.array(
+                case kind {
+                  "first" | "parents" -> []
+                  "multiple" -> [parent, parent]
+                  _ -> [parent]
+                },
+                json.string,
+              ),
+            ),
+            #("message", json.string("proposal")),
+          ])
+        let contents = case serialized {
+          True -> json.string(json.to_string(contents))
+          False -> contents
+        }
+        submit_summary_frame(channels, doc, doc, 1, contents)
+        let assert Ok(_) = collect_until(sent, "\"summarize\"")
+        let assert Ok(#(_, response)) =
+          session.since(document_session, topic, 0)
+          |> list.last
+        let assert Ok(response_type) =
+          json.parse(
+            response,
+            decode.field("type", decode.string, decode.success),
+          )
+        case kind {
+          "first" | "child" -> {
+            response_type |> should.equal("summaryAck")
+            let assert Ok(#(sha, 2)) = session.summary(document_session, topic)
+            let assert Ok(body) = git.fetch(storage, topic, sha)
+            let assert Ok(commit) = object.decode_commit(body)
+            commit.parents
+            |> should.equal(case head {
+              "" -> []
+              _ -> [head]
+            })
+          }
+          _ -> {
+            response_type |> should.equal("summaryNack")
+            session.summary(document_session, topic)
+            |> should.equal(Ok(#(parent, 0)))
+          }
+        }
+      },
+    )
+  })
+}
+
+fn submit_summary_frame(
+  channels: beryl.Sockets,
+  doc: String,
+  client: String,
+  csn: Int,
+  contents: json.Json,
+) -> Nil {
+  let payload =
+    json.object([
+      #("clientId", json.string(client)),
+      #(
+        "messageBatches",
+        json.preprocessed_array([
+          json.preprocessed_array([
+            json.object([
+              #("clientSequenceNumber", json.int(csn)),
+              #("referenceSequenceNumber", json.int(0)),
+              #("type", json.string("summarize")),
+              #("contents", contents),
+            ]),
+          ]),
+        ]),
+      ),
+    ])
+  route(
+    channels,
+    client,
+    phoenix_event(doc, "submitOp", json.to_string(payload)),
+  )
+}
+
+pub fn competing_summaries_publish_only_one_child_then_retry_test() {
+  let doc = "summary-race"
+  let #(channels, document_session, first) = start_socket("summary-a")
+  let storage = session.storage(document_session)
+  let topic = store.topic(tenant, doc)
+  let tree = summary_fixture.tree(storage, topic, "base")
+  let head = summary_fixture.commit(storage, topic, tree, [], "initial")
+  session.initialize_summary(document_session, topic, head, 0)
+  let token = token_for(doc, ["doc:read", "doc:write", "summary:write"])
+  connect(channels, doc, token, "summary-a")
+  let assert Ok(_) = collect_until(first, "connect_document_success")
+  let second = attach(channels, "summary-b")
+  connect(channels, doc, token, "summary-b")
+  let assert Ok(_) = collect_until(second, "connect_document_success")
+  submit_summary_frame(
+    channels,
+    doc,
+    "summary-a",
+    1,
+    summary_fixture.contents(tree, head),
+  )
+  let assert Ok(_) = collect_until(first, "\"summaryAck\"")
+  let assert Ok(#(a, _)) = session.summary(document_session, topic)
+  submit_summary_frame(
+    channels,
+    doc,
+    "summary-b",
+    1,
+    summary_fixture.contents(tree, head),
+  )
+  let assert Ok(_) = collect_until(second, "\"summaryNack\"")
+  session.summary(document_session, topic) |> should.equal(Ok(#(a, 3)))
+  submit_summary_frame(
+    channels,
+    doc,
+    "summary-b",
+    2,
+    summary_fixture.contents(tree, a),
+  )
+  let assert Ok(_) = collect_until(second, "\"summaryAck\"")
+  let assert Ok(#(b, _)) = session.summary(document_session, topic)
+  let assert Ok(body_b) = git.fetch(storage, topic, b)
+  let assert Ok(commit_b) = object.decode_commit(body_b)
+  commit_b.parents |> should.equal([a])
+  let assert Ok(body_a) = git.fetch(storage, topic, a)
+  let assert Ok(commit_a) = object.decode_commit(body_a)
+  commit_a.parents |> should.equal([head])
 }
