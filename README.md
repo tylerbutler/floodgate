@@ -91,20 +91,35 @@ Replace `<digest>` with the digest value. Use the same digest reference in
 
 ### Publishing a server release
 
-Update the root `gleam.toml` version on `main` and merge that change before
-tagging the intended commit. For example, when its version is `0.1.0`:
+Record server changes as Trellis fragments:
 
 ```sh
-git tag -a v0.1.0 <release-commit-sha> -m "Floodgate 0.1.0"
-git push origin v0.1.0
+trellis changelog new --package floodgate --kind Fixed --body "Describe the fix"
+trellis version plan
 ```
 
-Replace `<release-commit-sha>` with the intended commit on `main`. A server tag
-must be a stable `vX.Y.Z` version and must match `gleam.toml` at that commit.
-CI builds that tagged commit, runs all required jobs, then publishes the full
-version, minor-series, and `latest` image tags. It does not create a GitHub
-Release or change the separate client release process. Do not move release Git
-tags or full-version image tags to different releases.
+Commit the fragment with the change. After a push to `main`, the **Server
+Release** workflow creates or updates a release PR from `release/server-next`.
+Trellis updates the root version, batches fragments under `.changes/floodgate/`,
+and generates `CHANGELOG.md`. Review and merge that PR to release the server.
+The workflow tags the merge commit as `vX.Y.Z`. CI builds that tagged commit,
+runs all required jobs, then publishes the full-version, minor-series, and
+`latest` image tags. It does not create a GitHub Release. Do not move release
+Git tags or full-version image tags to different releases.
+
+The release workflow uses the existing `RELEASE_APP_ID` and
+`RELEASE_APP_PRIVATE_KEY` secrets. The GitHub App needs repository contents and
+pull-request write access. Its token lets release PRs and pushed tags trigger
+CI. Use the **Server Release** workflow's manual trigger to retry PR creation.
+To retry tagging, run `trellis tag create --push` from a clean checkout of the
+approved release merge commit. Server releases must use stable versions;
+the Docker workflow rejects prerelease tags.
+
+Trellis manages the server as a `git_only` package, with no Hex publication.
+The admin UI ships with the server and has no separate release. Use a
+`floodgate` fragment for admin changes too. Keep the npm client's Changie
+fragments in `client/.changes/`: Trellis only versions Gleam packages, so the
+client release PR, tags, and npm publishing retain their existing workflow.
 
 **One-time registry setup:** GHCR creates new packages as private, even for a
 public source repository. After the first successful `main` publication, open
@@ -318,13 +333,25 @@ GET    /repos/:tenant/git/{blobs,trees,commits}/:sha  Read a git object
 
 ## Development
 
+Install the tools from `mise.toml` with `mise install`. Keep Just for top-level
+coordination across Gleam, the npm client, the website, and Docker. The Gleam
+recipes delegate to Trellis, which reads workspace configuration from the root
+`gleam.toml` and uses each package's target (Erlang for the server, JavaScript
+for the admin UI).
+
 ```sh
-just build     # or: gleam build --target erlang
-just test      # or: gleam test
+just build
+just test
 just format
 just run
 just test-fluid-canonical ../FluidFramework
 ```
+
+For Gleam-only work, use `trellis run check`, `trellis run test`, or
+`trellis run format --check`. Add `floodgate` or `floodgate_admin` to select one
+package. Run `trellis doctor` to check workspace and changelog configuration.
+No server changelog history existed before this setup; Trellis creates the
+version sections on release.
 
 The Fluid canonical gate installs a filtered upstream Fluid workspace, builds
 `@fluid-private/test-end-to-end-tests`, and runs Fluid's unmodified real-service

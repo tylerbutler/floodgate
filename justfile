@@ -8,48 +8,43 @@ default:
 # === BUILD ===
 
 build:
-    gleam build --target erlang
+    trellis run build floodgate
     cd client && pnpm build
     cd website && pnpm build
     just build-admin
 
 build-admin:
-    cd admin && gleam build --target javascript
+    trellis run build floodgate_admin
     mkdir -p priv/static/admin
     cp -r admin/build/dev/javascript/* priv/static/admin/
     cp admin/index.html priv/static/admin/
 
 deps:
-    gleam deps download
-    cd admin && gleam deps download
+    trellis run deps
     cd client && pnpm install --frozen-lockfile
     cd website && pnpm install --frozen-lockfile
 
 check:
-    gleam check
-    cd admin && gleam check
+    trellis run check
     cd client && pnpm check
 
 clean:
-    rm -rf build
+    trellis run clean floodgate
 
 # === TEST ===
 
 test:
-    gleam test
-    cd admin && gleam test
+    trellis run test
     cd client && pnpm test
 
 # === QUALITY ===
 
 format:
-    gleam format
-    cd admin && gleam format
+    trellis run format
     cd client && pnpm format
 
 format-check:
-    gleam format --check
-    cd admin && gleam format --check
+    trellis run format --check
     cd client && pnpm check
 
 lint: check format-check

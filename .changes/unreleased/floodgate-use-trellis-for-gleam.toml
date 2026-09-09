@@ -1,0 +1,3 @@
+package = "floodgate"
+kind = "Changed"
+body = "Use Trellis for Gleam tasks, server changelogs, and release PRs; retain Just for repository coordination."
