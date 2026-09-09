@@ -1473,3 +1473,36 @@ pub fn failed_ref_repair_surfaces_error_and_retries_test() {
   session.published_summary(session.start_with_backend(backend), topic)
   |> should.equal(Ok(Some(#(head, 5))))
 }
+
+pub fn published_commit_ownership_and_legacy_adoption_test() {
+  assert_commit_ownership(memory_store.new())
+}
+
+pub fn assert_commit_ownership(backend: store.Backend) -> Nil {
+  let tenant = "commit-ownership"
+  let a = store.topic(tenant, "a")
+  let b = store.topic(tenant, "b")
+  let tree = summary_fixture.tree(backend, a, "shared")
+  let staged = summary_fixture.commit(backend, a, tree, [], "staged")
+  store.get_object(backend, a, staged) |> should.not_equal(Error(Nil))
+  store.get_object(backend, b, staged) |> should.equal(Error(Nil))
+  git.fetch(backend, b, tree) |> should.not_equal(Error(Nil))
+  let legacy =
+    store.Backend(..backend, put_object: fn(_, sha, body) {
+      backend.put_object(tenant, sha, body)
+    })
+  let root = summary_fixture.commit(legacy, a, tree, [], "legacy-root")
+  let head = summary_fixture.commit(legacy, a, tree, [root], "legacy-head")
+  let orphan = summary_fixture.commit(legacy, a, tree, [], "legacy-orphan")
+  let assert Ok(Nil) = store.put_summary(backend, a, head, 5)
+  let document_session = session.start_with_backend(backend)
+  session.published_summary(document_session, a)
+  |> should.equal(Ok(Some(#(head, 5))))
+  store.get_object(backend, a, head)
+  |> should.equal(store.get_object(backend, tenant, head))
+  store.get_object(backend, a, root)
+  |> should.equal(store.get_object(backend, tenant, root))
+  store.get_object(backend, a, orphan) |> should.equal(Error(Nil))
+  session.published_summary(document_session, b) |> should.equal(Ok(None))
+  store.get_object(backend, b, head) |> should.equal(Error(Nil))
+}

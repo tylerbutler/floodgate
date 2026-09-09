@@ -1032,6 +1032,11 @@ fn recover_document(
     None -> {
       use recovery <- result.try(doc_state.recover(storage, topic))
       list.each(recovery.warnings, log_summary_recovery(topic, _))
+      use Nil <- result.try(git.adopt_commits(
+        storage,
+        topic,
+        recovery.commit_bodies,
+      ))
       let #(handle, sn) = recovery.document.summary
       use Nil <- result.try(
         case

@@ -1426,7 +1426,7 @@ fn summary_tree_handle(
     [] -> Ok(contents.handle)
     [parent, ..] -> {
       use parent_body <- result.try(
-        git.fetch(storage, topic, parent)
+        git.fetch_commit(storage, topic, parent)
         |> result.replace_error("Parent summary commit does not exist"),
       )
       use parent_tree <- result.try(

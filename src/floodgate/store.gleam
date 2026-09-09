@@ -56,10 +56,8 @@ pub type Backend {
     get_ops: fn(String) -> List(#(Int, String)),
     put_summary: fn(String, String, Int) -> Result(Nil, Nil),
     get_summary: fn(String) -> Result(#(String, Int), Nil),
-    /// Git objects are keyed by **topic**, not tenant: an object belongs to the
-    /// document whose summary tree reaches it, which is what lets a document's
-    /// storage be self-contained. The document id comes from the caller's token
-    /// claims — see `auth.verify_storage_*_authorization`.
+    /// The Git adapter chooses the key namespace: document topic for commits,
+    /// tenant for shared blobs and trees.
     put_object: fn(String, String, String) -> Result(Nil, Nil),
     get_object: fn(String, String) -> Result(String, Nil),
     put_ref: fn(String, String, String) -> Result(Nil, Nil),
@@ -107,7 +105,7 @@ pub fn open(backend: Backend) -> Nil {
 pub const topic_prefix = "document:"
 
 /// The storage key for a document. Everything document-scoped — the marker,
-/// ops, the summary pointer, and git objects — is keyed by this, so it is the
+/// ops, the summary pointer, and commits — is keyed by this, so it is the
 /// single place the `{tenant, document}` pair becomes one identifier.
 pub fn topic(tenant: String, document_id: String) -> String {
   topic_prefix <> tenant <> ":" <> document_id

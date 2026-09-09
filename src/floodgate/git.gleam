@@ -27,7 +27,54 @@ pub fn recovery_chain(
   topic: String,
   head: String,
 ) -> Result(List(#(String, String)), PublicationError) {
-  collect_chain(storage, topic, head, fetch(storage, topic, _), set.new(), [])
+  collect_chain(
+    storage,
+    topic,
+    head,
+    fn(sha) {
+      case fetch_commit(storage, topic, sha) {
+        Ok(body) -> Ok(body)
+        Error(Nil) -> store.get_object(storage, object_namespace(topic), sha)
+      }
+    },
+    set.new(),
+    [],
+  )
+}
+
+pub fn published_chain(
+  storage: store.Backend,
+  topic: String,
+  head: String,
+) -> Result(List(#(String, String)), PublicationError) {
+  collect_chain(
+    storage,
+    topic,
+    head,
+    fetch_commit(storage, topic, _),
+    set.new(),
+    [],
+  )
+}
+
+/// Copy only the chain validated from server publication evidence, inside its actor.
+pub fn adopt_commits(
+  storage: store.Backend,
+  topic: String,
+  bodies: List(#(String, String)),
+) -> Result(Nil, PublicationError) {
+  list.try_each(bodies, fn(entry) {
+    case fetch_commit(storage, topic, entry.0) {
+      Ok(body) if body == entry.1 -> Ok(Nil)
+      Ok(_) ->
+        Error(CorruptPublication(
+          "Document commit differs from publication evidence",
+        ))
+      Error(Nil) ->
+        store.put_object(storage, topic, entry.0, entry.1)
+        |> result.replace_error(StorageUnavailable)
+    }
+  })
 }
 
 fn collect_chain(
@@ -79,9 +126,8 @@ fn collect_chain(
 
 /// Store an object's raw body, returning its content-addressed id.
 ///
-/// Objects are stored per tenant, matching Historian's content-addressed object
-/// namespace. Routerlicious drivers cache uploaded hashes across documents and
-/// may reuse an existing object without uploading it again.
+/// Commits belong to a document. Blobs and trees remain tenant-shared because
+/// Routerlicious drivers cache uploaded hashes across documents.
 pub fn create(
   storage: store.Backend,
   topic: String,
@@ -89,12 +135,11 @@ pub fn create(
   body: String,
 ) -> Result(String, Nil) {
   use sha <- result.try(object.object_id(kind, body))
-  use Nil <- result.try(store.put_object(
-    storage,
-    object_namespace(topic),
-    sha,
-    body,
-  ))
+  let namespace = case kind {
+    "commits" -> topic
+    _ -> object_namespace(topic)
+  }
+  use Nil <- result.try(store.put_object(storage, namespace, sha, body))
   Ok(sha)
 }
 
@@ -110,6 +155,26 @@ pub fn fetch(
   case store.get_object(storage, object_namespace(topic), sha) {
     Ok(body) -> Ok(body)
     Error(Nil) -> store.get_object(storage, topic, sha)
+  }
+}
+
+pub fn fetch_commit(
+  storage: store.Backend,
+  topic: String,
+  sha: String,
+) -> Result(String, Nil) {
+  store.get_object(storage, topic, sha)
+}
+
+pub fn fetch_kind(
+  storage: store.Backend,
+  topic: String,
+  kind: String,
+  sha: String,
+) -> Result(String, Nil) {
+  case kind {
+    "commits" -> fetch_commit(storage, topic, sha)
+    _ -> fetch(storage, topic, sha)
   }
 }
 
@@ -232,13 +297,42 @@ pub fn commit_history_response(
   sha: String,
   count: Int,
 ) -> List(json.Json) {
-  rest.commit_history_response(
-    base_url,
-    tenant,
-    sha,
-    count,
-    fetcher(storage, topic),
-  )
+  rest.commit_history_response(base_url, tenant, sha, count, fetch_commit(
+    storage,
+    topic,
+    _,
+  ))
+}
+
+/// `None` means the requested SHA is not a published version of this document.
+pub fn published_history_response(
+  storage: store.Backend,
+  base_url: String,
+  tenant: String,
+  topic: String,
+  head: String,
+  requested: Option(String),
+  count: Int,
+) -> Result(Option(List(json.Json)), PublicationError) {
+  use chain <- result.try(published_chain(storage, topic, head))
+  let chain = case requested {
+    None -> chain
+    Some(sha) -> list.drop_while(chain, fn(entry) { entry.0 != sha })
+  }
+  case chain {
+    [] -> Ok(None)
+    _ -> {
+      use responses <- result.try(
+        list.try_map(list.take(chain, count), fn(entry) {
+          rest.commit_details_response(base_url, tenant, entry.0, entry.1)
+          |> result.replace_error(CorruptPublication(
+            "Published commit is invalid",
+          ))
+        }),
+      )
+      Ok(Some(responses))
+    }
+  }
 }
 
 pub fn ref_response(

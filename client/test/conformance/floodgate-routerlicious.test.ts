@@ -93,6 +93,49 @@ async function publishSnapshot(documentId: string, content: string, head = "") {
 describe.runIf(floodgateAvailable && !isLeveeProxyTarget)(
 	"Floodgate published ref ownership",
 	() => {
+		it("restricts commit versions to their published document chain", async () => {
+			const a = uniqueDocId("version-owner-a");
+			const b = uniqueDocId("version-owner-b");
+			const first = await publishSnapshot(a, "A1");
+			const second = await publishSnapshot(a, "A2", first.published);
+			await publishSnapshot(b, "B");
+			for (const path of [
+				`/repos/${FLOODGATE_TENANT_ID}/commits?sha=${a}&count=3`,
+				`/repos/${FLOODGATE_TENANT_ID}/commits?sha=${first.published}&count=3`,
+				FLOODGATE_REST_ENDPOINTS.gitCommit(
+					FLOODGATE_TENANT_ID,
+					first.published,
+				),
+			]) {
+				expect((await floodgateFetch(path, { documentId: b })).status).toBe(
+					404,
+				);
+			}
+			const ownStaged = await floodgateFetch(
+				FLOODGATE_REST_ENDPOINTS.gitCommit(
+					FLOODGATE_TENANT_ID,
+					first.commitSha,
+				),
+				{ documentId: a },
+			);
+			expect(ownStaged.status).toBe(200);
+			expect(
+				(
+					await floodgateFetch(
+						`/repos/${FLOODGATE_TENANT_ID}/commits?sha=${first.commitSha}&count=3`,
+						{ documentId: a },
+					)
+				).status,
+			).toBe(404);
+			const history = await floodgateFetch(
+				`/repos/${FLOODGATE_TENANT_ID}/commits?sha=${a}&count=3`,
+				{ documentId: a },
+			);
+			expect(
+				(await history.json()).map((version: { sha: string }) => version.sha),
+			).toEqual([second.published, first.published]);
+		});
+
 		it("protects document heads and hides foreign heads from direct and list reads", async () => {
 			const a = uniqueDocId("ref-owner-a");
 			const b = uniqueDocId("ref-owner-b");

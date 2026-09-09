@@ -45,8 +45,8 @@ fn json_encode(value: Dynamic) -> String
 /// Objects only. The document actor writes the summary pointer and publication
 /// ref before it replies to the document-create request.
 ///
-/// Scoped by `topic` rather than tenant because objects belong to a document —
-/// see `git.create`. Nothing in here needs the tenant on its own.
+/// The commit belongs to `topic`; `git.create` keeps blobs and trees shared
+/// within its tenant for official-driver upload-cache reuse.
 pub fn persist(
   storage: store.Backend,
   topic: String,

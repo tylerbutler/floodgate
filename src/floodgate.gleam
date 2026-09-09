@@ -607,9 +607,7 @@ fn rest(
     -> {
       case authorize_storage_write(req, config, tenant) {
         Error(e) -> auth_error_response(e)
-        // The Historian routes are tenant-scoped, but objects are stored per
-        // document — the document comes from the token the caller already had
-        // to present. See `git.create`.
+        // Commits use the token's document; blobs and trees share tenant scope.
         Ok(claims) -> {
           let document_topic = topic(tenant, claims.document_id)
           let body = read_body(req)
@@ -640,7 +638,7 @@ fn rest(
                   |> json.to_string
                   |> json_response(201)
                 _ ->
-                  case git.fetch(storage, document_topic, sha) {
+                  case git.fetch_kind(storage, document_topic, kind, sha) {
                     Error(_) -> bad_request()
                     Ok(data) ->
                       case
@@ -676,7 +674,18 @@ fn rest(
         Error(e) -> auth_error_response(e)
         Ok(claims) -> {
           let document_topic = topic(tenant, claims.document_id)
-          case git.fetch(storage, document_topic, sha) {
+          let fetched = {
+            use _ <- result.try(case kind {
+              "commits" ->
+                session.published_summary(document_session, document_topic)
+                |> result.replace_error(503)
+              _ -> Ok(option.None)
+            })
+            git.fetch_kind(storage, document_topic, kind, sha)
+            |> result.replace_error(404)
+          }
+          case fetched {
+            Error(503) -> storage_unavailable()
             Error(_) -> not_found()
             Ok(data) -> {
               let query =
@@ -929,36 +938,38 @@ fn commits_response(
       case list.key_find(query, "sha"), count {
         Error(_), _ | _, Error(_) -> bad_request()
         Ok(requested), Ok(count) -> {
-          let resolved = case requested == claims.document_id {
-            True ->
-              session.published_summary(
-                document_session,
-                topic(tenant, claims.document_id),
-              )
-              |> result.map(fn(summary) {
-                option.map(summary, fn(value) { value.0 })
-              })
-            False -> Ok(option.Some(requested))
-          }
-          case resolved {
+          let document_topic = topic(tenant, claims.document_id)
+          case session.published_summary(document_session, document_topic) {
             Error(_) -> storage_unavailable()
-            Ok(summary) -> {
-              let history = case summary {
-                option.None -> []
-                option.Some(sha) ->
-                  git.commit_history_response(
-                    storage,
-                    public_url,
-                    tenant,
-                    topic(tenant, claims.document_id),
-                    sha,
-                    count,
-                  )
+            Ok(option.None) ->
+              case requested == claims.document_id {
+                True -> "[]" |> json_response(200)
+                False -> not_found()
               }
-              history
-              |> json.preprocessed_array
-              |> json.to_string
-              |> json_response(200)
+            Ok(option.Some(#(head, _))) -> {
+              let requested = case requested == claims.document_id {
+                True -> option.None
+                False -> option.Some(requested)
+              }
+              case
+                git.published_history_response(
+                  storage,
+                  public_url,
+                  tenant,
+                  document_topic,
+                  head,
+                  requested,
+                  count,
+                )
+              {
+                Error(_) -> storage_unavailable()
+                Ok(option.None) -> not_found()
+                Ok(option.Some(history)) ->
+                  history
+                  |> json.preprocessed_array
+                  |> json.to_string
+                  |> json_response(200)
+              }
             }
           }
         }

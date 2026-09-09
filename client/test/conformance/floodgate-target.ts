@@ -365,11 +365,8 @@ export async function createBlobTreeCommit(
 }
 
 /**
- * The Historian routes are tenant-scoped URLs, but objects belong to the
- * document named in the caller's token — so `documentId` must be the document
- * these objects are for, exactly as the official driver's storage service uses
- * its own document's token for every call. Objects written under one document
- * are not visible to another.
+ * Commits belong to the document in the token. Blobs and trees remain shared
+ * within the tenant so the official driver's upload cache can reuse them.
  */
 export async function createBlobTreeCommitGraph(
 	tenantId: string,
