@@ -923,9 +923,34 @@ fn start_document(
 fn doc(storage: store.Backend, topic: String, state: DocState) -> Doc {
   case state.doc {
     Some(document) -> Doc(..document, last_touched_ms: doc_state.now_ms())
-    None -> doc_state.rehydrate(storage, topic)
+    None -> {
+      let assert Ok(recovery) = doc_state.recover(storage, topic)
+      list.each(recovery.warnings, log_summary_recovery(topic, _))
+      let #(handle, sn) = recovery.document.summary
+      case handle {
+        "" -> Nil
+        _ -> {
+          case store.get_summary(storage, topic) == Ok(#(handle, sn)) {
+            False -> persist_summary(storage, topic, handle, sn)
+            True ->
+              case string.split(topic, ":") {
+                ["document", tenant, document_id] -> {
+                  let assert Ok(Nil) =
+                    git.ensure_summary_ref(storage, tenant, document_id, handle)
+                  Nil
+                }
+                _ -> Nil
+              }
+          }
+        }
+      }
+      recovery.document
+    }
   }
 }
+
+@external(erlang, "floodgate_ffi", "log_summary_recovery")
+fn log_summary_recovery(topic: String, reason: String) -> Nil
 
 /// The `existing` flag every join-shaped reply carries: is this document already
 /// known? Holding a cached `Doc` is the in-memory half — the same test the old

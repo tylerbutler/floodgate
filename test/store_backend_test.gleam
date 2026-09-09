@@ -5,6 +5,7 @@ import floodgate/memory_store
 import floodgate/session
 import floodgate/shelf_store
 import floodgate/store
+import floodgate_test
 import gleam/bit_array
 import gleam/crypto
 import gleam/dynamic/decode
@@ -53,6 +54,10 @@ pub fn actor_memory_backend_satisfies_storage_boundary_test() {
     "document:backend-contract:memory",
     "backend-contract-memory",
   )
+}
+
+pub fn shelf_recovers_acknowledged_summary_history_test() {
+  floodgate_test.assert_summary_recovery(shelf_store.new(unique_dir()))
 }
 
 /// The memory backend's actor holds every document, op, and ref for the

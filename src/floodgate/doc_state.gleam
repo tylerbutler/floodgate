@@ -17,6 +17,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import silt/object
 import spillway/sequencing
 import spillway/session_logic
 
@@ -126,8 +127,23 @@ fn membership_change(message: String) -> Option(#(Bool, String)) {
 /// per-document actors disposable. `session` closes unmatched durable joins on
 /// the first connection after a cold start; sequence numbering never regresses.
 pub fn rehydrate(storage: store.Backend, topic: String) -> Doc {
-  // Rebuild durable state from ETS so a restarted server keeps numbering
-  // after the last persisted op and serves the latest summary.
+  let assert Ok(recovery) = recover(storage, topic)
+  recovery.document
+}
+
+pub type Recovery {
+  Recovery(
+    document: Doc,
+    commit_bodies: List(#(String, String)),
+    warnings: List(String),
+  )
+}
+
+/// Calculate publication and sequence state without changing storage.
+pub fn recover(
+  storage: store.Backend,
+  topic: String,
+) -> Result(Recovery, git.PublicationError) {
   let ops = store.get_ops(storage, topic)
   let last_sequence_number =
     list.fold(ops, 0, fn(highest, op) {
@@ -136,45 +152,155 @@ pub fn rehydrate(storage: store.Backend, topic: String) -> Doc {
         False -> highest
       }
     })
-  let #(handle, summary_sequence_number) =
-    store.get_summary(storage, topic) |> result.unwrap(#("", 0))
-  // Repair the one crash prefix that is not benign. The summary pointer is
-  // written before the ref that mirrors it, so a crash between the two can
-  // leave a document whose summary exists but which `GET /commits?sha=<id>`
-  // cannot resolve — making it unloadable. Restoring a *missing* ref here is
-  // idempotent and only runs when a document is first touched.
-  restore_summary_ref(storage, topic, handle)
+  let pointer = store.get_summary(storage, topic) |> result.unwrap(#("", 0))
+  use pointer_chain <- result.try(case pointer.0 {
+    "" -> Ok([])
+    sha -> git.recovery_chain(storage, topic, sha)
+  })
+  let indexed = dict.from_list(ops)
+  use #(summary, chain, warnings) <- result.try(
+    list.try_fold(ops, #(pointer, pointer_chain, []), fn(selected, op) {
+      case
+        json.parse(op.1, decode.field("type", decode.string, decode.success))
+      {
+        Ok("summaryAck") ->
+          case acknowledged_summary(storage, topic, indexed, op) {
+            Error(reason) ->
+              Ok(#(selected.0, selected.1, [reason, ..selected.2]))
+            Ok(#(candidate, bodies)) -> {
+              case candidate.1 == selected.0.1, candidate.0 == selected.0.0 {
+                True, False if selected.0.0 != "" ->
+                  Error(git.CorruptPublication(
+                    "Conflicting publications at the same proposal sequence",
+                  ))
+                _, _ ->
+                  case candidate.1 > selected.0.1 || selected.0.0 == "" {
+                    True -> Ok(#(candidate, bodies, selected.2))
+                    False -> Ok(selected)
+                  }
+              }
+            }
+          }
+        _ -> Ok(selected)
+      }
+    }),
+  )
+  let #(handle, summary_sequence_number) = summary
   let checkpoint = case summary_sequence_number > last_sequence_number {
     True -> summary_sequence_number
     False -> last_sequence_number
   }
-  Doc(
-    seq: sequencing.from_checkpoint(checkpoint, summary_sequence_number),
-    // Newest first, and only as much as a live document would have kept.
-    history: ops |> list.reverse |> list.take(max_history_size),
-    summary: #(handle, summary_sequence_number),
-    presence: dict.new(),
-    last_touched_ms: now_ms(),
-  )
+  Ok(Recovery(
+    Doc(
+      seq: sequencing.from_checkpoint(checkpoint, summary_sequence_number),
+      // Newest first, and only as much as a live document would have kept.
+      history: ops |> list.reverse |> list.take(max_history_size),
+      summary: #(handle, summary_sequence_number),
+      presence: dict.new(),
+      last_touched_ms: now_ms(),
+    ),
+    chain,
+    list.reverse(warnings),
+  ))
 }
 
-/// Put back a summary ref that a crash left unwritten. Never overwrites an
-/// existing one — a ref that merely lags is safe and self-heals on the next
-/// summary, and clients may move refs through the Historian API.
-fn restore_summary_ref(
+fn acknowledged_summary(
   storage: store.Backend,
   topic: String,
-  handle: String,
-) -> Nil {
-  case handle, string.split(topic, ":") {
-    "", _ -> Nil
-    _, ["document", tenant, document_id] -> {
-      // Best-effort: a failed restore leaves exactly the pre-repair state, and
-      // the next touch of the document retries it.
-      let _ = git.ensure_summary_ref(storage, tenant, document_id, handle)
-      Nil
+  ops: Dict(Int, String),
+  op: #(Int, String),
+) -> Result(#(#(String, Int), List(#(String, String))), String) {
+  let envelope = {
+    use client <- decode.field("clientId", decode.optional(decode.string))
+    use csn <- decode.field("clientSequenceNumber", decode.int)
+    use sn <- decode.field("sequenceNumber", decode.int)
+    use reference <- decode.field("referenceSequenceNumber", decode.int)
+    decode.success(#(client, csn, sn, reference))
+  }
+  use #(client, csn, sn, reference) <- result.try(
+    json.parse(op.1, envelope)
+    |> result.replace_error("Invalid summaryAck envelope"),
+  )
+  use Nil <- result.try(case client == None && csn == -1 && sn == op.0 {
+    True -> Ok(Nil)
+    False -> Error("Summary acknowledgement is not server-authored")
+  })
+  let ack_contents = {
+    use handle <- decode.field("handle", decode.string)
+    use proposal_sn <- decode.subfield(
+      ["summaryProposal", "summarySequenceNumber"],
+      decode.int,
+    )
+    decode.success(#(handle, proposal_sn))
+  }
+  use #(handle, proposal_sn) <- result.try(contents(op.1, ack_contents))
+  use Nil <- result.try(case reference == proposal_sn && sn == proposal_sn + 1 {
+    True -> Ok(Nil)
+    False -> Error("Summary acknowledgement sequence fields disagree")
+  })
+  use proposal <- result.try(
+    dict.get(ops, proposal_sn)
+    |> result.replace_error("Summary acknowledgement has no proposal"),
+  )
+  let proposal_envelope = {
+    use kind <- decode.field("type", decode.string)
+    use client <- decode.field("clientId", decode.string)
+    use sn <- decode.field("sequenceNumber", decode.int)
+    decode.success(#(kind, client, sn))
+  }
+  use #(kind, client, sn) <- result.try(
+    json.parse(proposal, proposal_envelope)
+    |> result.replace_error("Invalid summary proposal envelope"),
+  )
+  use Nil <- result.try(
+    case kind == "summarize" && client != "" && sn == proposal_sn {
+      True -> Ok(Nil)
+      False ->
+        Error("Summary acknowledgement does not reference a summarize proposal")
+    },
+  )
+  let proposal_contents = {
+    use _handle <- decode.field("handle", decode.string)
+    use _head <- decode.field("head", decode.string)
+    use parents <- decode.field("parents", decode.list(decode.string))
+    decode.success(parents)
+  }
+  use parents <- result.try(contents(proposal, proposal_contents))
+  use chain <- result.try(
+    git.recovery_chain(storage, topic, handle)
+    |> result.map_error(fn(error) {
+      case error {
+        git.CorruptPublication(reason) -> reason
+        git.StorageUnavailable -> "Summary commit storage is unavailable"
+      }
+    }),
+  )
+  let assert Ok(#(_, body)) = list.first(chain)
+  let assert Ok(commit) = object.decode_commit(body)
+  case commit.parents == parents {
+    True -> Ok(#(#(handle, proposal_sn), chain))
+    False -> Error("Acknowledged commit parents disagree with its proposal")
+  }
+}
+
+fn contents(message: String, decoder: decode.Decoder(a)) -> Result(a, String) {
+  use value <- result.try(
+    json.parse(
+      message,
+      decode.field("contents", decode.dynamic, decode.success),
+    )
+    |> result.replace_error("Summary message has no contents"),
+  )
+  case decode.run(value, decoder) {
+    Ok(value) -> Ok(value)
+    Error(_) -> {
+      use serialized <- result.try(
+        decode.run(value, decode.string)
+        |> result.replace_error("Invalid summary contents"),
+      )
+      json.parse(serialized, decoder)
+      |> result.replace_error("Invalid summary contents")
     }
-    _, _ -> Nil
   }
 }
 

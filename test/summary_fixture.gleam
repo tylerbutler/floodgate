@@ -1,6 +1,8 @@
 import floodgate/document_channel
 import floodgate/git
 import floodgate/store
+import gleam/dict
+import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import spillway/session_logic
@@ -99,6 +101,22 @@ pub fn ack(proposal_sn: Int, commit_sha: String) -> String {
   session_logic.build_summary_ack(commit_sha, proposal_sn, 0, 0)
   |> list.map(fn(field) {
     #(field.0, document_channel.dynamic_to_json(field.1))
+  })
+  |> json.object
+  |> json.to_string
+}
+
+pub fn stringify_contents(message: String) -> String {
+  let assert Ok(fields) =
+    json.parse(message, decode.dict(decode.string, decode.dynamic))
+  fields
+  |> dict.to_list
+  |> list.map(fn(field) {
+    let value = document_channel.dynamic_to_json(field.1)
+    #(field.0, case field.0 {
+      "contents" -> json.string(json.to_string(value))
+      _ -> value
+    })
   })
   |> json.object
   |> json.to_string

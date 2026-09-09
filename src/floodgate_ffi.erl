@@ -1,6 +1,10 @@
 -module(floodgate_ffi).
 -export([now_seconds/0, now_ms/0, getenv/2, setenv/2, secure_compare/2,
-         json_encode/1, raw_json/1, identity/1]).
+         json_encode/1, raw_json/1, identity/1, log_summary_recovery/2]).
+
+log_summary_recovery(Topic, Reason) ->
+  logger:warning("floodgate: summary recovery for ~ts: ~ts", [Topic, Reason]),
+  nil.
 
 now_seconds() -> erlang:system_time(second).
 

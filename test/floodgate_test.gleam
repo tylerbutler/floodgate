@@ -1,6 +1,7 @@
 import exception
 import floodgate
 import floodgate/auth
+import floodgate/doc_state
 import floodgate/git
 import floodgate/memory_store
 import floodgate/session
@@ -404,34 +405,30 @@ pub fn read_connect_repairs_unmatched_durable_joins_test() {
   session.clients(document_session, topic) |> should.equal(["reader"])
 }
 
-/// A summary is five independent DETS writes with no transaction, so a crash can
-/// land between them. They are ordered so that every prefix is safe — objects,
-/// then ops, then the session's summary pointer, then the ref that mirrors it —
-/// which leaves exactly one prefix that is not: a summary pointer with no ref at
-/// all, since `GET /commits?sha=<id>` resolves through that ref and without it the
-/// document cannot be loaded. Rehydration repairs it.
-pub fn missing_summary_ref_is_restored_on_rehydrate_test() {
+pub fn missing_summary_ref_is_restored_only_under_document_ownership_test() {
   let backend = memory_store.new()
   let tenant = "ref-repair"
   let doc = "doc"
   let topic = "document:" <> tenant <> ":" <> doc
 
   // The state a crash between `put_summary` and the ref write leaves behind.
-  let assert Ok(Nil) = store.put_object(backend, tenant, "commit-sha", "{}")
-  let assert Ok(Nil) = store.put_summary(backend, topic, "commit-sha", 5)
+  let tree = summary_fixture.tree(backend, topic, "repair")
+  let sha = summary_fixture.commit(backend, topic, tree, [], "repair")
+  let assert Ok(Nil) = store.put_summary(backend, topic, sha, 5)
   git.get_ref(backend, tenant, git.summary_ref(doc)) |> should.equal(Error(Nil))
 
-  // Touching the document rehydrates it, which is where the repair runs.
   let document_session = session.start_with_backend(backend)
   session.sequence_number(document_session, topic) |> should.equal(5)
+  git.get_ref(backend, tenant, git.summary_ref(doc)) |> should.equal(Error(Nil))
+  session.join(document_session, topic, "reader") |> should.be_true
   git.get_ref(backend, tenant, git.summary_ref(doc))
-  |> should.equal(Ok("commit-sha"))
+  |> should.equal(Ok(sha))
 }
 
 /// A ref that merely lags is safe — a client discovering an older snapshot just
 /// replays more ops — and clients may move refs through the Historian API, so the
 /// repair must only fill in a missing ref, never overwrite one.
-pub fn existing_summary_ref_is_left_alone_on_rehydrate_test() {
+pub fn storage_only_rehydrate_does_not_write_an_existing_ref_test() {
   let backend = memory_store.new()
   let tenant = "ref-keep"
   let doc = "doc"
@@ -439,7 +436,9 @@ pub fn existing_summary_ref_is_left_alone_on_rehydrate_test() {
 
   let assert Ok(Nil) =
     git.put_ref(backend, tenant, git.summary_ref(doc), "client-chosen-sha")
-  let assert Ok(Nil) = store.put_summary(backend, topic, "commit-sha", 5)
+  let tree = summary_fixture.tree(backend, topic, "read-only")
+  let sha = summary_fixture.commit(backend, topic, tree, [], "read-only")
+  let assert Ok(Nil) = store.put_summary(backend, topic, sha, 5)
 
   let document_session = session.start_with_backend(backend)
   session.sequence_number(document_session, topic) |> should.equal(5)
@@ -567,17 +566,19 @@ pub fn initialized_document_starts_at_summary_checkpoint_test() {
   // storage still sees the persisted summary checkpoint.
   let backend = memory_store.new()
   let document_session = session.start_with_backend(backend)
+  let tree = summary_fixture.tree(backend, topic, "checkpoint")
+  let sha = summary_fixture.commit(backend, topic, tree, [], "checkpoint")
 
   session.create_initialized(document_session, topic, fn() {
-    Ok(Some(#("initial-summary", 7)))
+    Ok(Some(#(sha, 7)))
   })
   |> should.equal(session.Created)
   session.summary(document_session, topic)
-  |> should.equal(Ok(#("initial-summary", 7)))
+  |> should.equal(Ok(#(sha, 7)))
   session.sequence_number(document_session, topic) |> should.equal(7)
 
   let restarted = session.start_with_backend(backend)
-  session.summary(restarted, topic) |> should.equal(Ok(#("initial-summary", 7)))
+  session.summary(restarted, topic) |> should.equal(Ok(#(sha, 7)))
   session.sequence_number(restarted, topic) |> should.equal(7)
   let assert session.Joined(True, 8, 7, _) =
     session.join_sequenced(restarted, topic, "c1", "{}", 1000)
@@ -1212,4 +1213,174 @@ pub fn timed_out_call_does_not_replace_a_live_publisher_test() {
   session.document_owner(document_session, topic) |> should.equal(Ok(owner))
   let assert Ok(_) = process.receive(finished, 2000)
   store.get_ops(backend, topic) |> list.length |> should.equal(2)
+}
+
+pub fn summary_recovery_uses_complete_durable_ack_evidence_test() {
+  assert_summary_recovery(memory_store.new())
+}
+
+pub fn assert_summary_recovery(backend: store.Backend) -> Nil {
+  list.each(["objects", "proposal", "nack"], fn(kind) {
+    let topic = store.topic("unpublished-prefix", kind)
+    let tree = summary_fixture.tree(backend, topic, kind)
+    let sha = summary_fixture.commit(backend, topic, tree, [], kind)
+    case kind {
+      "objects" -> Nil
+      _ -> {
+        let assert Ok(Nil) =
+          store.put_op(
+            backend,
+            topic,
+            1,
+            summary_fixture.proposal(1, 0, tree, ""),
+          )
+        Nil
+      }
+    }
+    case kind {
+      "nack" -> {
+        let assert Ok(Nil) =
+          store.put_op(
+            backend,
+            topic,
+            2,
+            string.replace(
+              summary_fixture.ack(1, sha),
+              "summaryAck",
+              "summaryNack",
+            ),
+          )
+        Nil
+      }
+      _ -> Nil
+    }
+    let document_session = session.start_with_backend(backend)
+    let _ = session.join(document_session, topic, "reader")
+    session.summary(document_session, topic) |> should.equal(Error(Nil))
+  })
+  list.each(
+    [
+      "objects", "proposal", "nack", "ack", "older-pointer", "newer-pointer",
+      "initial", "malformed", "client-authored", "unmatched", "missing-commit",
+      "wrong-sequence", "old-ack", "string-contents",
+    ],
+    fn(kind) {
+      let topic = store.topic("recover-matrix", kind)
+      let tree = summary_fixture.tree(backend, topic, kind)
+      let root = summary_fixture.commit(backend, topic, tree, [], "root")
+      let proposed =
+        summary_fixture.commit(backend, topic, tree, [root], "child")
+      let latest =
+        summary_fixture.commit(backend, topic, tree, [proposed], "latest")
+      let assert Ok(Nil) = store.put_summary(backend, topic, root, 2)
+      case kind {
+        "objects" | "initial" -> Nil
+        _ -> {
+          let proposal = summary_fixture.proposal(5, 3, tree, root)
+          let proposal = case kind {
+            "string-contents" -> summary_fixture.stringify_contents(proposal)
+            _ -> proposal
+          }
+          let assert Ok(Nil) = store.put_op(backend, topic, 5, proposal)
+          Nil
+        }
+      }
+      let ack = summary_fixture.ack(5, proposed)
+      case kind {
+        "objects" | "proposal" | "initial" -> Nil
+        _ -> {
+          let response = case kind {
+            "nack" -> string.replace(ack, "summaryAck", "summaryNack")
+            "malformed" -> "{\"type\":\"summaryAck\"}"
+            "client-authored" ->
+              string.replace(
+                ack,
+                "\"clientId\":null",
+                "\"clientId\":\"client\"",
+              )
+            "unmatched" -> summary_fixture.ack(4, proposed)
+            "missing-commit" -> summary_fixture.ack(5, "missing")
+            "wrong-sequence" ->
+              string.replace(
+                ack,
+                "\"sequenceNumber\":6",
+                "\"sequenceNumber\":7",
+              )
+            "string-contents" -> summary_fixture.stringify_contents(ack)
+            _ -> ack
+          }
+          let assert Ok(Nil) = store.put_op(backend, topic, 6, response)
+          Nil
+        }
+      }
+      case kind {
+        "newer-pointer" -> {
+          let assert Ok(Nil) = store.put_summary(backend, topic, latest, 10)
+          Nil
+        }
+        "old-ack" -> {
+          let _ =
+            list.index_map(list.repeat(Nil, 1004), fn(_, index) {
+              let assert Ok(Nil) = store.put_op(backend, topic, index + 7, "{}")
+              Nil
+            })
+          Nil
+        }
+        _ -> Nil
+      }
+      let expected = case kind {
+        "ack" | "older-pointer" | "old-ack" | "string-contents" -> #(
+          proposed,
+          5,
+        )
+        "newer-pointer" -> #(latest, 10)
+        _ -> #(root, 2)
+      }
+      let before = store.get_ops(backend, topic)
+      let document_session = session.start_with_backend(backend)
+      session.join(document_session, topic, "reader") |> should.be_true
+      session.summary(document_session, topic) |> should.equal(Ok(expected))
+      store.get_ops(backend, topic) |> should.equal(before)
+      let again = session.start_with_backend(backend)
+      session.join(again, topic, "reader") |> should.be_true
+      session.summary(again, topic) |> should.equal(Ok(expected))
+      store.get_ops(backend, topic) |> should.equal(before)
+    },
+  )
+}
+
+pub fn acknowledged_summary_without_pointer_recovers_without_writing_during_reads_test() {
+  let backend = memory_store.new()
+  let topic = store.topic("recover-no-pointer", "doc")
+  let tree = summary_fixture.tree(backend, topic, "first")
+  let sha = summary_fixture.commit(backend, topic, tree, [], "first")
+  let assert Ok(Nil) =
+    store.put_op(backend, topic, 5, summary_fixture.proposal(5, 0, tree, ""))
+  let assert Ok(Nil) =
+    store.put_op(backend, topic, 6, summary_fixture.ack(5, sha))
+  doc_state.rehydrate(backend, topic).summary |> should.equal(#(sha, 5))
+  store.get_summary(backend, topic) |> should.equal(Error(Nil))
+  let document_session = session.start_with_backend(backend)
+  session.join(document_session, topic, "reader") |> should.be_true
+  session.summary(document_session, topic) |> should.equal(Ok(#(sha, 5)))
+  session.sequence_number(document_session, topic) |> should.equal(6)
+  store.get_ops(backend, topic) |> list.length |> should.equal(2)
+}
+
+pub fn recovery_rejects_damaged_or_conflicting_publication_test() {
+  let backend = memory_store.new()
+  let topic = store.topic("corrupt-publication", "doc")
+  let assert Ok(Nil) = store.put_summary(backend, topic, "missing", 5)
+  let assert Error(git.CorruptPublication(_)) =
+    doc_state.recover(backend, topic)
+  let tree = summary_fixture.tree(backend, topic, "snapshot")
+  let stored = summary_fixture.commit(backend, topic, tree, [], "stored")
+  let competing = summary_fixture.commit(backend, topic, tree, [], "competing")
+  let assert Ok(Nil) = store.put_summary(backend, topic, stored, 5)
+  let assert Ok(Nil) =
+    store.put_op(backend, topic, 5, summary_fixture.proposal(5, 0, tree, ""))
+  let assert Ok(Nil) =
+    store.put_op(backend, topic, 6, summary_fixture.ack(5, competing))
+  let assert Error(git.CorruptPublication(_)) =
+    doc_state.recover(backend, topic)
 }

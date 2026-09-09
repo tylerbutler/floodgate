@@ -7,10 +7,74 @@
 
 import floodgate/store
 import gleam/json
+import gleam/list
 import gleam/result
+import gleam/set
 import gleam/string
 import silt/object
 import silt/rest
+
+pub type PublicationError {
+  StorageUnavailable
+  CorruptPublication(reason: String)
+}
+
+/// Only recovery may use this tenant fallback. Its head must come from the
+/// stored pointer or a validated server acknowledgement, never a request/ref.
+pub fn recovery_chain(
+  storage: store.Backend,
+  topic: String,
+  head: String,
+) -> Result(List(#(String, String)), PublicationError) {
+  collect_chain(storage, topic, head, fetch(storage, topic, _), set.new(), [])
+}
+
+fn collect_chain(
+  storage: store.Backend,
+  topic: String,
+  sha: String,
+  fetch_commit: rest.Fetch,
+  seen: set.Set(String),
+  collected: List(#(String, String)),
+) -> Result(List(#(String, String)), PublicationError) {
+  use Nil <- result.try(case set.contains(seen, sha) {
+    True -> Error(CorruptPublication("Cycle in published commit history"))
+    False -> Ok(Nil)
+  })
+  use body <- result.try(
+    fetch_commit(sha)
+    |> result.replace_error(CorruptPublication("Published commit is missing")),
+  )
+  use Nil <- result.try(case object.object_id("commits", body) == Ok(sha) {
+    True -> Ok(Nil)
+    False -> Error(CorruptPublication("Published commit hash does not match"))
+  })
+  use commit <- result.try(
+    object.decode_commit(body)
+    |> result.replace_error(CorruptPublication("Published commit is invalid")),
+  )
+  use tree <- result.try(
+    fetch(storage, topic, commit.tree)
+    |> result.replace_error(CorruptPublication("Published root tree is missing")),
+  )
+  use _ <- result.try(
+    object.decode_tree(tree)
+    |> result.replace_error(CorruptPublication("Published root tree is invalid")),
+  )
+  let collected = [#(sha, body), ..collected]
+  case commit.parents {
+    [] -> Ok(list.reverse(collected))
+    [parent, ..] ->
+      collect_chain(
+        storage,
+        topic,
+        parent,
+        fetch_commit,
+        set.insert(seen, sha),
+        collected,
+      )
+  }
+}
 
 /// Store an object's raw body, returning its content-addressed id.
 ///
