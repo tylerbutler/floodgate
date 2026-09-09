@@ -1075,12 +1075,12 @@ packages:
     engines: {node: '>=12'}
 
   playwright-core@1.62.1:
-    resolution: {integrity: sha1-Eg9noZGBv9GDxg+pA8DZkzC1Z4U=, tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/playwright-core/-/playwright-core-1.62.1.tgz}
+    resolution: {integrity: sha1-Eg9noZGBv9GDxg+pA8DZkzC1Z4U=}
     engines: {node: '>=20'}
     hasBin: true
 
   playwright@1.62.1:
-    resolution: {integrity: sha1-hEe2dV6K7IWjy3IHyCPj7S/GZwA=, tarball: https://ms-feed-2.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/playwright/-/playwright-1.62.1.tgz}
+    resolution: {integrity: sha1-hEe2dV6K7IWjy3IHyCPj7S/GZwA=}
     engines: {node: '>=20'}
     hasBin: true
 
