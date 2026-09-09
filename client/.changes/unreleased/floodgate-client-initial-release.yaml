@@ -1,4 +1,0 @@
-project: floodgate-client
-kind: Added
-body: Initial release of the high-level Floodgate client backed by the official Routerlicious driver.
-time: 2026-07-13T00:00:00.000000000Z

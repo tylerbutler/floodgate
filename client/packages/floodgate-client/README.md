@@ -5,15 +5,18 @@ official `@fluidframework/routerlicious-driver`.
 
 ## Status
 
-This package is release-ready and participates in the client Changie/npm
-release pipeline. Floodgate passes the required Routerlicious conformance suite
-against both supported storage backends. The package remains independent and
-does not depend on `@tylerbu/levee-driver`.
+This package remains in the workspace for development, examples, and
+compatibility tests. This repository has no client release or npm publishing
+pipeline. Floodgate passes the required Routerlicious conformance suite against
+both supported storage backends. The package remains independent and does not
+depend on `@tylerbu/levee-driver`.
 
 Levee and Floodgate are separate, supported server stacks:
 
 - `@tylerbu/levee-client` uses the custom Phoenix Channels Levee driver.
 - `@tylerbu/floodgate-client` uses the official Routerlicious driver.
+
+Floodgate also supports `@tylerbu/levee-client` through its Phoenix endpoint.
 
 ## Installation
 

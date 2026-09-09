@@ -117,9 +117,10 @@ the Docker workflow rejects prerelease tags.
 
 Trellis manages the server as a `git_only` package, with no Hex publication.
 The admin UI ships with the server and has no separate release. Use a
-`floodgate` fragment for admin changes too. Keep the npm client's Changie
-fragments in `client/.changes/`: Trellis only versions Gleam packages, so the
-client release PR, tags, and npm publishing retain their existing workflow.
+`floodgate` fragment for admin changes too. This repository has no client
+release or npm publishing pipeline. The client packages remain in the workspace
+for development, examples, and compatibility tests. Applications can use
+`@tylerbu/levee-client` with Floodgate's Phoenix endpoint.
 
 **One-time registry setup:** GHCR creates new packages as private, even for a
 public source repository. After the first successful `main` publication, open

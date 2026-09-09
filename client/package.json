@@ -21,8 +21,7 @@
 		"test:phoenix": "FLOODGATE_PHOENIX_COMPAT=1 FLOODGATE_ROUTERLICIOUS_COMPAT=1 vitest run test/conformance/floodgate-phoenix.test.ts",
 		"test:conformance": "pnpm test:routerlicious",
 		"check:floodgate-readiness-manifest": "vitest run test/conformance/floodgate-readiness.test.ts",
-		"check:floodgate-readiness": "node scripts/check-floodgate-release.mjs",
-		"ci:publish": "pnpm publish -r --access public --provenance --report-summary --no-git-checks"
+		"check:floodgate-readiness": "node scripts/check-floodgate-release.mjs"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.3.8",

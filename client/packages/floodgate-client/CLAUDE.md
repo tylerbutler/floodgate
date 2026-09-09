@@ -15,7 +15,9 @@ Floodgate are independent supported stacks:
 
 ## Status
 
-The package is publishable through the client Changie/npm release pipeline.
+The package remains in the workspace for development, examples, and
+compatibility tests. This repository has no client release or npm publishing
+pipeline.
 Standalone Floodgate passes the required Routerlicious conformance suite on
 both supported storage backends. The API exposes both high-level container
 create/load operations and lower-level resolved-URL/document-service-factory

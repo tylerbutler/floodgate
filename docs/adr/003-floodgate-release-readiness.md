@@ -30,8 +30,9 @@ As of this update:
   show both ETS and actor-memory satisfy it and produce identical runtime,
   session, and Historian helper observations; those tests do not traverse HTTP
   or Socket.IO.
-- `@tylerbu/floodgate-client` is release-ready and registered in the client
-  Changie/npm pipeline around the official Routerlicious driver.
+- `@tylerbu/floodgate-client` uses the official Routerlicious driver and remains
+  in the workspace for development, examples, and compatibility tests. The
+  client release and npm publishing pipeline has been removed.
 - Levee remains supported through `@tylerbu/levee-driver` and
   `@tylerbu/levee-client`; its controllers, auth, sessions, and admin UI are no
   longer retirement prerequisites.
