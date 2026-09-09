@@ -46,6 +46,74 @@ docker run --rm -p 127.0.0.1:3000:3000 \
 
 The default Dockerfile target does not enable the bypass.
 
+### Published container images
+
+CI publishes the authenticated `runtime` image for `linux/amd64` to
+`ghcr.io/tylerbutler/floodgate` after all required CI jobs pass.
+The image includes the admin UI but does not enable the local admin bypass.
+
+Set `FLOODGATE_JWT_SECRET` to your own secret in the host environment, then run:
+
+```sh
+docker pull ghcr.io/tylerbutler/floodgate:edge
+docker run -d --name floodgate \
+  -p 127.0.0.1:3000:3000 \
+  -e FLOODGATE_JWT_SECRET="${FLOODGATE_JWT_SECRET:?Set your JWT secret first}" \
+  -v floodgate-data:/data \
+  ghcr.io/tylerbutler/floodgate:edge
+```
+
+The named volume keeps document and tenant data across container replacements.
+Admin login still needs the authentication configuration below. The existing
+Compose setup remains for local development and builds its own `local` image.
+
+| Image tag | Meaning |
+|---|---|
+| `edge` | A successful build of the current `main` commit. Older workflow reruns do not move this tag. |
+| `sha-<full commit SHA>` | A specific successful `main` build's source commit. |
+| `0.1.0` | A stable server version, published from the matching `v0.1.0` Git tag. |
+| `0.1` | The most recently published stable release in that minor series. |
+| `latest` | The most recently published stable server release, not a development build. |
+
+Pull requests and client release tags do not publish server images. Prerelease
+and malformed server tags are rejected. Publishing an older stable version
+later also moves `latest` to that release.
+
+Tags can move, and rebuilding the same commit can produce a different image.
+For an exact image, use the digest from the publishing workflow summary:
+
+```sh
+docker pull ghcr.io/tylerbutler/floodgate@sha256:<digest>
+```
+
+Replace `<digest>` with the digest value. Use the same digest reference in
+`docker run` or your deployment configuration.
+
+### Publishing a server release
+
+Update the root `gleam.toml` version on `main` and merge that change before
+tagging the intended commit. For example, when its version is `0.1.0`:
+
+```sh
+git tag -a v0.1.0 <release-commit-sha> -m "Floodgate 0.1.0"
+git push origin v0.1.0
+```
+
+Replace `<release-commit-sha>` with the intended commit on `main`. A server tag
+must be a stable `vX.Y.Z` version and must match `gleam.toml` at that commit.
+CI builds that tagged commit, runs all required jobs, then publishes the full
+version, minor-series, and `latest` image tags. It does not create a GitHub
+Release or change the separate client release process. Do not move release Git
+tags or full-version image tags to different releases.
+
+**One-time registry setup:** GHCR creates new packages as private, even for a
+public source repository. After the first successful `main` publication, open
+the `floodgate` package settings under the `tylerbutler` account and change its
+visibility to **public**. Confirm that the image can be pulled without registry
+credentials. If the package already exists but is not linked to this repository,
+connect it and grant this repository Actions access before publishing. CI uses
+`GITHUB_TOKEN`; no separate registry publishing secret is needed.
+
 ## Configuration
 
 | Variable | Default | Purpose |

@@ -3,11 +3,18 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ghcr.io/tylerbutler/floodgate
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   server:
@@ -126,25 +133,138 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
+    env:
+      PUBLISH_IMAGE: ${{ github.repository == 'tylerbutler/floodgate' && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
     steps:
       - uses: actions/checkout@v4
+      - name: Validate server release tag
+        if: github.ref_type == 'tag'
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          if not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
+              raise SystemExit("Expected a stable server tag: vX.Y.Z")
+          with open("gleam.toml", "rb") as manifest:
+              version = tomllib.load(manifest)["version"]
+          if tag != f"v{version}":
+              raise SystemExit(f"Tag {tag} does not match gleam.toml version {version}")
+          PY
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          flavor: latest=false
+          tags: |
+            type=sha,format=long,priority=1000,enable=${{ env.PUBLISH_IMAGE == 'true' && github.ref == 'refs/heads/main' }}
+            type=raw,value=edge,priority=100,enable=${{ env.PUBLISH_IMAGE == 'true' && github.ref == 'refs/heads/main' }}
+            type=semver,pattern={{version}},priority=900,enable=${{ env.PUBLISH_IMAGE == 'true' && github.ref_type == 'tag' }}
+            type=semver,pattern={{major}}.{{minor}},priority=800,enable=${{ env.PUBLISH_IMAGE == 'true' && github.ref_type == 'tag' }}
+            type=raw,value=latest,priority=100,enable=${{ env.PUBLISH_IMAGE == 'true' && github.ref_type == 'tag' }}
+            type=ref,event=pr
+          labels: |
+            org.opencontainers.image.source=https://github.com/tylerbutler/floodgate
+            org.opencontainers.image.description=Fluid Framework server on Gleam/BEAM
+            org.opencontainers.image.licenses=MIT
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
           context: .
+          target: runtime
+          platforms: linux/amd64
           push: false
           load: true
           tags: floodgate:ci
-      - name: Verify container
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Create container
+        id: container
         run: |
-          docker run -d --name floodgate-ci \
-            -p 3000:3000 \
+          docker create --name floodgate-ci \
+            -p 127.0.0.1:3000:3000 \
             -e FLOODGATE_JWT_SECRET=ci-secret \
             -e FLOODGATE_STORAGE_BACKEND=memory \
             floodgate:ci
+      - name: Verify container
+        run: |
+          docker start floodgate-ci
+          test "$(docker image inspect floodgate:ci --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
+          docker exec floodgate-ci /bin/sh -ec \
+            'test "${FLOODGATE_ADMIN_LOCAL_BYPASS:-false}" = false; test -s /app/priv/static/admin/index.html'
           for i in $(seq 1 30); do
-            curl -sf http://localhost:3000/health >/dev/null && exit 0
+            curl --max-time 3 -sf http://127.0.0.1:3000/health >/dev/null && exit 0
             sleep 1
           done
-          docker logs floodgate-ci
           exit 1
+      - name: Container failure logs
+        if: failure() && steps.container.outcome == 'success'
+        run: docker logs floodgate-ci
+      - name: Remove container
+        if: always() && steps.container.outcome == 'success'
+        run: docker rm --force --volumes floodgate-ci
+      - name: Export tested image
+        if: env.PUBLISH_IMAGE == 'true'
+        run: docker save --output "$RUNNER_TEMP/floodgate-image.tar" floodgate:ci
+      - uses: actions/upload-artifact@v4
+        if: env.PUBLISH_IMAGE == 'true'
+        with:
+          name: floodgate-image
+          path: ${{ runner.temp }}/floodgate-image.tar
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish-docker:
+    needs: [server, client-and-website, conformance, fluid-canonical, docker]
+    if: github.repository == 'tylerbutler/floodgate' && github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: ghcr-floodgate-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: floodgate-image
+          path: ${{ runner.temp }}
+      - name: Load tested image
+        run: docker load --input "$RUNNER_TEMP/floodgate-image.tar"
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish image tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAGS: ${{ needs.docker.outputs.tags }}
+        run: |
+          if [ -z "$TAGS" ]; then
+            echo "::error::No image tags were generated"
+            exit 1
+          fi
+          printf '## Published Floodgate images\n\n' >> "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r tag; do
+            if [ "$tag" = "$IMAGE_NAME:edge" ]; then
+              main_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+              if [[ ! "$main_sha" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error::Could not resolve the current main commit"
+                exit 1
+              fi
+              if [ "$GITHUB_SHA" != "$main_sha" ]; then
+                echo "::notice::Skipping edge: this run is no longer the current main commit"
+                printf 'Skipped `edge`: this run is no longer the current `main` commit.\n\n' >> "$GITHUB_STEP_SUMMARY"
+                continue
+              fi
+            fi
+            docker tag floodgate:ci "$tag"
+            docker push "$tag"
+            digest="$(docker image inspect "$tag" --format '{{index .RepoDigests 0}}')"
+            printf -- '- `%s`: `%s`\n' "$tag" "$digest" >> "$GITHUB_STEP_SUMMARY"
+          done <<< "$TAGS"
