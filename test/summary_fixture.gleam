@@ -34,6 +34,36 @@ pub fn tree(backend: store.Backend, topic: String, content: String) -> String {
   sha
 }
 
+pub fn tree_without_mode(
+  backend: store.Backend,
+  topic: String,
+  content: String,
+) -> String {
+  let blob =
+    json.object([
+      #("content", json.string(content)),
+      #("encoding", json.string("utf-8")),
+    ])
+    |> json.to_string
+  let assert Ok(blob_sha) = git.create(backend, topic, "blobs", blob)
+  let body =
+    json.object([
+      #(
+        "tree",
+        json.preprocessed_array([
+          json.object([
+            #("path", json.string("file.txt")),
+            #("type", json.string("blob")),
+            #("sha", json.string(blob_sha)),
+          ]),
+        ]),
+      ),
+    ])
+    |> json.to_string
+  let assert Ok(sha) = git.create(backend, topic, "trees", body)
+  sha
+}
+
 pub fn commit(
   backend: store.Backend,
   topic: String,

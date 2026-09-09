@@ -812,6 +812,7 @@ pub fn summary_proposals_validate_published_head_and_tree_kind_test() {
       [
         "first",
         "child",
+        "child_without_mode",
         "parents",
         "multiple",
         "head",
@@ -830,7 +831,11 @@ pub fn summary_proposals_validate_published_head_and_tree_kind_test() {
         let #(channels, document_session, sent) = start_socket(doc)
         let storage = session.storage(document_session)
         let topic = store.topic(tenant, doc)
-        let tree = summary_fixture.tree(storage, topic, doc)
+        let tree = case kind {
+          "child_without_mode" ->
+            summary_fixture.tree_without_mode(storage, topic, doc)
+          _ -> summary_fixture.tree(storage, topic, doc)
+        }
         let parent = summary_fixture.commit(storage, topic, tree, [], "initial")
         let head = case kind {
           "first" -> ""
@@ -894,7 +899,7 @@ pub fn summary_proposals_validate_published_head_and_tree_kind_test() {
             decode.field("type", decode.string, decode.success),
           )
         case kind {
-          "first" | "child" -> {
+          "first" | "child" | "child_without_mode" -> {
             response_type |> should.equal("summaryAck")
             let assert Ok(#(sha, 2)) = session.summary(document_session, topic)
             let assert Ok(body) = git.fetch(storage, topic, sha)

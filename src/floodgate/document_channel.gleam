@@ -1491,7 +1491,7 @@ fn summary_tree_entry_decoder() -> decode.Decoder(
   #(String, String, String, String),
 ) {
   use path <- decode.field("path", decode.string)
-  use mode <- decode.field("mode", decode.string)
+  use mode <- decode.optional_field("mode", "", decode.string)
   use kind <- decode.field("type", decode.string)
   use sha <- decode.field("sha", decode.string)
   decode.success(#(path, mode, kind, sha))
