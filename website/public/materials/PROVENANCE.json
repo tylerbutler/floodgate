@@ -1,0 +1,10 @@
+{
+  "direction": "Operations Status Wall",
+  "seed": "52f56dfd",
+  "created": "2026-09-15",
+  "assets": {
+    "powder-texture.svg": "Authored SVG turbulence source for the powder-coated panel texture.",
+    "powder-texture.png": "Rasterized from powder-texture.svg with macOS sips.",
+    "fastener.svg": "Authored panel fastener used in shared operations-wall surfaces."
+  }
+}

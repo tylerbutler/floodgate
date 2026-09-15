@@ -1,6 +1,8 @@
 ---
 import Terminal from "./Terminal.astro";
 import { nodeNav } from "../data/docs-nodes";
+import ArrowIcon from "../components/ArrowIcon.astro";
+import DocsNav from "../components/DocsNav.astro";
 
 interface Props {
 	slug: string;
@@ -9,26 +11,23 @@ interface Props {
 
 const { slug, description } = Astro.props;
 const { node, prev, next } = nodeNav(slug);
-const up = { href: "/docs", label: "docs" };
 ---
 
 <Terminal title={`${node.title} — Floodgate docs`} description={description} path={`/docs/${slug}`}>
 	<article class="node">
 		<div class="node__head">
-			<span>File: <strong>floodgate.info</strong>,</span>
-			<span>Node: <strong>{node.title}</strong>,</span>
-			<span>Next: <a href={next ? next.href : "/docs"}>{next ? next.title : "docs menu"}</a>,</span>
-			<span>Prev: <a href={prev ? prev.href : "/docs"}>{prev ? prev.title : "docs menu"}</a>,</span>
-			<span>Up: <a href={up.href}>{up.label}</a></span>
+			<span>Documentation</span>
+			<span aria-hidden="true">/</span>
+			<strong>{node.title}</strong>
 		</div>
+		<DocsNav currentPath={`/docs/${slug}`} />
 		<h1>{node.title}</h1>
 		<div class="node__body">
 			<slot />
 		</div>
 		<div class="node__foot">
-			{prev && <a href={prev.href}>&larr; Prev: {prev.title}</a>}
-			<a href={up.href}>&uarr; Up: docs</a>
-			{next && <a href={next.href}>Next: {next.title} &rarr;</a>}
+			{prev && <a class="node__foot-prev" href={prev.href}><ArrowIcon direction="left" /> {prev.title}</a>}
+			{next && <a class="node__foot-next" href={next.href}>{next.title} <ArrowIcon direction="right" /></a>}
 		</div>
 	</article>
 </Terminal>

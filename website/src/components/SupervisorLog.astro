@@ -18,11 +18,15 @@ const lines = [
 ];
 ---
 
-<h2 class="rule-label" id={id}>{label}</h2>
+<div class="status-panel__head">
+	<h2 class="rule-label" id={id}>{label}</h2>
+	<span class="status-panel__mode">illustrative recovery trace</span>
+</div>
 <ul class="log crash-log" data-reveal aria-label="Supervisor output during a document crash">
 	{lines.map((line, i) => (
 		<li style={`--i:${i}`}>
-			<span class="log__tag">[{line.tag}]</span>{" "}
+			<span class="log__signal" aria-hidden="true"></span>
+			<span class="log__tag">{line.tag}</span>{" "}
 			<span class={line.ok ? "log__ok" : undefined}>{line.text}</span>
 		</li>
 	))}

@@ -1,51 +1,33 @@
-/* Floodgate — Green-Phosphor Terminal
-   One monospaced bitmap-style face. Hierarchy comes from indentation,
-   case, and rule lines — never from a second typeface or accent hue. */
-
-@font-face {
-	font-family: "VT323";
-	font-style: normal;
-	font-weight: 400;
-	font-display: swap;
-	src: url("/fonts/vt323-latin.woff2") format("woff2");
-}
+@import "@fontsource/barlow-condensed/latin-600.css";
+@import "@fontsource/barlow-condensed/latin-700.css";
 
 :root {
-	/* CRT glass */
-	--screen-bg: #050805;
-	--screen-bg-raised: #0a100a;
-
-	/* Phosphor ink — all pass 4.5:1 body text contrast against --screen-bg */
-	--phosphor: #3dff88;
-	--phosphor-dim: #2fbf6d;
-	--phosphor-amber: #ffd166;
-
-	/* Decorative only — never used for text */
-	--phosphor-faint: #1c7d49;
-	--glass-shadow: rgba(0, 0, 0, 0.6);
-
-	/* The window the whole shell occupies: chrome and content share it.
-	   In rem, not ch: `ch` resolves against each element's own font-size, so
-	   the 16.8px title bar and the 22px body resolved the same token to
-	   different widths and the nav floated off the content edge. */
-	--shell: 57.2rem;
-	--measure: 68ch;
-	--rule: 1px solid var(--phosphor-faint);
+	--navy: #10233f;
+	--navy-raised: #183458;
+	--ink: #172b46;
+	--ink-soft: #496078;
+	--paper: #f4f0e6;
+	--panel: #fffdf7;
+	--line: #b7c1cb;
+	--line-strong: #8292a3;
+	--yellow: #f0b429;
+	--yellow-soft: #f8dc7e;
+	--red: #d94f59;
+	--green: #16845b;
+	--blue: #2f6fb2;
+	--white: #fffdf7;
+	--shadow: 0 18px 42px rgba(16, 35, 63, 0.12);
+	--display: "Barlow Condensed", "Arial Narrow", sans-serif;
+	--body: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+	--mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+	--shell: 74rem;
+	--measure: 70ch;
 	--space-xs: 0.5rem;
 	--space-sm: 1rem;
 	--space-md: 1.5rem;
 	--space-lg: 2.5rem;
-	--space-xl: 4rem;
-	--type-meta: 1.05rem;
-	/* Relative, so a caption keeps its ratio to body text at every size.
-	   As a rem it stayed put while body stepped down, and the gap collapsed. */
-	--type-note: 0.82em;
-	--type-section: 1.5rem;
-	--type-body: 1.375rem;
-	--type-lede: clamp(1.65rem, 3vw, 2rem);
-	--type-display: clamp(2.8rem, 6vw, 4.75rem);
-
-	color-scheme: dark;
+	--space-xl: 4.5rem;
+	color-scheme: light;
 }
 
 * {
@@ -53,854 +35,1346 @@
 }
 
 html {
-	background: #000;
+	background: var(--paper);
+	scroll-behavior: smooth;
 }
 
 body {
 	margin: 0;
 	min-height: 100vh;
-	background: var(--screen-bg);
-	color: var(--phosphor);
-	font-family: "VT323", ui-monospace, monospace;
-	font-size: var(--type-body);
-	line-height: 1.45;
-	letter-spacing: 0.01em;
-	text-shadow: 0 0 4px rgba(61, 255, 136, 0.22);
-}
-
-/* A faint scanline field over the whole screen — texture, not a spinner. */
-body::before {
-	content: "";
-	position: fixed;
-	inset: 0;
-	pointer-events: none;
-	z-index: 50;
-	background: repeating-linear-gradient(
-		to bottom,
-		rgba(0, 0, 0, 0.16) 0,
-		rgba(0, 0, 0, 0.16) 1px,
-		transparent 1px,
-		transparent 3px
-	);
-	mix-blend-mode: multiply;
-	opacity: 0.5;
+	background:
+		linear-gradient(rgba(16, 35, 63, 0.035) 1px, transparent 1px),
+		var(--paper);
+	background-size: 100% 2rem;
+	color: var(--ink);
+	font-family: var(--body);
+	font-size: 1.0625rem;
+	line-height: 1.65;
+	-webkit-font-smoothing: antialiased;
 }
 
 main {
 	max-width: var(--shell);
 	margin: 0 auto;
-	padding: clamp(1.5rem, 4vw, 3.5rem) clamp(1.25rem, 5vw, 2rem) 6rem;
+	padding: clamp(1.5rem, 4vw, 3.5rem) clamp(1.25rem, 5vw, 2.5rem) 6rem;
 }
 
 p {
 	max-width: var(--measure);
-	line-height: 1.52;
+	margin-block: 0 1.25rem;
 }
 
 a {
-	color: var(--phosphor-amber);
+	color: #1d5f9b;
+	font-weight: 650;
+	text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
 	text-decoration-thickness: 1px;
-	text-underline-offset: 3px;
+	text-underline-offset: 0.18em;
 }
 
-/* Hover must add signal. Going to --phosphor landed the link on exactly the
-   body text colour, so the only thing hovering did was remove the amber. */
-a:hover,
-a:focus-visible {
-	color: var(--phosphor-amber);
-	text-decoration-thickness: 2px;
-	text-shadow: 0 0 7px rgba(255, 209, 102, 0.55);
+a:hover {
+	color: var(--navy);
+	text-decoration-color: var(--yellow);
+	text-decoration-thickness: 3px;
 }
 
 a:focus-visible,
-button:focus-visible {
-	outline: 2px solid var(--phosphor-amber);
-	outline-offset: 3px;
+button:focus-visible,
+input:focus-visible {
+	outline: 3px solid var(--yellow);
+	outline-offset: 4px;
+}
+
+::selection {
+	background: var(--yellow);
+	color: var(--navy);
+}
+
+::-webkit-scrollbar {
+	width: 0.8rem;
+	height: 0.8rem;
+}
+
+::-webkit-scrollbar-track {
+	background: var(--paper);
+}
+
+::-webkit-scrollbar-thumb {
+	background: var(--navy-raised);
+	border: 3px solid var(--paper);
+	border-radius: 999px;
 }
 
 .skip-link {
 	position: fixed;
-	inset-block-start: var(--space-sm);
-	inset-inline-start: var(--space-sm);
+	inset-block-start: 1rem;
+	inset-inline-start: 1rem;
 	z-index: 100;
-	padding: 0.55em 0.8em;
-	background: var(--screen-bg);
-	border: 1px solid var(--phosphor);
-	transform: translateY(calc(-100% - var(--space-lg)));
+	padding: 0.65rem 0.9rem;
+	background: var(--yellow);
+	color: var(--navy);
+	border: 2px solid var(--navy);
+	transform: translateY(calc(-100% - 2rem));
 }
 
 .skip-link:focus {
 	transform: translateY(0);
 }
 
-hr {
-	border: none;
-	border-top: var(--rule);
-	margin: 2.5rem 0;
-}
-
-code {
-	color: var(--phosphor-amber);
-	font-family: inherit;
-	overflow-wrap: anywhere;
-}
-
-pre {
-	font-family: inherit;
-	overflow-x: auto;
-	margin: 0 0 1.5rem;
-	padding: 0.75rem 1rem;
-	border-left: 2px solid var(--phosphor-faint);
-	background: var(--screen-bg-raised);
-	white-space: pre-wrap;
-	overflow-wrap: anywhere;
-}
-
-pre code {
-	color: var(--phosphor);
-}
-
-::selection {
-	background: var(--phosphor);
-	color: var(--screen-bg);
-}
-
-/* Terminal chrome — a titlebar, never a conventional site header. */
 .term-bar {
-	border-bottom: var(--rule);
-	background: var(--screen-bg-raised);
-	color: var(--phosphor-dim);
-	font-size: var(--type-meta);
-	letter-spacing: 0.03em;
+	position: sticky;
+	top: 0;
+	z-index: 40;
+	background: var(--navy);
+	color: var(--white);
+	border-bottom: 4px solid var(--yellow);
 }
 
-/* The bar's surface is full-bleed like a window titlebar; its contents sit
-   on the same column as main, so the nav can't float off the content edge. */
 .term-bar__inner {
 	display: flex;
 	align-items: center;
-	gap: 0.6em;
+	gap: 1.25rem;
 	max-width: var(--shell);
+	min-height: 4.5rem;
 	margin: 0 auto;
-	padding: 0.35rem clamp(1.25rem, 5vw, 2rem);
+	padding: 0.65rem clamp(1.25rem, 5vw, 2.5rem);
 }
 
-.term-bar__dot {
-	width: 0.6em;
-	height: 0.6em;
-	border-radius: 50%;
-	background: var(--phosphor-faint);
-	flex: none;
+.term-bar__brand {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.65rem;
+	color: var(--white);
+	font-family: var(--display);
+	font-size: 1.45rem;
+	font-weight: 700;
+	letter-spacing: 0.025em;
+	text-decoration: none;
+	text-transform: uppercase;
+}
+
+.term-bar__brand:hover {
+	color: var(--yellow);
+}
+
+.term-bar__mark {
+	display: grid;
+	place-items: center;
+	width: 2rem;
+	aspect-ratio: 1;
+	background: var(--yellow);
+	color: var(--navy);
+	border-radius: 3px;
+	font-size: 1.45rem;
+	line-height: 1;
 }
 
 .term-bar__path {
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
+	display: inline-flex;
+	gap: 0.5rem;
+	color: #c7d5e4;
+	font-size: 0.78rem;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.term-bar__path [data-term-path] {
+	color: var(--yellow-soft);
 }
 
 .term-bar nav {
-	margin-left: auto;
 	display: flex;
-	gap: 1.25em;
+	gap: 0.35rem;
+	margin-left: auto;
 }
 
-/* Padding alone expands the touch target past 44px. An earlier negative
-   margin kept the bar short but pulled the links to y = -2px, where their
-   focus ring rendered above the viewport edge. */
 .term-bar nav a {
-	color: var(--phosphor-dim);
-	padding: 0.7em 0.45em;
+	padding: 0.65rem 0.8rem;
+	color: #dce7f2;
+	font-size: 0.88rem;
+	font-weight: 700;
+	letter-spacing: 0.03em;
+	text-decoration: none;
+	border-radius: 3px;
 }
 
-/* Explicit: the 0-2-1 selector above outranks the global a:hover rule. */
 .term-bar nav a:hover,
 .term-bar nav a:focus-visible {
-	color: var(--phosphor);
+	background: var(--navy-raised);
+	color: var(--white);
 }
 
 .term-bar nav a[aria-current="page"] {
-	color: var(--phosphor);
-}
-
-/* Boot / log lines */
-.log {
-	margin: 0 0 2rem;
-	padding: 0;
-	list-style: none;
-	white-space: pre-wrap;
-}
-
-/* Hanging indent: a wrapped continuation must never sit at the left
-   margin, where it would impersonate a new entry. */
-/* 70ms per line keeps the longest reveal (the 13-line process tree)
-   under a second; the boot rhythm survives, the repeat-visit tax doesn't. */
-.log li {
-	padding-left: 4ch;
-	text-indent: -4ch;
-	overflow-wrap: anywhere;
-	opacity: 0;
-	animation: line-in 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-	animation-delay: calc(var(--i, 0) * 0.07s);
-}
-
-/* A child made inline-block becomes its own block container and inherits
-   the li's negative text-indent, applying the -4ch a second time to its own
-   first line — which paints it 4ch left of the column. Reset it here once,
-   so any child can be made inline-block without clipping off the edge. */
-.log li > * {
-	text-indent: 0;
-}
-
-.log__tag {
-	color: var(--phosphor-dim);
-}
-
-.log__ok {
-	color: var(--phosphor-amber);
-}
-
-/* Emphasis reads as a brighter phosphor bloom, not a second weight or
-   typeface — VT323 has no bold cut, so a synthetic bold is invisible. */
-strong {
-	font-weight: 400;
-	color: var(--phosphor);
-	text-shadow: 0 0 7px rgba(61, 255, 136, 0.62), 0 0 2px rgba(61, 255, 136, 0.75);
-	letter-spacing: 0.02em;
-}
-
-.tree-list li {
-	margin-bottom: 0.15rem;
-}
-
-/* Held until the reader scrolls to it, so a below-the-fold reveal doesn't
-   finish before anyone can see it. JS-only, so no-JS never hides a line. */
-.log--defer li {
-	animation-play-state: paused;
-}
-
-/* Read mode: docs load whole, no boot-sequence reveal. */
-.log--static li {
-	opacity: 1;
-	animation: none;
-}
-
-/* GNU-info-style node chrome for the docs section. */
-.node__head {
-	display: flex;
-	flex-wrap: wrap;
-	column-gap: 0.5em;
-	row-gap: 0.2em;
-	padding-bottom: 0.85rem;
-	margin-bottom: 2rem;
-	border-bottom: var(--rule);
-	color: var(--phosphor-dim);
-	font-size: 1.05rem;
-	letter-spacing: 0.01em;
-}
-
-.node__head strong {
-	font-weight: 400;
-	color: var(--phosphor);
-	text-shadow: none;
-}
-
-.node h1 {
-	font-size: 2.15rem;
-	font-weight: 400;
-	line-height: 1.2;
-	margin: 0 0 1.75rem;
-	color: var(--phosphor);
-	text-shadow: 0 0 10px rgba(61, 255, 136, 0.5);
-}
-
-.node__foot {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 0.75rem 1.5rem;
-	margin-top: 3.5rem;
-	padding-top: 1.25rem;
-	border-top: var(--rule);
-	font-size: 1.15rem;
-}
-
-/* No auto margin: with no Prev link, pushing the last child right left a
-   ~400px hole and orphaned a lone `Up`. Info footers read left to right. */
-.node__foot a {
-	white-space: nowrap;
-}
-
-/* The (dir) node's "* Menu:" of topics. */
-.dir-menu li {
-	margin-bottom: 0.85rem;
-}
-
-.dir-menu a {
-	color: var(--phosphor-amber);
-}
-
-/* Same brightening as every other amber link, not a swap to body colour. */
-.dir-menu a:hover,
-.dir-menu a:focus-visible {
-	color: var(--phosphor-amber);
-	text-decoration-thickness: 2px;
-	text-shadow: 0 0 7px rgba(255, 209, 102, 0.55);
-}
-
-/* Wraps as one unit instead of splitting mid-phrase. */
-.dir-menu__start {
-	white-space: nowrap;
-}
-
-.dir-menu /* A child made inline-block becomes its own block container and inherits
-   the li's negative text-indent, applying the -4ch a second time to its own
-   first line — which paints it 4ch left of the column. Reset it here once,
-   so any child can be made inline-block without clipping off the edge. */
-.log li > * {
-	text-indent: 0;
-}
-
-.log__tag {
-	color: var(--phosphor-dim);
-}
-
-.cursor {
-	display: inline-block;
-	width: 0.6em;
-	height: 1.1em;
-	background: var(--phosphor);
-	vertical-align: text-bottom;
-	margin-left: 0.15em;
-	animation: blink 1s steps(1) infinite;
-}
-
-.prompt::before {
-	content: "$ ";
-	color: var(--phosphor-dim);
-}
-
-/* Section headings render as comment lines: the `#` sigil stays dim,
-   the label itself sits at full phosphor so it leads the text below it. */
-.rule-label {
-	display: block;
-	font-size: var(--type-section);
-	font-weight: 400;
-	line-height: 1.3;
-	color: var(--phosphor);
-	margin: 3rem 0 1rem;
-}
-
-.rule-label::before {
-	content: "# ";
-	color: var(--phosphor-dim);
-}
-
-/* The docs (dir) node's `* Menu:` is already an info idiom — no `#`. */
-.rule-label--bare::before {
-	content: none;
-}
-
-/* Page titles for the terminal pages that aren't info nodes. */
-.page-title {
-	font-weight: 400;
-	line-height: 1;
-	margin: 0;
-	color: var(--phosphor);
-	overflow-wrap: anywhere;
-}
-
-.page-title__product,
-.page-title__promise {
-	display: block;
-}
-
-.page-title__product {
-	color: var(--phosphor-dim);
-	font-size: var(--type-section);
-	line-height: 1;
-	letter-spacing: 0.08em;
-	text-shadow: none;
-}
-
-.page-title__promise {
-	margin-top: 0.18em;
-	max-width: 17ch;
-	font-size: var(--type-display);
-	line-height: 0.94;
-	letter-spacing: -0.015em;
-	text-shadow: 0 0 12px rgba(61, 255, 136, 0.42);
-	text-wrap: balance;
+	background: var(--yellow);
+	color: var(--navy);
 }
 
 .hero {
-	padding-block: clamp(var(--space-lg), 8vw, var(--space-xl));
-	border-bottom: var(--rule);
+	position: relative;
 	display: grid;
-	gap: var(--space-lg);
+	grid-template-columns: repeat(12, minmax(0, 1fr));
+	gap: 1rem;
+	padding: clamp(1rem, 2vw, 1.5rem);
+	background-color: var(--navy);
+	background-image:
+		url("/materials/fastener.svg"),
+		url("/materials/fastener.svg"),
+		url("/materials/fastener.svg"),
+		url("/materials/fastener.svg"),
+		url("/materials/powder-texture.png");
+	background-position:
+		0.65rem 0.65rem,
+		calc(100% - 0.65rem) 0.65rem,
+		0.65rem calc(100% - 0.65rem),
+		calc(100% - 0.65rem) calc(100% - 0.65rem),
+		0 0;
+	background-repeat: no-repeat, no-repeat, no-repeat, no-repeat, repeat;
+	background-size: 1.2rem, 1.2rem, 1.2rem, 1.2rem, 10rem;
+	border: 1px solid #06162d;
+	border-radius: 8px;
+	box-shadow:
+		inset 0 0 0 0.35rem rgba(255, 255, 255, 0.055),
+		var(--shadow);
+	overflow: hidden;
 }
 
-/* Above this width the promise and its proof fit side by side, which is the
-   only way the crash log lands in the first viewport. */
-@media (min-width: 62em) {
-	.hero {
-		grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
-		column-gap: var(--space-xl);
-		align-items: start;
-	}
+.hero__pitch {
+	grid-column: 1 / -1;
+	padding: clamp(2.25rem, 5vw, 4.5rem) clamp(1rem, 4vw, 3rem) 2rem;
+	color: var(--white);
 }
 
-.hero__proof .rule-label {
-	margin-top: 0;
+.page-title {
+	margin: 0;
+	color: var(--navy);
+	font-family: var(--display);
+	font-size: clamp(3rem, 7vw, 5.5rem);
+	font-weight: 700;
+	line-height: 0.92;
+	letter-spacing: -0.025em;
+	text-wrap: balance;
 }
 
-.hero__proof .log {
-	margin-bottom: var(--space-sm);
+.page-title__promise {
+	display: block;
 }
 
-.crash-log .log__tag {
-	/* The tags are the actors in this story; keep them aligned. */
-	display: inline-block;
-	min-width: 10ch;
+.page-title__promise {
+	max-width: 19ch;
+	color: var(--white);
+	font-size: clamp(3rem, 7vw, 5.7rem);
+	line-height: 0.92;
 }
 
 .hero .lede {
-	margin-block: var(--space-md) 0;
+	max-width: 57ch;
+	margin-block: 1.75rem 0;
+	color: #dce7f2;
+	font-size: clamp(1.15rem, 2.2vw, 1.45rem);
+	line-height: 1.5;
+}
+
+.hero .lede a,
+.hero .text-action {
+	color: var(--yellow-soft);
 }
 
 .hero__actions {
 	display: flex;
 	flex-wrap: wrap;
-	align-items: center;
-	gap: var(--space-sm) var(--space-md);
-	margin-top: var(--space-lg);
-}
-
-.hero__actions .cta {
-	margin-top: 0;
+	gap: 1rem 1.5rem;
+	margin-top: 1.5rem;
 }
 
 .text-action {
-	padding-block: 0.6em;
+	display: inline-flex;
+	align-items: center;
+	min-height: 2.75rem;
+}
+
+.text-action::after {
+	content: "";
+	width: 1.2rem;
+	height: 1.2rem;
+	margin-left: 0.5rem;
+	background: url("/icons/arrow-right.svg") center / contain no-repeat;
+}
+
+.hero__proof {
+	grid-column: span 8;
+	padding: clamp(1.25rem, 3vw, 2rem);
+	background-color: var(--panel);
+	background-image: url("/materials/powder-texture.png");
+	background-size: 10rem;
+	border: 0.22rem solid #d9e0e5;
+	border-radius: 5px;
+	color: var(--ink);
+	box-shadow:
+		inset 0 0 0 1px #718193,
+		inset 0 0 1.25rem rgba(16, 35, 63, 0.08);
+}
+
+.hero__launch {
+	grid-column: span 4;
+	align-self: stretch;
+	padding: clamp(1.25rem, 3vw, 2rem);
+	background-color: var(--yellow);
+	background-image:
+		url("/materials/fastener.svg"),
+		url("/materials/fastener.svg"),
+		url("/materials/powder-texture.png");
+	background-position:
+		0.7rem 0.7rem,
+		calc(100% - 0.7rem) 0.7rem,
+		0 0;
+	background-repeat: no-repeat, no-repeat, repeat;
+	background-size: 1.05rem, 1.05rem, 10rem;
+	border: 0.22rem solid #d18f04;
+	border-radius: 5px;
+	color: var(--navy);
+	box-shadow:
+		inset 0 0 0 1px #7b5400,
+		inset 0 0 1.25rem rgba(93, 57, 0, 0.12);
+}
+
+.hero__launch h2 {
+	max-width: 9ch;
+	margin: 1rem 0 1.25rem;
+	font-family: var(--display);
+	font-size: clamp(2.4rem, 5vw, 4rem);
+	font-weight: 700;
+	line-height: 0.92;
+	letter-spacing: -0.02em;
+}
+
+.hero__launch p {
+	line-height: 1.45;
+}
+
+.hero__launch .note {
+	color: #2b4055;
+}
+
+.status-panel__mode {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	font-size: 0.72rem;
+	font-weight: 800;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.status-panel__head {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 1rem;
+	margin-bottom: 1rem;
+	padding-bottom: 0.85rem;
+	border-bottom: 1px solid var(--line);
+}
+
+.status-panel__head .rule-label {
+	margin: 0;
+}
+
+.status-panel__mode {
+	color: var(--ink-soft);
+	white-space: nowrap;
+}
+
+.rule-label {
+	margin: 4rem 0 1.25rem;
+	color: var(--navy);
+	font-family: var(--display);
+	font-size: clamp(2rem, 4vw, 3.15rem);
+	font-weight: 700;
+	line-height: 1;
+	letter-spacing: -0.015em;
+	text-wrap: balance;
+}
+
+.rule-label--bare {
+	font-size: clamp(1.7rem, 3vw, 2.4rem);
+}
+
+.log {
+	display: grid;
+	gap: 0;
+	max-width: var(--measure);
+	margin: 0 0 2rem;
+	padding: 0;
+	list-style: none;
+	border-top: 1px solid var(--line);
+}
+
+.log li {
+	display: grid;
+	grid-template-columns: auto minmax(7.5rem, auto) 1fr;
+	gap: 0.65rem;
+	align-items: baseline;
+	padding: 0.7rem 0.25rem;
+	border-bottom: 1px solid var(--line);
+	overflow-wrap: anywhere;
+}
+
+.log__signal {
+	width: 0.65rem;
+	aspect-ratio: 1;
+	background: var(--blue);
+	border: 1px solid var(--navy);
+	border-radius: 50%;
+}
+
+.log__tag {
+	color: var(--ink-soft);
+	font-family: var(--mono);
+	font-size: 0.82rem;
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+	letter-spacing: -0.015em;
+}
+
+.log__ok {
+	color: #0d6d49;
+	font-weight: 750;
+}
+
+.crash-log {
+	max-width: none;
+	margin-bottom: 1rem;
+}
+
+.crash-log li {
+	--state: var(--blue);
+	grid-template-columns: auto minmax(6rem, 8rem) 1fr;
+	padding: 0.8rem 0.3rem;
+	padding-left: 1rem;
+	background-image: linear-gradient(
+		90deg,
+		var(--state) 0 0.45rem,
+		transparent 0.45rem
+	);
+}
+
+.crash-log li:nth-child(2) .log__signal {
+	background: var(--red);
+}
+
+.crash-log li:nth-child(2) {
+	--state: var(--red);
+}
+
+.crash-log li:nth-child(3) .log__signal {
+	background: var(--yellow);
+}
+
+.crash-log li:nth-child(3) {
+	--state: var(--yellow);
+}
+
+.crash-log li:nth-child(4) .log__signal,
+.crash-log li:nth-child(5) .log__signal {
+	background: var(--green);
+}
+
+.crash-log li:nth-child(4),
+.crash-log li:nth-child(5) {
+	--state: var(--green);
+}
+
+.crash-log li:nth-child(2),
+.crash-log li:nth-child(3),
+.crash-log li:nth-child(4) {
+	animation: state-sweep 5.5s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+	animation-delay: calc(var(--i, 0) * 0.32s);
+}
+
+.note {
+	color: var(--ink-soft);
+	font-size: 0.92rem;
+	line-height: 1.55;
+}
+
+strong {
+	color: var(--navy);
+	font-weight: 750;
+}
+
+code {
+	color: #76313a;
+	font-family: var(--mono);
+	font-size: 0.9em;
+	font-variant-ligatures: none;
+	overflow-wrap: anywhere;
+}
+
+pre {
+	max-width: 100%;
+	margin: 0 0 1.5rem;
+	padding: 1rem 1.1rem;
+	overflow-x: auto;
+	background: var(--navy);
+	color: var(--white);
+	border-radius: 4px;
+	font-family: var(--mono);
+	font-size: 0.88rem;
+	line-height: 1.55;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+pre code {
+	color: inherit;
+}
+
+.cmd {
+	display: flex;
+	align-items: center;
+	gap: 0.85rem;
+}
+
+.cmd::before {
+	content: "$";
+	color: var(--yellow);
+	font-weight: 800;
+}
+
+.cmd code {
+	flex: 1;
+	min-width: 0;
+}
+
+.cmd__copy {
+	flex: none;
+	min-height: 2.4rem;
+	padding: 0.4rem 0.65rem;
+	background: var(--yellow);
+	color: var(--navy);
+	border: 0;
+	border-radius: 3px;
+	font: 750 0.76rem/1 var(--body);
+	cursor: pointer;
+}
+
+.cmd__copy:hover {
+	background: var(--white);
+}
+
+.hero__launch .cmd {
+	background: var(--white);
+	color: var(--navy);
+	border: 2px solid var(--navy);
+}
+
+.hero__launch .cmd::before,
+.hero__launch .cmd code {
+	color: var(--navy);
+}
+
+.hero__launch .cmd__copy {
+	background: var(--navy);
+	color: var(--white);
+}
+
+.cmd + .note {
+	margin-top: -0.8rem;
+}
+
+.out {
+	background: #e7f5ed;
+	color: #0d563c;
+	border: 1px solid #9dcbb6;
+}
+
+.cmd-warn {
+	max-width: var(--measure);
+	margin: -0.75rem 0 1.5rem;
+	padding: 0.9rem 1rem;
+	background: #fae8e9;
+	color: #752e35;
+	border: 1px solid #e4a4aa;
+	border-radius: 4px;
+}
+
+.cmd-warn__tag {
+	font-weight: 800;
+}
+
+.cta {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-height: 3rem;
+	padding: 0.75rem 1.1rem;
+	background: var(--navy);
+	color: var(--white);
+	border: 2px solid var(--navy);
+	border-radius: 3px;
+	font-weight: 800;
+	line-height: 1.2;
+	text-decoration: none;
+}
+
+.cta:hover {
+	background: var(--yellow);
+	color: var(--navy);
+	text-decoration: none;
+}
+
+.hero__launch .cta {
+	width: 100%;
+	background: var(--navy);
+	color: var(--white);
+}
+
+.hero__launch .cta:hover {
+	background: var(--white);
+	color: var(--navy);
+}
+
+.hero__mobile-proof {
+	display: none;
 }
 
 .boot-proof {
-	margin-top: var(--space-lg);
+	margin-top: 1.25rem;
+	padding: 1.5rem clamp(1rem, 3vw, 2rem);
+	background-color: var(--blue);
+	background-image:
+		linear-gradient(
+			90deg,
+			var(--red) 0 11%,
+			var(--yellow) 11% 28%,
+			var(--green) 28% 52%,
+			transparent 52%
+		),
+		url("/materials/powder-texture.png");
+	background-position: 0 0, 0 0;
+	background-repeat: no-repeat, repeat;
+	background-size: 100% 0.42rem, 10rem;
+	color: var(--white);
+	border: 0.22rem solid #235d9b;
+	border-radius: 5px;
+	box-shadow:
+		inset 0 0 0 1px #123d6c,
+		inset 0 0 1.5rem rgba(4, 29, 57, 0.2);
 }
 
 .boot-proof .rule-label {
 	margin-top: 0;
+	color: var(--white);
 }
 
 .boot-proof .log {
+	max-width: none;
+	border-color: rgba(255, 255, 255, 0.4);
+}
+
+.boot-proof .log li {
+	border-color: rgba(255, 255, 255, 0.32);
+}
+
+.boot-proof .log__tag,
+.boot-proof .note {
+	color: var(--white);
+}
+
+.boot-proof .log__ok,
+.boot-proof strong {
+	color: #fff2a8;
+}
+
+hr {
+	margin: 4rem 0;
+	border: 0;
+	border-top: 2px solid var(--line);
+}
+
+.prompt {
+	width: fit-content;
+	padding: 0.45rem 0.65rem;
+	background: var(--navy);
+	color: var(--white);
+	border-radius: 3px;
+	font: 0.88rem/1.4 var(--mono);
+}
+
+.prompt::before {
+	content: "$ ";
+	color: var(--yellow);
+}
+
+.process-tree,
+.process-tree ul {
+	display: block;
+	max-width: var(--measure);
+	margin: 0;
+	padding: 0;
+	border: 0;
+	list-style: none;
+}
+
+.process-tree li {
+	position: relative;
+	display: block;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+.process-tree ul {
+	position: relative;
+	margin-left: 0.55rem;
+	padding-left: 1.5rem;
+}
+
+.process-tree ul::before {
+	content: "";
+	position: absolute;
+	inset-block: 0 1rem;
+	inset-inline-start: 0.35rem;
+	width: 1px;
+	background: var(--blue);
+}
+
+.process-tree ul > li::before {
+	content: "";
+	position: absolute;
+	inset-block-start: 0.95rem;
+	inset-inline-start: -1.15rem;
+	width: 1.15rem;
+	height: 1px;
+	background: var(--blue);
+}
+
+.process-tree__row {
+	display: grid;
+	grid-template-columns: minmax(10rem, 14rem) minmax(0, 1fr);
+	gap: 0.75rem;
+	align-items: baseline;
+	min-height: 1.9rem;
+	padding: 0.22rem 0;
+}
+
+.process-tree ul > li > .process-tree__row {
+	padding-inline-start: 0.5rem;
+}
+
+.process-tree__row > span {
+	color: var(--ink-soft);
+	font-size: 0.92rem;
+}
+
+.term-foot {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.75rem 1.5rem;
+	max-width: var(--shell);
+	margin: 0 auto;
+	padding: 1.5rem clamp(1.25rem, 5vw, 2.5rem) 2.5rem;
+	color: var(--ink-soft);
+	border-top: 1px solid var(--line);
+	font-size: 0.86rem;
+}
+
+.term-foot a {
+	color: var(--ink);
+}
+
+.term-foot__status {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5rem;
+	margin-right: auto;
+	color: var(--navy);
+	font-weight: 750;
+}
+
+.term-foot__status span {
+	width: 0.65rem;
+	aspect-ratio: 1;
+	background: var(--green);
+	border: 1px solid var(--navy);
+	border-radius: 50%;
+}
+
+.node {
+	position: relative;
+	max-width: 62rem;
+	padding: clamp(1.25rem, 4vw, 3rem);
+	background-color: var(--panel);
+	background-image:
+		url("/materials/fastener.svg"),
+		url("/materials/fastener.svg"),
+		url("/materials/powder-texture.png");
+	background-position:
+		0.75rem 0.75rem,
+		calc(100% - 0.75rem) 0.75rem,
+		0 0;
+	background-repeat: no-repeat, no-repeat, repeat;
+	background-size: 1.05rem, 1.05rem, 10rem;
+	border: 0.24rem solid #7d93aa;
+	border-top-color: var(--blue);
+	box-shadow:
+		inset 0 0 0 1px #d6dde3,
+		var(--shadow);
+}
+
+.node__head {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem 0.65rem;
+	margin-bottom: 2.25rem;
+	padding-bottom: 1rem;
+	color: var(--ink-soft);
+	border-bottom: 1px solid var(--line);
+	font-size: 0.82rem;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.node__head strong {
+	color: var(--navy);
+}
+
+.docs-nav {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+	margin: -0.5rem 0 2.5rem;
+	background-color: var(--navy);
+	background-image: url("/materials/powder-texture.png");
+	background-size: 10rem;
+	border: 0.2rem solid #06162d;
+	border-radius: 4px;
+	box-shadow: inset 0 0 0 1px #435a74;
+	overflow: hidden;
+}
+
+.docs-nav a {
+	display: flex;
+	align-items: center;
+	min-height: 3rem;
+	padding: 0.65rem 0.8rem;
+	color: var(--white);
+	border-right: 1px solid #536a83;
+	border-bottom: 1px solid #536a83;
+	font-size: 0.78rem;
+	font-weight: 750;
+	line-height: 1.2;
+	text-decoration: none;
+}
+
+.docs-nav a:hover,
+.docs-nav a:focus-visible {
+	background: var(--navy-raised);
+	color: var(--white);
+}
+
+.docs-nav a[aria-current="page"] {
+	background: var(--yellow);
+	color: var(--navy);
+}
+
+.node h1,
+main > h1 {
+	max-width: 15ch;
+	margin: 0 0 2rem;
+	color: var(--navy);
+	font-family: var(--display);
+	font-size: clamp(3rem, 7vw, 5.5rem);
+	font-weight: 700;
+	line-height: 0.92;
+	letter-spacing: -0.025em;
+	text-wrap: balance;
+}
+
+.node__body > p:first-child {
+	font-size: 1.18rem;
+	line-height: 1.62;
+}
+
+.node__foot {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: space-between;
+	gap: 0.75rem 1.5rem;
+	margin-top: 4rem;
+	padding-top: 1.25rem;
+	border-top: 2px solid var(--line);
+}
+
+.node__foot a {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35rem;
+}
+
+.node__foot-next {
+	margin-left: auto;
+}
+
+.icon-arrow {
+	width: 1.1rem;
+	height: 1.1rem;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 2;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.dir-menu li {
+	grid-template-columns: auto minmax(10rem, auto) 1fr;
+	padding-block: 0.9rem;
+}
+
+.dir-menu__start {
+	display: inline-flex;
+	align-items: center;
+	width: fit-content;
+	margin-left: 0.5rem;
+	padding: 0.2rem 0.45rem;
+	background: #d9f1e7;
+	border-radius: 999px;
+	font-size: 0.78rem;
+}
+
+.grep {
+	position: sticky;
+	top: 5.4rem;
+	z-index: 20;
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	max-width: var(--measure);
+	margin: 1.75rem 0 2.5rem;
+	padding: 0.75rem;
+	background: var(--navy);
+	border-radius: 4px;
+	box-shadow: 0 10px 24px rgba(16, 35, 63, 0.18);
+}
+
+.grep__prompt {
+	color: var(--yellow);
+	font-size: 0.78rem;
+	font-weight: 800;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	white-space: nowrap;
+}
+
+.grep input {
+	flex: 1;
+	min-width: 0;
+	padding: 0.55rem 0.7rem;
+	background: var(--white);
+	color: var(--ink);
+	border: 2px solid transparent;
+	border-radius: 3px;
+	font: inherit;
+	caret-color: var(--red);
+}
+
+.grep input::placeholder {
+	color: #63778c;
+	opacity: 1;
+}
+
+.grep__count {
+	min-width: 4ch;
+	color: var(--white);
+	font: 0.8rem/1 var(--mono);
+	text-align: right;
+}
+
+mark {
+	background: var(--yellow);
+	color: var(--navy);
+}
+
+a.self {
+	text-decoration-style: dotted;
+}
+
+li:target,
+section:target {
+	scroll-margin-top: 6.5rem;
+	background: #fff4c6;
+	outline: 2px solid var(--yellow);
+	outline-offset: 5px;
+}
+
+.ref-block {
+	--c1: 17rem;
+	--c2: 11rem;
+	margin-bottom: 2.25rem;
+}
+
+.ref-block--route {
+	--c1: 5rem;
+	--c2: 20rem;
+}
+
+.ref-block .log {
+	max-width: none;
 	margin-bottom: 0;
 }
 
-.cta {
+.ref__head {
+	display: none;
+	margin: 0;
+	color: var(--ink-soft);
+	font-size: 0.76rem;
+	font-weight: 800;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+
+.ref__method,
+.ref__def {
+	color: var(--ink-soft);
+	font: 0.8rem/1.5 var(--mono);
+}
+
+.ref__desc {
+	color: var(--ink);
+}
+
+.ref__desc::before {
+	content: " — ";
+	color: var(--line-strong);
+}
+
+main a[rel~="external"]::after,
+.term-foot a[rel~="external"]::after {
+	content: "";
 	display: inline-block;
-	margin-top: 0.75rem;
-	padding: 0.6em 1.1em;
-	border: 1px solid var(--phosphor);
-	color: var(--phosphor);
+	width: 0.85em;
+	height: 0.85em;
+	margin-left: 0.22em;
+	background: url("/icons/arrow-up-right.svg") center / contain no-repeat;
+	vertical-align: -0.05em;
+}
+
+.architecture-layout {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 17rem;
+	gap: clamp(2rem, 5vw, 5rem);
+	align-items: start;
+}
+
+.architecture-content {
+	min-width: 0;
+}
+
+.architecture-rail {
+	position: sticky;
+	top: 7rem;
+	padding: 1.2rem;
+	background-color: var(--navy);
+	background-image: url("/materials/powder-texture.png");
+	background-size: 10rem;
+	color: var(--white);
+	border: 0.22rem solid #06162d;
+	border-radius: 5px;
+	box-shadow:
+		inset 0 0 0 1px #435a74,
+		var(--shadow);
+}
+
+.architecture-rail h2 {
+	margin: 0 0 1rem;
+	font-family: var(--display);
+	font-size: 2rem;
+	line-height: 1;
+}
+
+.architecture-rail nav {
+	display: grid;
+	border-top: 1px solid #61758c;
+}
+
+.architecture-rail nav a {
+	display: flex;
+	align-items: center;
+	gap: 0.6rem;
+	padding: 0.7rem 0;
+	color: var(--white);
+	border-bottom: 1px solid #61758c;
+	font-size: 0.88rem;
 	text-decoration: none;
-	box-shadow: 0 0 14px rgba(61, 255, 136, 0.25);
 }
 
-.cta:hover,
-.cta:focus-visible {
-	background: var(--phosphor);
-	color: var(--screen-bg);
-	text-shadow: none;
+.architecture-rail p {
+	margin: 1rem 0 0;
+	color: #dce7f2;
+	font-size: 0.82rem;
+	line-height: 1.55;
 }
 
-.note {
-	color: var(--phosphor-dim);
-	font-size: var(--type-note);
+.rail-signal {
+	width: 0.42rem;
+	height: 1.35rem;
+	background: var(--blue);
 }
 
-/* Opening value-prop paragraph, one step above body size. */
-.lede {
-	max-width: 52ch;
-	font-size: var(--type-lede);
-	line-height: 1.36;
-	letter-spacing: 0.015em;
+.rail-signal--red {
+	background: var(--red);
+}
+
+.rail-signal--yellow {
+	background: var(--yellow);
+}
+
+.rail-signal--green {
+	background: var(--green);
 }
 
 [hidden] {
 	display: none !important;
 }
 
-/* Site identity line — reads as the shell giving control back. */
-.term-foot {
-	/* Matches main's shell, so the font-size step lives on the children. */
-	max-width: var(--shell);
-	margin: 0 auto;
-	padding: 1.25rem clamp(1.25rem, 5vw, 2rem) 2.5rem;
-	border-top: var(--rule);
-	color: var(--phosphor-dim);
-	display: flex;
-	flex-wrap: wrap;
-	gap: 0.25rem 1.5rem;
-}
-
-.term-foot > * {
-	font-size: var(--type-note);
-}
-
-.term-foot a {
-	color: var(--phosphor-dim);
-}
-
-.term-foot a:hover,
-.term-foot a:focus-visible {
-	color: var(--phosphor);
-}
-
-/* Self-links: every reference entry is an anchor you can hand to a
-   colleague. A dotted rule keeps that quiet but visible, so a focus ring
-   never lands on text that gave no sign it was focusable. */
-a.self {
-	text-decoration: underline dotted var(--phosphor-faint);
-	text-decoration-thickness: 1px;
-	text-underline-offset: 4px;
-}
-
-a.self:hover,
-a.self:focus-visible {
-	text-decoration: underline solid var(--phosphor-amber);
-	text-decoration-thickness: 1px;
-	text-underline-offset: 4px;
-}
-
-/* Offset clears the sticky filter line; the outline clears the glyphs. */
-li:target,
-section:target {
-	scroll-margin-top: 5rem;
-	background: var(--screen-bg-raised);
-	outline: 1px solid var(--phosphor-faint);
-	outline-offset: 5px;
-}
-
-/* `$ grep` filter line on the reference pages. */
-/* Sticky: filtering collapses a long reference, and a filter you have to
-   scroll back up to reach is a filter you only use once. */
-.grep {
-	position: sticky;
-	top: 0;
-	z-index: 10;
-	display: flex;
-	align-items: baseline;
-	gap: 1ch;
-	margin: 1.5rem 0 2rem;
-	padding: 0.6rem 0;
-	max-width: var(--measure);
-	background: var(--screen-bg);
-}
-
-/* A shorter list still has to say why each row survived. */
-mark {
-	background: var(--phosphor);
-	color: var(--screen-bg);
-	text-shadow: none;
-}
-
-.grep__prompt {
-	color: var(--phosphor-dim);
-	white-space: nowrap;
-	flex: none;
-}
-
-.grep input {
-	flex: 1;
-	min-width: 0;
-	background: transparent;
-	border: none;
-	border-bottom: 1px solid var(--phosphor-faint);
-	border-radius: 0;
-	color: var(--phosphor);
-	font: inherit;
-	letter-spacing: inherit;
-	text-shadow: inherit;
-	caret-color: var(--phosphor);
-	padding: 0 0 0.1em;
-}
-
-/* --phosphor-faint is decorative-only (3.91:1); a placeholder is text. */
-.grep input::placeholder {
-	color: var(--phosphor-dim);
-	opacity: 1;
-}
-
-/* Keeps the site-wide ring. Swapping it for a border-colour shift gave
-   this one control a weaker indicator than every other control. */
-.grep input:focus-visible {
-	border-bottom-color: var(--phosphor-amber);
-}
-
-.grep__count {
-	color: var(--phosphor-dim);
-	font-size: var(--type-note);
-	white-space: nowrap;
-	flex: none;
-	min-width: 5ch;
-	text-align: right;
-}
-
-/* Runnable command blocks with a copy affordance. */
-.cmd {
-	display: flex;
-	align-items: baseline;
-	gap: 1ch;
-}
-
-.cmd::before {
-	content: "$ ";
-	color: var(--phosphor-dim);
-	flex: none;
-}
-
-.cmd code {
-	flex: 1;
-	min-width: 0;
-	color: var(--phosphor);
-}
-
-.cmd + .note {
-	margin-top: -1rem;
-	margin-bottom: 1.5rem;
-}
-
-.cmd__copy {
-	background: none;
-	border: none;
-	padding: 0 0.25em;
-	flex: none;
-	font: inherit;
-	font-size: var(--type-note);
-	color: var(--phosphor-amber);
-	cursor: pointer;
-}
-
-.cmd__copy:hover {
-	color: var(--phosphor);
-}
-
-/* Command output: no `$` — the absence of the prompt is what marks it as
-   output — and it sits tight under the command that produced it. */
-.cmd + .out {
-	margin-top: 0.4rem;
-}
-
-/* A destructive command states its consequence at full phosphor and body
-   size. Every other caption is a dim `.note`; this one must not be. */
-.cmd + .cmd-warn {
-	max-width: var(--measure);
-	margin: -1rem 0 1.5rem;
-	color: var(--phosphor);
-}
-
-.cmd-warn__tag {
-	color: var(--phosphor-amber);
-	white-space: nowrap;
-}
-
-/* Reference rows read as `column -t` output, not as log lines: name,
-   default, and purpose each hold a column so a default can be scanned
-   down the page instead of hunted for inside a sentence. */
-/* rem for the same reason as --shell: the header row is caption-sized and
-   the data rows are body-sized, so ch-based tracks did not match. */
-.ref-block {
-	--c1: 17.6rem;
-	--c2: 11rem;
-	margin-bottom: 2rem;
-}
-
-.ref-block--route {
-	--c1: 4.4rem;
-	--c2: 18.7rem;
-}
-
-.ref-block .log {
-	margin-bottom: 0;
-}
-
-.ref__head {
-	display: none;
-	max-width: none;
-	margin: 0 0 0.4rem;
-	padding-bottom: 0.3rem;
-	border-bottom: var(--rule);
-	color: var(--phosphor-dim);
-	font-size: var(--type-note);
-	letter-spacing: 0.06em;
-}
-
-.ref__method {
-	color: var(--phosphor-dim);
-}
-
-.ref__def {
-	color: var(--phosphor-dim);
-}
-
-/* Stacked below the column breakpoint, the row still needs its separators. */
-.ref__def::before {
-	content: " ";
-}
-
-.ref__desc::before {
-	content: " — ";
-	color: var(--phosphor-dim);
-}
-
-/* Full body size and full phosphor: the column and the dim name/default
-   beside it carry the hierarchy, so the text people came for isn't shrunk. */
-.ref__desc {
-	color: var(--phosphor);
-}
-
 @media (min-width: 60em) {
-	/* `.log li` also sets the hanging indent; this has to outrank it or the
-	   data rows keep a 4ch indent the header row never had. */
+	.ref__head {
+		display: grid;
+		grid-template-columns: var(--c1) var(--c2) minmax(0, 1fr);
+		gap: 1.1rem;
+		padding: 0 0.25rem 0.55rem;
+	}
+
 	.ref__row,
 	.log li.ref__row {
 		display: grid;
 		grid-template-columns: var(--c1) var(--c2) minmax(0, 1fr);
-		column-gap: 1.1rem;
-		align-items: baseline;
-		padding-left: 0;
-		text-indent: 0;
+		gap: 1.1rem;
 	}
 
-	.ref__def::before,
 	.ref__desc::before {
 		content: none;
 	}
 }
 
-/* External destinations announce themselves; the arrow vocabulary is the
-   same one the info-node footers already use. */
-main a[rel~="external"]::after,
-.term-foot a[rel~="external"]::after {
-	content: "\2197";
-	margin-left: 0.15em;
-	font-size: 0.85em;
-	color: var(--phosphor-dim);
-}
-
-/* The glow is texture, not information: at raised contrast it goes, and the
-   dim tier is promoted to full phosphor. */
-@media (prefers-contrast: more) {
-	body,
-	strong,
-	.node h1,
-	.page-title__promise,
-	.cta {
-		text-shadow: none;
+@media (max-width: 54em) {
+	.hero__proof,
+	.hero__launch {
+		grid-column: 1 / -1;
 	}
 
-	body::before {
-		display: none;
+	.hero__launch {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) minmax(15rem, 1fr);
+		gap: 0.75rem 1.5rem;
 	}
 
-	.note,
-	.ref__def,
-	.ref__method,
-	.ref__head,
-	.log__tag,
-	.grep__count,
-	.term-bar,
-	.term-bar nav a,
-	.term-foot,
-	.term-foot a,
-	main a[rel~="external"]::after {
-		color: var(--phosphor);
+	.hero__launch .launch__status,
+	.hero__launch h2 {
+		grid-column: 1;
 	}
 
-	.grep input::placeholder {
-		color: var(--phosphor-dim);
+	.hero__launch > p,
+	.hero__launch .cmd,
+	.hero__launch .cta {
+		grid-column: 2;
 	}
 }
 
-/* The path is the part that changes; truncating from the right kept
-   `floodgate@localhost:` and threw away the location. Drop the constant
-   prefix instead, before anything has to be cut. */
+@media (max-width: 64em) {
+	.architecture-layout {
+		grid-template-columns: 1fr;
+	}
+
+	.architecture-rail {
+		position: static;
+		order: -1;
+	}
+
+	.architecture-rail nav {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		column-gap: 1rem;
+	}
+}
+
 @media (max-width: 44em) {
-	.term-bar__host {
+	body {
+		font-size: 1rem;
+	}
+
+	.term-bar__inner {
+		flex-wrap: wrap;
+		gap: 0.35rem 1rem;
+		padding-block: 0.65rem;
+	}
+
+	.term-bar__path {
 		display: none;
 	}
-}
 
-/* Inline monospace links are one line-height tall, which is a fine mark and
-   a poor target. On touch, grow the hit area without moving the text. */
-@media (pointer: coarse), (max-width: 44em) {
-	.dir-menu a,
-	.node__foot a,
-	.term-foot a,
-	.log a,
-	.ref__row a.self {
+	.term-bar nav {
+		order: 3;
+		width: 100%;
+	}
+
+	.term-bar nav a {
+		flex: 1;
+		text-align: center;
+	}
+
+	.hero__launch {
+		display: block;
+		order: 2;
+	}
+
+	.hero__pitch {
+		order: 1;
+		padding: 2.2rem 0.75rem 1.2rem;
+	}
+
+	.hero__proof {
+		order: 3;
+	}
+
+	.page-title__promise {
+		font-size: clamp(2.65rem, 13vw, 3.5rem);
+		line-height: 0.92;
+	}
+
+	.hero .lede {
+		margin-top: 1.1rem;
+		font-size: 1rem;
+		line-height: 1.48;
+	}
+
+	.hero__actions {
+		margin-top: 0.8rem;
+	}
+
+	.hero__mobile-proof {
+		display: block;
+		margin: 1rem 0 0;
+		padding: 0.65rem 0.75rem;
+		background: linear-gradient(
+			90deg,
+			var(--red) 0 0.38rem,
+			var(--yellow) 0.38rem 0.76rem,
+			var(--green) 0.76rem 1.14rem,
+			var(--white) 1.14rem
+		);
+		color: var(--navy);
+		border-radius: 3px;
+		font-size: 0.82rem;
+		font-weight: 750;
+		line-height: 1.35;
+	}
+
+	.status-panel__head {
+		display: block;
+	}
+
+	.status-panel__mode {
+		margin-top: 0.6rem;
+	}
+
+	.log li {
+		display: block;
+	}
+
+	.log__signal {
 		display: inline-block;
-		padding-block: 0.55em;
+		margin-right: 0.5rem;
+		vertical-align: 0.05em;
 	}
 
-	/* .node__head runs at --type-meta, so 0.55em left it 1.2px short of 44. */
-	.node__head a {
+	.log__tag {
 		display: inline-block;
-		padding-block: 0.62em;
+		min-width: 6rem;
+		margin-right: 0.35rem;
 	}
 
-	.grep input {
-		padding-block: 0.55em 0.45em;
+	.crash-log li {
+		display: grid;
+		grid-template-columns: auto minmax(5rem, 6rem) 1fr;
+		gap: 0.35rem 0.55rem;
 	}
 
-	.cmd__copy {
-		padding: 0.55em 0.5em;
+	.crash-log .log__tag {
+		min-width: 0;
+		margin-right: 0;
+	}
+
+	.process-tree__row {
+		display: block;
+		min-height: 0;
+		padding: 0.35rem 0;
+	}
+
+	.process-tree__row > span {
+		display: block;
+		margin-top: 0.1rem;
+		font-size: 0.85rem;
+		line-height: 1.4;
+	}
+
+	.node {
+		margin-inline: -0.5rem;
+	}
+
+	.grep {
+		top: 7.7rem;
+	}
+
+	.grep__prompt {
+		display: none;
+	}
+
+	.architecture-rail nav {
+		grid-template-columns: 1fr;
+	}
+
+	.docs-nav {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		margin-bottom: 2rem;
 	}
 }
 
-@keyframes line-in {
-	from {
-		opacity: 0;
-		transform: translateY(2px);
+@media (prefers-contrast: more) {
+	:root {
+		--ink-soft: #263d56;
+		--line: #687b8f;
 	}
-	to {
-		opacity: 1;
-		transform: none;
-	}
-}
 
-@keyframes blink {
-	0%,
-	49% {
-		opacity: 1;
-	}
-	50%,
-	100% {
-		opacity: 0;
+	.hero,
+	.node,
+	.boot-proof {
+		box-shadow: none;
 	}
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.log li {
-		animation: none;
-		opacity: 1;
+	html {
+		scroll-behavior: auto;
 	}
 
-	.cursor {
+	.crash-log li {
 		animation: none;
-		opacity: 1;
-	}
-
-	body::before {
-		display: none;
 	}
 }
 
-@media (max-width: 30em) {
-	body {
-		font-size: 1.35rem;
+@keyframes state-sweep {
+	0%,
+	58%,
+	100% {
+		background: transparent;
+		box-shadow: none;
 	}
-
-	.term-bar nav {
-		gap: 0.85em;
+	64%,
+	78% {
+		box-shadow:
+			inset 0 0 0 999px rgba(240, 180, 41, 0.13),
+			inset 0.45rem 0 0 var(--state);
 	}
 }

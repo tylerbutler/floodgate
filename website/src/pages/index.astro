@@ -36,8 +36,7 @@ const capabilities = [
 	<header class="hero">
 		<div class="hero__pitch">
 			<h1 class="page-title">
-				<span class="page-title__product">floodgate</span>
-				<span class="page-title__promise">A fault-isolated Fluid server on the BEAM.</span>
+				<span class="page-title__promise">Floodgate is a fault-isolated Fluid server on the BEAM.</span>
 			</h1>
 			<p class="lede">
 				Use Floodgate as the self-hosted collaboration backend for a{" "}
@@ -46,14 +45,24 @@ const capabilities = [
 				speaks the official Fluid protocol and Phoenix Channels.
 			</p>
 			<div class="hero__actions">
-				<a class="cta" href="/docs/getting-started">get Floodgate running</a>
-				<a class="text-action" href="/architecture">see how isolation works</a>
+				<a class="text-action" href="/architecture">See how isolation works</a>
 			</div>
+			<p class="hero__mobile-proof">
+				One document restarts. Every other session stays untouched.
+			</p>
 		</div>
 
 		<div class="hero__proof">
 			<SupervisorLog label="what a crash looks like" />
 		</div>
+
+		<aside class="hero__launch" aria-labelledby="launch-title">
+			<h2 id="launch-title">Run Floodgate with Docker.</h2>
+			<p>From the repository root:</p>
+			<Cmd command="docker compose up -d --wait" />
+			<p class="note">Builds from source and waits for the health check.</p>
+			<a class="cta" href="/docs/getting-started">Open the three-step guide</a>
+		</aside>
 	</header>
 
 	<section class="boot-proof" aria-labelledby="boot-proof-title">
@@ -96,7 +105,7 @@ const capabilities = [
 
 	<hr />
 
-	<h2 class="rule-label">try it</h2>
+	<h2 class="rule-label">Run it</h2>
 	<p>From the Floodgate repository root, with Docker Compose installed:</p>
 	<Cmd command="docker compose up -d --wait" />
 	<p class="note">
@@ -114,5 +123,5 @@ const capabilities = [
 		<a href="/docs/development">Review the conformance test setup.</a>
 	</p>
 	<p class="note">Performance benchmarks are not published yet.</p>
-	<a class="cta" href="/docs/getting-started">get Floodgate running</a>
+	<a class="cta" href="/docs/getting-started">Get Floodgate running</a>
 </Terminal>

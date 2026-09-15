@@ -1,0 +1,317 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-15T14:25:57.586-07:00",
+  "title": "Design System: Floodgate",
+  "extensions": {
+    "colorMeta": {
+      "command-navy": {
+        "role": "primary",
+        "displayName": "Command Navy",
+        "canonical": "#10233f",
+        "tonalRamp": ["oklch(15% 0.045 253)", "oklch(25% 0.045 253)", "oklch(36% 0.045 253)", "oklch(48% 0.045 253)", "oklch(60% 0.045 253)", "oklch(72% 0.045 253)", "oklch(84% 0.045 253)", "oklch(95% 0.045 253)"]
+      },
+      "raised-navy": {
+        "role": "primary",
+        "displayName": "Raised Navy",
+        "canonical": "#183458",
+        "tonalRamp": ["oklch(15% 0.055 253)", "oklch(25% 0.055 253)", "oklch(36% 0.055 253)", "oklch(48% 0.055 253)", "oklch(60% 0.055 253)", "oklch(72% 0.055 253)", "oklch(84% 0.055 253)", "oklch(95% 0.055 253)"]
+      },
+      "command-ink": {
+        "role": "neutral",
+        "displayName": "Command Ink",
+        "canonical": "#172b46",
+        "tonalRamp": ["oklch(15% 0.04 253)", "oklch(25% 0.04 253)", "oklch(36% 0.04 253)", "oklch(48% 0.04 253)", "oklch(60% 0.04 253)", "oklch(72% 0.04 253)", "oklch(84% 0.04 253)", "oklch(95% 0.04 253)"]
+      },
+      "secondary-ink": {
+        "role": "neutral",
+        "displayName": "Secondary Ink",
+        "canonical": "#496078",
+        "tonalRamp": ["oklch(15% 0.028 251)", "oklch(25% 0.028 251)", "oklch(36% 0.028 251)", "oklch(48% 0.028 251)", "oklch(60% 0.028 251)", "oklch(72% 0.028 251)", "oklch(84% 0.028 251)", "oklch(95% 0.028 251)"]
+      },
+      "warm-paper": {
+        "role": "neutral",
+        "displayName": "Warm Paper",
+        "canonical": "#f4f0e6",
+        "tonalRamp": ["oklch(15% 0.012 85)", "oklch(25% 0.012 85)", "oklch(36% 0.012 85)", "oklch(48% 0.012 85)", "oklch(60% 0.012 85)", "oklch(72% 0.012 85)", "oklch(84% 0.012 85)", "oklch(95% 0.012 85)"]
+      },
+      "reading-panel": {
+        "role": "neutral",
+        "displayName": "Reading Panel",
+        "canonical": "#fffdf7",
+        "tonalRamp": ["oklch(15% 0.008 85)", "oklch(25% 0.008 85)", "oklch(36% 0.008 85)", "oklch(48% 0.008 85)", "oklch(60% 0.008 85)", "oklch(72% 0.008 85)", "oklch(84% 0.008 85)", "oklch(95% 0.008 85)"]
+      },
+      "divider": {
+        "role": "neutral",
+        "displayName": "Divider",
+        "canonical": "#b7c1cb",
+        "tonalRamp": ["oklch(15% 0.015 250)", "oklch(25% 0.015 250)", "oklch(36% 0.015 250)", "oklch(48% 0.015 250)", "oklch(60% 0.015 250)", "oklch(72% 0.015 250)", "oklch(84% 0.015 250)", "oklch(95% 0.015 250)"]
+      },
+      "structural-line": {
+        "role": "neutral",
+        "displayName": "Structural Line",
+        "canonical": "#8292a3",
+        "tonalRamp": ["oklch(15% 0.02 250)", "oklch(25% 0.02 250)", "oklch(36% 0.02 250)", "oklch(48% 0.02 250)", "oklch(60% 0.02 250)", "oklch(72% 0.02 250)", "oklch(84% 0.02 250)", "oklch(95% 0.02 250)"]
+      },
+      "action-yellow": {
+        "role": "primary",
+        "displayName": "Action Yellow",
+        "canonical": "#f0b429",
+        "tonalRamp": ["oklch(15% 0.14 82)", "oklch(25% 0.14 82)", "oklch(36% 0.14 82)", "oklch(48% 0.14 82)", "oklch(60% 0.14 82)", "oklch(72% 0.14 82)", "oklch(84% 0.14 82)", "oklch(95% 0.14 82)"]
+      },
+      "action-yellow-soft": {
+        "role": "primary",
+        "displayName": "Soft Action Yellow",
+        "canonical": "#f8dc7e",
+        "tonalRamp": ["oklch(15% 0.09 88)", "oklch(25% 0.09 88)", "oklch(36% 0.09 88)", "oklch(48% 0.09 88)", "oklch(60% 0.09 88)", "oklch(72% 0.09 88)", "oklch(84% 0.09 88)", "oklch(95% 0.09 88)"]
+      },
+      "fault-red": {
+        "role": "tertiary",
+        "displayName": "Fault Red",
+        "canonical": "#d94f59",
+        "tonalRamp": ["oklch(15% 0.14 20)", "oklch(25% 0.14 20)", "oklch(36% 0.14 20)", "oklch(48% 0.14 20)", "oklch(60% 0.14 20)", "oklch(72% 0.14 20)", "oklch(84% 0.14 20)", "oklch(95% 0.14 20)"]
+      },
+      "healthy-green": {
+        "role": "tertiary",
+        "displayName": "Healthy Green",
+        "canonical": "#16845b",
+        "tonalRamp": ["oklch(15% 0.105 158)", "oklch(25% 0.105 158)", "oklch(36% 0.105 158)", "oklch(48% 0.105 158)", "oklch(60% 0.105 158)", "oklch(72% 0.105 158)", "oklch(84% 0.105 158)", "oklch(95% 0.105 158)"]
+      },
+      "protocol-blue": {
+        "role": "secondary",
+        "displayName": "Protocol Blue",
+        "canonical": "#2f6fb2",
+        "tonalRamp": ["oklch(15% 0.11 252)", "oklch(25% 0.11 252)", "oklch(36% 0.11 252)", "oklch(48% 0.11 252)", "oklch(60% 0.11 252)", "oklch(72% 0.11 252)", "oklch(84% 0.11 252)", "oklch(95% 0.11 252)"]
+      },
+      "link-blue": {
+        "role": "secondary",
+        "displayName": "Link Blue",
+        "canonical": "#1d5f9b",
+        "tonalRamp": ["oklch(15% 0.09 250)", "oklch(25% 0.09 250)", "oklch(36% 0.09 250)", "oklch(48% 0.09 250)", "oklch(60% 0.09 250)", "oklch(72% 0.09 250)", "oklch(84% 0.09 250)", "oklch(95% 0.09 250)"]
+      },
+      "navy-reading-text": {
+        "role": "neutral",
+        "displayName": "Navy Reading Text",
+        "canonical": "#dce7f2",
+        "tonalRamp": ["oklch(15% 0.015 247)", "oklch(25% 0.015 247)", "oklch(36% 0.015 247)", "oklch(48% 0.015 247)", "oklch(60% 0.015 247)", "oklch(72% 0.015 247)", "oklch(84% 0.015 247)", "oklch(95% 0.015 247)"]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Page promises and document titles."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Section rules, panel headings, and operational groups."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Long-form explanations within a 70ch measure."
+      },
+      "lede": {
+        "displayName": "Lede",
+        "purpose": "First-view explanatory copy within a 57ch measure."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Uppercase paths, modes, and utility metadata."
+      },
+      "mono": {
+        "displayName": "Machine Evidence",
+        "purpose": "Commands, paths, routes, tags, and counters."
+      }
+    },
+    "shadows": [
+      {
+        "name": "mounted-panel",
+        "value": "0 18px 42px rgba(16, 35, 63, 0.12)",
+        "purpose": "Shared outer shadow for hero, docs, and architecture plates."
+      },
+      {
+        "name": "sticky-search",
+        "value": "0 10px 24px rgba(16, 35, 63, 0.18)",
+        "purpose": "Compact depth for the sticky grep bar."
+      },
+      {
+        "name": "reading-panel-inset",
+        "value": "inset 0 0 0 1px #718193, inset 0 0 1.25rem rgba(16, 35, 63, 0.08)",
+        "purpose": "Structural rim and powder-coated depth on warm reading plates."
+      },
+      {
+        "name": "state-sweep",
+        "value": "inset 0 0 0 999px rgba(240, 180, 41, 0.13), inset 0.45rem 0 0 var(--state)",
+        "purpose": "Temporary recovery highlight that retains the row state rail."
+      }
+    ],
+    "motion": [
+      {
+        "name": "recovery-sequence",
+        "value": "state-sweep 5.5s cubic-bezier(0.16, 1, 0.3, 1) infinite; delay calc(var(--i, 0) * 0.32s)",
+        "purpose": "Sequences failure, restart, and recovery rows; disabled for reduced motion."
+      },
+      {
+        "name": "smooth-page-scroll",
+        "value": "scroll-behavior: smooth",
+        "purpose": "Moves between architecture and docs anchors; disabled for reduced motion."
+      },
+      {
+        "name": "copy-feedback",
+        "value": "3000ms",
+        "purpose": "Keeps Copied, manual selection, or unavailable feedback visible before reset."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "reference-columns",
+        "value": "60em"
+      },
+      {
+        "name": "hero-stack",
+        "value": "54em"
+      },
+      {
+        "name": "architecture-stack",
+        "value": "64em"
+      },
+      {
+        "name": "compact",
+        "value": "44em"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Action",
+      "kind": "button",
+      "refersTo": "action",
+      "description": "The principal route from a reading field into setup or the next operating step.",
+      "html": "<a class=\"ds-action\" href=\"#\">Get Floodgate running</a>",
+      "css": ".ds-action { display: inline-flex; align-items: center; justify-content: center; min-height: 3rem; padding: .75rem 1.1rem; background: var(--navy, #10233f); color: var(--white, #fffdf7); border: 2px solid var(--navy, #10233f); border-radius: 3px; font: 800 1rem/1.2 -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; text-decoration: none; } .ds-action:hover { background: var(--yellow, #f0b429); color: var(--navy, #10233f); } .ds-action:focus-visible { outline: 3px solid var(--yellow, #f0b429); outline-offset: 4px; }"
+    },
+    {
+      "name": "Command Bar",
+      "kind": "custom",
+      "refersTo": "command",
+      "description": "A copyable shell command with visible prompt and progressive enhancement behavior.",
+      "html": "<pre class=\"ds-command\"><span class=\"ds-command__prompt\" aria-hidden=\"true\">$</span><code>docker compose up -d --wait</code><button class=\"ds-command__copy\" type=\"button\" aria-label=\"Copy command: docker compose up -d --wait\">Copy</button></pre>",
+      "css": ".ds-command { display: flex; align-items: center; gap: .85rem; max-width: 100%; margin: 0; padding: 1rem 1.1rem; overflow-x: auto; background: var(--navy, #10233f); color: var(--white, #fffdf7); border-radius: 4px; font: .88rem/1.55 \"SFMono-Regular\", Consolas, \"Liberation Mono\", monospace; white-space: pre-wrap; overflow-wrap: anywhere; } .ds-command__prompt { color: var(--yellow, #f0b429); font-weight: 800; } .ds-command code { flex: 1; min-width: 0; color: inherit; font: inherit; } .ds-command__copy { flex: none; min-height: 2.4rem; padding: .4rem .65rem; background: var(--yellow, #f0b429); color: var(--navy, #10233f); border: 0; border-radius: 3px; font: 750 .76rem/1 -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; cursor: pointer; } .ds-command__copy:hover { background: var(--white, #fffdf7); } .ds-command__copy:focus-visible { outline: 3px solid var(--yellow, #f0b429); outline-offset: 4px; }"
+    },
+    {
+      "name": "Recovery Log",
+      "kind": "custom",
+      "description": "The signature fault-isolation trace with textual tags, lamps, and state rails.",
+      "html": "<ul class=\"ds-recovery\" aria-label=\"Supervisor recovery output\"><li class=\"ds-recovery__normal\"><span class=\"ds-recovery__lamp\" aria-hidden=\"true\"></span><span class=\"ds-recovery__tag\">doc:a3f9</span><span>ops sequenced, clients attached</span></li><li class=\"ds-recovery__fault\"><span class=\"ds-recovery__lamp\" aria-hidden=\"true\"></span><span class=\"ds-recovery__tag\">sup</span><span>doc:a3f9 exited: badarg</span></li><li class=\"ds-recovery__restart\"><span class=\"ds-recovery__lamp\" aria-hidden=\"true\"></span><span class=\"ds-recovery__tag\">sup</span><span>state reloaded from storage</span></li><li class=\"ds-recovery__healthy\"><span class=\"ds-recovery__lamp\" aria-hidden=\"true\"></span><span class=\"ds-recovery__tag\">ok</span><strong>every other session: untouched</strong></li></ul>",
+      "css": ".ds-recovery { display: grid; gap: 0; margin: 0; padding: 0; color: var(--ink, #172b46); list-style: none; border-top: 1px solid var(--line, #b7c1cb); font: 1rem/1.55 -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; } .ds-recovery li { --ds-state: var(--blue, #2f6fb2); display: grid; grid-template-columns: auto minmax(6rem, 8rem) 1fr; gap: .65rem; align-items: baseline; padding: .8rem .3rem .8rem 1rem; border-bottom: 1px solid var(--line, #b7c1cb); background-image: linear-gradient(90deg, var(--ds-state) 0 .45rem, transparent .45rem); } .ds-recovery__lamp { width: .65rem; aspect-ratio: 1; background: var(--ds-state); border: 1px solid var(--navy, #10233f); border-radius: 50%; } .ds-recovery__tag { color: var(--ink-soft, #496078); font: 700 .82rem/1 \"SFMono-Regular\", Consolas, monospace; } .ds-recovery__fault { --ds-state: var(--red, #d94f59) !important; } .ds-recovery__restart { --ds-state: var(--yellow, #f0b429) !important; } .ds-recovery__healthy { --ds-state: var(--green, #16845b) !important; } .ds-recovery strong { color: #0d6d49; font-weight: 750; }"
+    },
+    {
+      "name": "Documentation Plate",
+      "kind": "card",
+      "refersTo": "reading-panel",
+      "description": "The mounted warm reading field for guides and reference nodes.",
+      "html": "<article class=\"ds-doc-plate\"><span class=\"ds-doc-plate__fastener ds-doc-plate__fastener--left\" aria-hidden=\"true\"></span><span class=\"ds-doc-plate__fastener ds-doc-plate__fastener--right\" aria-hidden=\"true\"></span><div class=\"ds-doc-plate__head\">Documentation / Getting Started</div><h2>Getting Started</h2><p>Three steps to a running server.</p></article>",
+      "css": ".ds-doc-plate { position: relative; max-width: 62rem; padding: clamp(1.25rem, 4vw, 3rem); background: var(--panel, #fffdf7) url('/materials/powder-texture.png') repeat; background-size: 10rem; color: var(--ink, #172b46); border: .24rem solid #7d93aa; border-top-color: var(--blue, #2f6fb2); box-shadow: inset 0 0 0 1px #d6dde3, 0 18px 42px rgba(16,35,63,.12); font: 1.0625rem/1.65 -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; } .ds-doc-plate__fastener { position: absolute; top: .75rem; width: .7rem; aspect-ratio: 1; background: radial-gradient(circle, #fffdf7 0 25%, #8292a3 27% 42%, #10233f 44% 52%, transparent 54%); } .ds-doc-plate__fastener--left { left: .75rem; } .ds-doc-plate__fastener--right { right: .75rem; } .ds-doc-plate__head { margin-bottom: 2.25rem; padding-bottom: 1rem; color: var(--ink-soft, #496078); border-bottom: 1px solid var(--line, #b7c1cb); font-size: .82rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; } .ds-doc-plate h2 { max-width: 15ch; margin: 0 0 2rem; color: var(--navy, #10233f); font: 700 clamp(3rem, 7vw, 5.5rem)/.92 \"Barlow Condensed\", \"Arial Narrow\", sans-serif; letter-spacing: -.025em; } .ds-doc-plate p { max-width: 70ch; margin: 0; } @media (prefers-contrast: more) { .ds-doc-plate { box-shadow: none; } }"
+    },
+    {
+      "name": "Site Navigation",
+      "kind": "nav",
+      "description": "The compact sticky command bar with path context and a solid current-page state.",
+      "html": "<div class=\"ds-nav\"><a class=\"ds-nav__brand\" href=\"#\"><span>F</span>Floodgate</a><span class=\"ds-nav__path\">Surface /docs</span><nav aria-label=\"Site\"><a href=\"#\">Overview</a><a href=\"#\">Architecture</a><a href=\"#\" aria-current=\"page\">Docs</a></nav></div>",
+      "css": ".ds-nav { display: flex; align-items: center; gap: 1.25rem; min-height: 4.5rem; padding: .65rem 1.25rem; background: var(--navy, #10233f); color: var(--white, #fffdf7); border-bottom: 4px solid var(--yellow, #f0b429); font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; } .ds-nav__brand { display: inline-flex; align-items: center; gap: .65rem; color: var(--white, #fffdf7); font: 700 1.45rem/1 \"Barlow Condensed\", \"Arial Narrow\", sans-serif; letter-spacing: .025em; text-decoration: none; text-transform: uppercase; } .ds-nav__brand span { display: grid; place-items: center; width: 2rem; aspect-ratio: 1; background: var(--yellow, #f0b429); color: var(--navy, #10233f); border-radius: 3px; } .ds-nav__path { color: #c7d5e4; font-size: .78rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; } .ds-nav nav { display: flex; gap: .35rem; margin-left: auto; } .ds-nav nav a { padding: .65rem .8rem; color: #dce7f2; border-radius: 3px; font-size: .88rem; font-weight: 700; text-decoration: none; } .ds-nav nav a:hover { background: var(--navy-raised, #183458); color: var(--white, #fffdf7); } .ds-nav nav a[aria-current='page'] { background: var(--yellow, #f0b429); color: var(--navy, #10233f); } .ds-nav a:focus-visible { outline: 3px solid var(--yellow, #f0b429); outline-offset: 4px; } @media (max-width: 44em) { .ds-nav { flex-wrap: wrap; gap: .35rem 1rem; } .ds-nav__path { display: none; } .ds-nav nav { order: 3; width: 100%; } .ds-nav nav a { flex: 1; text-align: center; } }"
+    },
+    {
+      "name": "Grep Filter",
+      "kind": "input",
+      "description": "The sticky documentation filter that expresses search as a shell command.",
+      "html": "<label class=\"ds-grep\"><span class=\"ds-grep__prompt\" aria-hidden=\"true\">$ grep</span><input type=\"search\" placeholder=\"pattern — press / to focus\" aria-label=\"Filter documentation topics\"><span class=\"ds-grep__count\" aria-live=\"polite\">4/6</span></label>",
+      "css": ".ds-grep { display: flex; align-items: center; gap: .75rem; max-width: 70ch; padding: .75rem; background: var(--navy, #10233f); border-radius: 4px; box-shadow: 0 10px 24px rgba(16,35,63,.18); font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; } .ds-grep__prompt { color: var(--yellow, #f0b429); font-size: .78rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; } .ds-grep input { flex: 1; min-width: 0; padding: .55rem .7rem; background: var(--white, #fffdf7); color: var(--ink, #172b46); border: 2px solid transparent; border-radius: 3px; font: inherit; caret-color: var(--red, #d94f59); } .ds-grep input::placeholder { color: #63778c; opacity: 1; } .ds-grep input:focus-visible { outline: 3px solid var(--yellow, #f0b429); outline-offset: 4px; } .ds-grep__count { min-width: 4ch; color: var(--white, #fffdf7); font: .8rem/1 \"SFMono-Regular\", Consolas, monospace; text-align: right; } @media (max-width: 44em) { .ds-grep__prompt { display: none; } }"
+    },
+    {
+      "name": "Architecture Map",
+      "kind": "custom",
+      "description": "A mounted system map whose labeled state rails link to architecture evidence.",
+      "html": "<aside class=\"ds-map\"><h2>System map</h2><nav><a href=\"#\"><span class=\"ds-map__rail ds-map__rail--red\"></span>Recovery trace</a><a href=\"#\"><span class=\"ds-map__rail ds-map__rail--blue\"></span>Process tree</a><a href=\"#\"><span class=\"ds-map__rail ds-map__rail--yellow\"></span>Libraries</a><a href=\"#\"><span class=\"ds-map__rail ds-map__rail--green\"></span>Protocols</a></nav></aside>",
+      "css": ".ds-map { width: 17rem; padding: 1.2rem; background: var(--navy, #10233f) url('/materials/powder-texture.png') repeat; background-size: 10rem; color: var(--white, #fffdf7); border: .22rem solid #06162d; border-radius: 5px; box-shadow: inset 0 0 0 1px #435a74, 0 18px 42px rgba(16,35,63,.12); } .ds-map h2 { margin: 0 0 1rem; font: 700 2rem/1 \"Barlow Condensed\", \"Arial Narrow\", sans-serif; } .ds-map nav { display: grid; border-top: 1px solid #61758c; } .ds-map a { display: flex; align-items: center; gap: .6rem; padding: .7rem 0; color: var(--white, #fffdf7); border-bottom: 1px solid #61758c; font: .88rem/1.4 -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; text-decoration: none; } .ds-map a:hover { color: var(--yellow-soft, #f8dc7e); } .ds-map a:focus-visible { outline: 3px solid var(--yellow, #f0b429); outline-offset: 4px; } .ds-map__rail { width: .42rem; height: 1.35rem; background: var(--blue, #2f6fb2); } .ds-map__rail--red { background: var(--red, #d94f59); } .ds-map__rail--yellow { background: var(--yellow, #f0b429); } .ds-map__rail--green { background: var(--green, #16845b); } @media (prefers-contrast: more) { .ds-map { box-shadow: none; } }"
+    },
+    {
+      "name": "Inline Arrow",
+      "kind": "custom",
+      "description": "The current-color navigation arrow used for previous and next document links.",
+      "html": "<a class=\"ds-arrow-link\" href=\"#\">Configuration <svg viewBox=\"0 0 20 20\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M3 10h12m-4-5 5 5-5 5\"></path></svg></a>",
+      "css": ".ds-arrow-link { display: inline-flex; align-items: center; gap: .35rem; color: #1d5f9b; font: 650 1rem/1.4 -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; text-underline-offset: .18em; } .ds-arrow-link svg { width: 1.1rem; height: 1.1rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; } .ds-arrow-link:hover { color: var(--navy, #10233f); text-decoration-color: var(--yellow, #f0b429); text-decoration-thickness: 3px; } .ds-arrow-link:focus-visible { outline: 3px solid var(--yellow, #f0b429); outline-offset: 4px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Operations Status Wall",
+    "overview": "Floodgate looks like a powder-coated incident-command surface, not a generic developer landing page. Deep navy shells hold warm white reading plates, yellow action plates, and blue operational panels. Inset lines, visible fasteners, status lamps, and colored state rails make each unit feel replaceable and independently monitored.\n\nThe system is dense but calm. Large condensed headings state the operating claim; plain body text explains it; monospace tags and commands show the machine evidence. Fault, restart, and recovery stay visible as neighboring states rather than becoming decoration.",
+    "keyCharacteristics": [
+      "Powder-coated navy, white, yellow, and blue panel materials.",
+      "Structural borders, inset rims, fasteners, and state rails instead of generic cards.",
+      "Condensed display type paired with readable system text and compact monospace evidence.",
+      "A warm ruled-paper field behind a compact, bounded operations shell.",
+      "Progressive enhancement and explicit motion, contrast, and focus behavior."
+    ],
+    "rules": [
+      {
+        "name": "The State Has a Name Rule",
+        "body": "Never rely on red, yellow, green, or blue alone. Pair every state color with a tag, label, or outcome.",
+        "section": "colors"
+      },
+      {
+        "name": "The Yellow Means Action Rule",
+        "body": "Reserve solid yellow for active navigation, launch surfaces, copy controls, focus, selection, and the recovery transition. Do not use it as ambient decoration.",
+        "section": "colors"
+      },
+      {
+        "name": "The Warm Field Rule",
+        "body": "Reading surfaces are warm paper or warm white; do not introduce cool gray application backgrounds.",
+        "section": "colors"
+      },
+      {
+        "name": "The Three Voices Rule",
+        "body": "Use condensed type for human-facing authority, the body stack for explanation, and monospace only for machine-facing evidence.",
+        "section": "typography"
+      },
+      {
+        "name": "The Short Display Rule",
+        "body": "Balance display headings and constrain their measure. Do not use the condensed face for paragraphs.",
+        "section": "typography"
+      },
+      {
+        "name": "The Neighbor Isolation Rule",
+        "body": "Large surfaces may share a wall, but each must keep its own border, inset rim, state rail, and padding. Do not merge operational units into an undifferentiated feature grid.",
+        "section": "layout"
+      },
+      {
+        "name": "The Mounted, Not Floating Rule",
+        "body": "A panel earns depth through an outer stroke, inset rim, material texture, and visible fasteners. Do not use a shadow by itself to make a generic card.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Contrast-Safe Structure Rule",
+        "body": "Every elevated surface must remain distinct when shadows are removed.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Tight Radius Rule",
+        "body": "Corners must look fabricated, not soft. Do not apply large consumer-app radii to plates or controls.",
+        "section": "shapes"
+      }
+    ],
+    "dos": [
+      "Do keep the navy shell, warm reading field, yellow action plate, and labeled red/green/blue state system.",
+      "Do construct important surfaces from border, inset rim, powder texture, fasteners, and restrained depth.",
+      "Do preserve the 70-character reading measure and the display/body/mono role split.",
+      "Do keep launch commands copyable, warnings adjacent, and no-JavaScript states honest.",
+      "Do preserve keyboard focus, skip navigation, reduced-motion, and increased-contrast behavior.",
+      "Do attach provenance to each shipping raster and record enough information to regenerate it."
+    ],
+    "donts": [
+      "Don't replace the wall with a generic hero followed by interchangeable feature cards.",
+      "Don't use state colors without a textual tag or outcome.",
+      "Don't use large soft radii, borderless floating cards, or shadow as the only depth cue.",
+      "Don't turn monospace into a body face or Barlow Condensed into paragraph text.",
+      "Don't show inert copy or search controls before their behavior is available.",
+      "Don't introduce untraceable raster decoration or hand-edit a generated raster."
+    ]
+  }
+}

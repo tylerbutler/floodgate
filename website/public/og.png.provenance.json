@@ -1,0 +1,8 @@
+{
+  "direction": "Operations Status Wall",
+  "seed": "52f56dfd",
+  "created": "2026-09-15",
+  "source": "../og-image.html",
+  "generator": "../scripts/generate-og.mjs",
+  "dimensions": "1200x630"
+}

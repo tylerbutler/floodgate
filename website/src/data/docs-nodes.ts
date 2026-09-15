@@ -11,7 +11,7 @@ export const docNodes: DocNode[] = [
 		slug: "getting-started",
 		href: "/docs/getting-started",
 		title: "Getting Started",
-		summary: "Build and run Floodgate locally with gleam or just.",
+		summary: "Run Floodgate with Docker Compose in three steps.",
 	},
 	{
 		slug: "configuration",

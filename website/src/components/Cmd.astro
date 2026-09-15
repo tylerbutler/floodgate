@@ -22,7 +22,7 @@ const warnId = warn
 		aria-describedby={warnId}
 		aria-live="polite"
 		hidden
-	>[copy]</button></pre>
+	>Copy</button></pre>
 {warn && (
 	<p class="cmd-warn" id={warnId}>
 		<span class="cmd-warn__tag">[destructive]</span> {warn}
@@ -36,7 +36,7 @@ const warnId = warn
 		btn.addEventListener("click", async () => {
 			try {
 				await navigator.clipboard.writeText(btn.dataset.copy ?? "");
-				btn.textContent = "[ok]";
+				btn.textContent = "Copied";
 			} catch {
 				const code = btn.closest(".cmd")?.querySelector("code");
 				if (code) {
@@ -45,13 +45,13 @@ const warnId = warn
 					range.selectNodeContents(code);
 					selection?.removeAllRanges();
 					selection?.addRange(range);
-					btn.textContent = "[selected — copy manually]";
+					btn.textContent = "Selected — copy manually";
 				} else {
-					btn.textContent = "[copy unavailable]";
+					btn.textContent = "Copy unavailable";
 				}
 			}
 			setTimeout(() => {
-				btn.textContent = "[copy]";
+				btn.textContent = "Copy";
 			}, 3000);
 		});
 	}

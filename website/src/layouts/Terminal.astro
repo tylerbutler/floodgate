@@ -27,23 +27,34 @@ const canonical = new URL(path, Astro.site ?? Astro.url);
 		<meta property="og:image" content={ogImage} />
 		<meta property="og:image:width" content="1200" />
 		<meta property="og:image:height" content="630" />
-		<meta property="og:image:alt" content="A green-phosphor terminal showing Floodgate's startup log: FLOODGATE — a Fluid Framework server on the BEAM, written in Gleam." />
+		<meta property="og:image:alt" content="Floodgate operations status wall showing isolated document sessions, two wire protocols, and a Docker launch command." />
 		<meta name="twitter:card" content="summary_large_image" />
 		<meta name="twitter:title" content={title} />
 		<meta name="twitter:description" content={description} />
 		<meta name="twitter:image" content={ogImage} />
-		<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23050805'/%3E%3Ctext x='2' y='12' font-family='monospace' font-size='12' fill='%233dff88'%3E%3E%3C/text%3E%3C/svg%3E" />
+		<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2310233f'/%3E%3Cpath d='M3 4h10v2H5v2h6v2H5v3H3z' fill='%23f0b429'/%3E%3C/svg%3E" />
 	</head>
 	<body>
+		<!--
+		THESIS: Floodgate is a live operations wall where one document can fail and recover without disturbing its neighbors; it refuses the generic developer hero and feature-card grid.
+		OWN-WORLD: Deep navy panels, warm white reading fields, yellow action cards, and red, green, and blue state strips form a powder-coated incident-command system.
+		STORY: Visitors see fault isolation happen, understand the dual-protocol server, and launch it with Docker from the first viewport.
+		FIRST VIEWPORT: A large promise spans the wall above a live document recovery lane and a fixed Docker run card; navigation stays compact at the top edge.
+		FORM: Operations Status Wall, sixth grounded direction, seed 52f56dfd.
+		FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+		-->
 		<a class="skip-link" href="#main-content">skip to content</a>
 		<div class="term-bar">
 			<div class="term-bar__inner">
-				<span class="term-bar__dot" aria-hidden="true"></span>
-				<span class="term-bar__path"><span class="term-bar__host">floodgate@localhost:</span><span data-term-path>{path}</span></span>
+				<a class="term-bar__brand" href="/" aria-label="Floodgate home">
+					<span class="term-bar__mark" aria-hidden="true">F</span>
+					<span>Floodgate</span>
+				</a>
+				<span class="term-bar__path"><span class="term-bar__host">Surface</span><span data-term-path>{path}</span></span>
 				<nav aria-label="Site">
-					<a href="/" aria-current={path === "/" ? "page" : undefined}>home</a>
-					<a href="/architecture" aria-current={path === "/architecture" ? "page" : undefined}>architecture</a>
-					<a href="/docs" aria-current={path.startsWith("/docs") ? "page" : undefined}>docs</a>
+					<a href="/" aria-current={path === "/" ? "page" : undefined}>Overview</a>
+					<a href="/architecture" aria-current={path === "/architecture" ? "page" : undefined}>Architecture</a>
+					<a href="/docs/getting-started" aria-current={path.startsWith("/docs") ? "page" : undefined}>Docs</a>
 				</nav>
 			</div>
 		</div>
@@ -51,31 +62,10 @@ const canonical = new URL(path, Astro.site ?? Astro.url);
 			<slot />
 		</main>
 		<footer class="term-foot">
-			<span><span aria-hidden="true">[exit 0]</span> floodgate</span>
-			<a href="https://github.com/tylerbutler/floodgate" rel="noopener external">source: tylerbutler/floodgate</a>
-			<a href="https://github.com/tylerbutler/floodgate/blob/main/LICENSE" rel="noopener external">MIT license</a>
-			<span>Tyler Butler</span>
+			<span class="term-foot__status"><span aria-hidden="true"></span> Floodgate project</span>
+			<a href="https://github.com/tylerbutler/floodgate" rel="noopener external">Source on GitHub</a>
+			<a href="https://github.com/tylerbutler/floodgate/blob/main/LICENSE" rel="noopener external">MIT License</a>
+			<span>By Tyler Butler</span>
 		</footer>
-
-		<script>
-			// A log below the fold should play when the reader arrives at it,
-			// not while it is off-screen. The deferring class is added by JS
-			// only, so a no-JS page never hides a line it cannot reveal.
-			for (const log of document.querySelectorAll<HTMLElement>("[data-reveal]")) {
-				if (log.getBoundingClientRect().top < window.innerHeight) continue;
-				log.classList.add("log--defer");
-				const io = new IntersectionObserver(
-					(entries) => {
-						for (const entry of entries) {
-							if (!entry.isIntersecting) continue;
-							entry.target.classList.remove("log--defer");
-							io.disconnect();
-						}
-					},
-					{ rootMargin: "0px 0px -12% 0px" },
-				);
-				io.observe(log);
-			}
-		</script>
 	</body>
 </html>

@@ -1,0 +1,20 @@
+---
+import { docNodes } from "../data/docs-nodes";
+
+interface Props {
+	currentPath: string;
+}
+
+const { currentPath } = Astro.props;
+---
+
+<nav class="docs-nav" aria-label="Documentation">
+	{docNodes.map((item) => (
+		<a
+			href={item.href}
+			aria-current={currentPath === item.href ? "page" : undefined}
+		>
+			{item.title}
+		</a>
+	))}
+</nav>
