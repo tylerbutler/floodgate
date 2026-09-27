@@ -14,14 +14,15 @@ gleam_crypto = ">= 1.0.0 and < 2.0.0"
 # Only for session.gleam's `call_doc`, which turns a call against a
 # just-stopped document actor into a retry instead of a crashed caller.
 exception = ">= 2.0.0 and < 3.0.0"
-beryl = { git = "https://github.com/tylerbutler/beryl", ref = "main", path = "packages/beryl" }
+beryl = { git = "https://github.com/tylerbutler/beryl", ref = "v0.5", path = "packages/beryl" }
 dewdrop = { git = "https://github.com/tylerbutler/dewdrop", ref = "main" }
-beryl_mist = { git = "https://github.com/tylerbutler/beryl", ref = "main", path = "packages/beryl_mist" }
+beryl_mist = { git = "https://github.com/tylerbutler/beryl", ref = "v0.5", path = "packages/beryl_mist" }
 spillway = { git = "https://github.com/tylerbutler/spillway", ref = "main" }
 signet = { git = "https://github.com/tylerbutler/signet", ref = "main" }
 silt = { git = "https://github.com/tylerbutler/silt", ref = "main" }
 windsock = { git = "https://github.com/tylerbutler/windsock", ref = "main" }
 mist = ">= 6.0.0 and < 7.0.0"
+glisten = ">= 9.0.1 and < 10.0.0"
 gleam_http = ">= 4.3.0 and < 5.0.0"
 shelf = ">= 1.0.1 and < 2.0.0"
 # GitHub OAuth for the admin session.

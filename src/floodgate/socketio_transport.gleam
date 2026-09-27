@@ -21,6 +21,8 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import glisten/socket as glisten_socket
+import glisten/transport as glisten_transport
 import mist.{type Connection, type ResponseData, type WebsocketConnection}
 import spillway/socketio
 
@@ -80,7 +82,15 @@ fn upgrade(
         request: request,
         handler: on_message,
         on_init: fn(connection) {
-          on_init(connection, request, metadata, sockets, permit, telemetry)
+          on_init(
+            connection,
+            request,
+            metadata,
+            sockets,
+            permit,
+            config,
+            telemetry,
+          )
         },
         on_close: on_close,
       )
@@ -105,6 +115,7 @@ fn on_init(
   metadata: List(#(String, String)),
   sockets: Sockets,
   permit: transport.ConnectionPermit,
+  config: server.TransportConfig(Connection),
   telemetry: transport.Telemetry,
 ) -> #(ConnectionState, Option(process.Selector(server.SendRequest))) {
   let sid = generate_socket_id()
@@ -118,6 +129,8 @@ fn on_init(
       seed: server.connect_seed(request, metadata),
       connection_permit: permit,
       base_selector: selector,
+      config: config,
+      force_close: fn() { force_close(connection) },
       logger_name: "floodgate.socketio",
       telemetry: telemetry,
       codec: Some(fluid_codec.server_codec()),
@@ -176,13 +189,26 @@ fn on_message(
       )
     mist.Closed | mist.Shutdown -> mist.stop()
     mist.Custom(server.Close) -> mist.stop()
-    mist.Custom(server.SendBinary(data)) -> {
-      let _send_result = mist.send_binary_frame(connection, data)
-      mist.continue(state)
-    }
-    mist.Custom(server.SendText(text)) ->
+    mist.Custom(server.SendBinary(data, bytes)) ->
+      resume(
+        state,
+        server.finish_outbound_write(
+          state.runtime,
+          bytes,
+          mist.send_binary_frame(connection, data) |> result.is_ok,
+        ),
+      )
+    mist.Custom(server.SendText(text, bytes)) ->
       case text == socketio.engine_ping() {
-        False -> send_text(connection, state, text)
+        False ->
+          resume(
+            state,
+            server.finish_outbound_write(
+              state.runtime,
+              bytes,
+              mist.send_text_frame(connection, text) |> result.is_ok,
+            ),
+          )
         True ->
           case pong_overdue(state) {
             True -> mist.stop()
@@ -192,6 +218,17 @@ fn on_message(
             }
           }
       }
+  }
+}
+
+fn force_close(
+  connection: WebsocketConnection,
+) -> Result(Nil, server.ForceCloseError) {
+  case glisten_transport.close(connection.transport, connection.socket) {
+    Ok(Nil) | Error(glisten_socket.Closed) | Error(glisten_socket.Enotconn) ->
+      Ok(Nil)
+    Error(reason) ->
+      Error(server.ForceCloseFailed(glisten_socket.reason_to_string(reason)))
   }
 }
 
@@ -257,7 +294,7 @@ fn schedule_ping(subject: Subject(server.SendRequest)) -> Nil {
     process.send_after(
       subject,
       ping_interval_ms,
-      server.SendText(socketio.engine_ping()),
+      server.SendText(socketio.engine_ping(), bytes: 0),
     )
   Nil
 }

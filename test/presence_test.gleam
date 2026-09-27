@@ -140,7 +140,8 @@ fn attach(
 fn route(channels: beryl.Sockets, socket_id: String, frame: String) -> Nil {
   let assert Ok(decoded) =
     codec.decode_text(transport.active_codec(channels))(frame)
-  transport.route_decoded(channels, socket_id, decoded)
+  let assert Ok(Nil) = transport.route_decoded(channels, socket_id, decoded)
+  Nil
 }
 
 fn phoenix_event(doc: String, event: String, payload: String) -> String {
@@ -571,44 +572,46 @@ pub fn presence_works_over_the_socketio_endpoint_test() {
       close: fn() { Nil },
     )
   // A Socket.IO join *is* the connect_document payload, so one frame connects.
-  transport.route_decoded(
-    channels,
-    "s-sio-presence",
-    codec.inbound(
-      None,
-      None,
-      topic,
-      codec.Join,
-      dynamic.properties([
-        #(dynamic.string("tenantId"), dynamic.string(tenant)),
-        #(dynamic.string("id"), dynamic.string(doc)),
-        #(dynamic.string("token"), dynamic.string(token)),
-        #(dynamic.string("mode"), dynamic.string("read")),
-      ]),
-    ),
-  )
+  let assert Ok(Nil) =
+    transport.route_decoded(
+      channels,
+      "s-sio-presence",
+      codec.inbound(
+        None,
+        None,
+        topic,
+        codec.Join,
+        dynamic.properties([
+          #(dynamic.string("tenantId"), dynamic.string(tenant)),
+          #(dynamic.string("id"), dynamic.string(doc)),
+          #(dynamic.string("token"), dynamic.string(token)),
+          #(dynamic.string("mode"), dynamic.string("read")),
+        ]),
+      ),
+    )
   let assert Ok(connected) = process.receive(sent, 1000)
   connected |> string.contains("presence_v1") |> should.be_true
   drain(sent)
 
-  transport.route_decoded(
-    channels,
-    "s-sio-presence",
-    codec.inbound(
-      None,
-      None,
-      topic,
-      codec.Event("joinPresence"),
-      dynamic.properties([
-        #(
-          dynamic.string("meta"),
-          dynamic.properties([
-            #(dynamic.string("panel"), dynamic.string("sudoku")),
-          ]),
-        ),
-      ]),
-    ),
-  )
+  let assert Ok(Nil) =
+    transport.route_decoded(
+      channels,
+      "s-sio-presence",
+      codec.inbound(
+        None,
+        None,
+        topic,
+        codec.Event("joinPresence"),
+        dynamic.properties([
+          #(
+            dynamic.string("meta"),
+            dynamic.properties([
+              #(dynamic.string("panel"), dynamic.string("sudoku")),
+            ]),
+          ),
+        ]),
+      ),
+    )
 
   let state = next(sent, "presence_state")
   state |> string.contains("metas") |> should.be_false

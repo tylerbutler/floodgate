@@ -66,7 +66,8 @@ fn start_socket(
 fn route(channels: beryl.Sockets, socket_id: String, frame: String) -> Nil {
   let assert Ok(decoded) =
     codec.decode_text(transport.active_codec(channels))(frame)
-  transport.route_decoded(channels, socket_id, decoded)
+  let assert Ok(Nil) = transport.route_decoded(channels, socket_id, decoded)
+  Nil
 }
 
 fn phoenix_join(doc: String, token: String) -> String {

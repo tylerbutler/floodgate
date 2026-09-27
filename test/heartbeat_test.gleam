@@ -60,7 +60,12 @@ pub fn socket_that_stops_heartbeating_is_evicted_and_closed_test() {
   // this client in the session roster.
   let token =
     auth.mint_token(tenant, doc, ["doc:read"], "user-1", secret, now(), 3600)
-  transport.route_decoded(channels, socket_id, connect_frame(topic, doc, token))
+  let assert Ok(Nil) =
+    transport.route_decoded(
+      channels,
+      socket_id,
+      connect_frame(topic, doc, token),
+    )
   // Routing is a cast, so wait for the connect response before observing the
   // roster it was built from.
   let assert Ok(_connected) = process.receive(sent, 1000)

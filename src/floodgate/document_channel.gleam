@@ -314,7 +314,10 @@ pub fn push_event(
 ) -> Nil {
   case target(registration, socket_id, topic) {
     None -> Nil
-    Some(sender) -> channel.notify(sender, EventPush(event, payload))
+    Some(sender) -> {
+      let _ = channel.notify(sender, EventPush(event, payload))
+      Nil
+    }
   }
 }
 
@@ -1746,7 +1749,10 @@ fn relay_signal(
   recipients
   |> list.each(fn(recipient) {
     case target(registration, recipient, assigns.topic) {
-      Some(sender) -> channel.notify(sender, SignalPush(message))
+      Some(sender) -> {
+        let _ = channel.notify(sender, SignalPush(message))
+        Nil
+      }
       None -> Nil
     }
   })

@@ -175,17 +175,28 @@ fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
               |> result.unwrap([]),
             ),
           )
-          let ref = presence.track(state.presence, topic, key, client_id, meta)
-          actor.continue(
-            State(
-              ..state,
-              tracked: dict.insert(
-                state.tracked,
+          case presence.track(state.presence, topic, key, client_id, meta) {
+            Ok(ref) ->
+              actor.continue(
+                State(
+                  ..state,
+                  tracked: dict.insert(
+                    state.tracked,
+                    client_id,
+                    Tracked(ref:, topic:, key:),
+                  ),
+                ),
+              )
+            Error(_) -> {
+              state.push(
                 client_id,
-                Tracked(ref:, topic:, key:),
-              ),
-            ),
-          )
+                topic,
+                event_error,
+                error("presence_unavailable", "presence tracking failed"),
+              )
+              actor.continue(state)
+            }
+          }
         }
       }
 
@@ -226,7 +237,7 @@ fn handle(state: State, msg: Msg) -> actor.Next(State, Msg) {
 fn untracked(state: State, client_id: String) -> actor.Next(State, Msg) {
   // `untrack_all` rather than `untrack(ref)`: it clears the session on every
   // topic, so it stays correct if a socket ever tracks more than one.
-  presence.untrack_all(state.presence, client_id)
+  let _ = presence.untrack_all(state.presence, client_id)
   actor.continue(State(..state, tracked: dict.delete(state.tracked, client_id)))
 }
 
@@ -247,8 +258,8 @@ fn retrack(
           Tracked(..previous, ref: ref),
         ),
       )
-    Error(presence.UnknownRef) -> {
-      let ref =
+    Error(presence.UnknownRef(ref: _)) ->
+      case
         presence.track(
           state.presence,
           previous.topic,
@@ -256,14 +267,34 @@ fn retrack(
           client_id,
           meta,
         )
-      State(
-        ..state,
-        tracked: dict.insert(
-          state.tracked,
-          client_id,
-          Tracked(..previous, ref: ref),
-        ),
+      {
+        Ok(ref) ->
+          State(
+            ..state,
+            tracked: dict.insert(
+              state.tracked,
+              client_id,
+              Tracked(..previous, ref: ref),
+            ),
+          )
+        Error(_) -> {
+          state.push(
+            client_id,
+            previous.topic,
+            event_error,
+            error("presence_unavailable", "presence tracking failed"),
+          )
+          state
+        }
+      }
+    Error(presence.RequestFailed(_)) -> {
+      state.push(
+        client_id,
+        previous.topic,
+        event_error,
+        error("presence_unavailable", "presence update failed"),
       )
+      state
     }
   }
 }
