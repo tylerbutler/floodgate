@@ -50,6 +50,6 @@
 		"@types/node": "^20.19.25",
 		"rimraf": "^6.1.2",
 		"typescript": "~5.9.3",
-		"vitest": "^4.1.0"
+		"vitest": "^4.1.11"
 	}
 }
