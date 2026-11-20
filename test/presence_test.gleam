@@ -307,6 +307,27 @@ pub fn joining_sends_state_then_broadcasts_a_diff_test() {
   meta |> string.contains("phx_ref") |> should.be_true
 }
 
+pub fn presence_diffs_only_reach_their_document_test() {
+  let doc = "presence-isolated"
+  let #(channels, token) = start(doc)
+  let joined = attach(channels, "s-isolated")
+  let other = attach(channels, "s-other-doc")
+  connect(channels, doc, token, "s-isolated")
+  connect(
+    channels,
+    "presence-other",
+    token_for("presence-other", "bob"),
+    "s-other-doc",
+  )
+  drain(joined)
+  drain(other)
+
+  join_presence(channels, doc, "s-isolated", "{\"panel\":\"sudoku\"}")
+  let _ = next(joined, "presence_state")
+  let _ = next(joined, "presence_diff")
+  process.receive(other, 300) |> should.equal(Error(Nil))
+}
+
 /// The property heartbeat presence cannot have: a late joiner has the full
 /// roster immediately, with no wait for anyone's next heartbeat.
 pub fn a_late_joiner_receives_the_existing_roster_test() {
@@ -613,9 +634,11 @@ pub fn presence_works_over_the_socketio_endpoint_test() {
       ),
     )
 
-  let state = next(sent, "presence_state")
+  let assert Ok(state) = process.receive(sent, 1000)
+  state |> string.contains("\"presence_state\"") |> should.be_true
   state |> string.contains("metas") |> should.be_false
-  let diff = next(sent, "presence_diff")
+  let assert Ok(diff) = process.receive(sent, 1000)
+  diff |> string.contains("\"presence_diff\"") |> should.be_true
   diff |> string.contains("\"client_id\":\"s-sio-presence\"") |> should.be_true
   diff |> string.contains("\"panel\":\"sudoku\"") |> should.be_true
 }

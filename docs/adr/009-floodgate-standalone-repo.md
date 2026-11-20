@@ -81,7 +81,7 @@ in this repo). Three of the six modules — `socketio`, `connect_document`,
 had, so callers now import spillway directly and the wrappers were deleted.
 `spillway/socketio` declares its Routerlicious event names locally so spillway
 stays independent of a server runtime. Floodgate, which does depend on beryl,
-takes its event vocabulary and server codec from dewdrop (`dewdrop/events`,
+takes its event vocabulary and server codec from dewdrop (`dewdrop/event`,
 `dewdrop/server`) rather than copying them. Windsock (stdlib + json only)
 remains spillway's framing dependency.
 

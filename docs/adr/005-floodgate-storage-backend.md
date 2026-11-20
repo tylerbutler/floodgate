@@ -119,7 +119,7 @@ small crash-durability window for write throughput.
 ## Follow-ups
 
 - **Resolved (2026-08-24):** Floodgate takes its Socket.IO server codec and
-  event vocabulary from dewdrop (`dewdrop/server`, `dewdrop/events`) rather
+  event vocabulary from dewdrop (`dewdrop/server`, `dewdrop/event`) rather
   than carrying copies; the Routerlicious argument shapes Floodgate needed were
   upstreamed there. Beryl, beryl_mist, and dewdrop track `main`, and the
   manifest resolves against the coordinator-free socket runtime.

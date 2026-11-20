@@ -14,11 +14,13 @@ gleam_crypto = ">= 1.0.0 and < 2.0.0"
 # Only for session.gleam's `call_doc`, which turns a call against a
 # just-stopped document actor into a retry instead of a crashed caller.
 exception = ">= 2.0.0 and < 3.0.0"
-beryl = { git = "https://github.com/tylerbutler/beryl", ref = "v0.5", path = "packages/beryl" }
-dewdrop = { git = "https://github.com/tylerbutler/dewdrop", ref = "main" }
-beryl_mist = { git = "https://github.com/tylerbutler/beryl", ref = "v0.5", path = "packages/beryl_mist" }
-spillway = { git = "https://github.com/tylerbutler/spillway", ref = "main" }
-signet = { git = "https://github.com/tylerbutler/signet", ref = "main" }
+beryl = { git = "https://github.com/tylerbutler/beryl", ref = "beryl-v0.6.0", path = "packages/beryl" }
+dewdrop = { git = "https://github.com/tylerbutler/dewdrop", ref = "v0.2.0" }
+beryl_mist = { git = "https://github.com/tylerbutler/beryl", ref = "beryl_mist-v0.4.1", path = "packages/beryl_mist" }
+# Newer Spillway revisions remove the sequencing result constructors used here.
+spillway = { git = "https://github.com/tylerbutler/spillway", ref = "9746993da88eeb69c729b210eadeca7b46205694" }
+# Spillway still uses validation error constructors removed by newer Signet.
+signet = { git = "https://github.com/tylerbutler/signet", ref = "51843ffe6f38a57c295e1a139fd926dc947eca6d" }
 silt = { git = "https://github.com/tylerbutler/silt", ref = "main" }
 windsock = { git = "https://github.com/tylerbutler/windsock", ref = "main" }
 mist = ">= 6.0.0 and < 7.0.0"
@@ -26,8 +28,9 @@ glisten = ">= 9.0.1 and < 10.0.0"
 gleam_http = ">= 4.3.0 and < 5.0.0"
 shelf = ">= 1.0.1 and < 2.0.0"
 # GitHub OAuth for the admin session.
-vestibule = { git = "https://github.com/tylerbutler/vestibule.git", ref = "main" }
-vestibule_github = { git = "https://github.com/tylerbutler/vestibule.git", ref = "main", path = "packages/vestibule_github" }
+# Newer Vestibule revisions change the OAuth configuration API used here.
+vestibule = { git = "https://github.com/tylerbutler/vestibule.git", ref = "961745562c03329814fc1436234e05d2cbaa3b57" }
+vestibule_github = { git = "https://github.com/tylerbutler/vestibule.git", ref = "961745562c03329814fc1436234e05d2cbaa3b57", path = "packages/vestibule_github" }
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

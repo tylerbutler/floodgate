@@ -287,7 +287,7 @@ fn retrack(
           state
         }
       }
-    Error(presence.RequestFailed(_)) -> {
+    Error(presence.RequestFailed(_)) | Error(presence.UpdateInvalidCrdtState) -> {
       state.push(
         client_id,
         previous.topic,

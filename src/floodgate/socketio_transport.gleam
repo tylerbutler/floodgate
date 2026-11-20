@@ -195,7 +195,10 @@ fn on_message(
         server.finish_outbound_write(
           state.runtime,
           bytes,
-          mist.send_binary_frame(connection, data) |> result.is_ok,
+          mist.send_binary_frame(connection, data)
+            |> result.map_error(fn(reason) {
+              server.WriteFailed(glisten_socket.reason_to_string(reason))
+            }),
         ),
       )
     mist.Custom(server.SendText(text, bytes)) ->
@@ -206,7 +209,10 @@ fn on_message(
             server.finish_outbound_write(
               state.runtime,
               bytes,
-              mist.send_text_frame(connection, text) |> result.is_ok,
+              mist.send_text_frame(connection, text)
+                |> result.map_error(fn(reason) {
+                  server.WriteFailed(glisten_socket.reason_to_string(reason))
+                }),
             ),
           )
         True ->

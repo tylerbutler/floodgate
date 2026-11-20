@@ -15,10 +15,10 @@
  * its optional Socket.IO compatibility endpoint.
  *
  * Event names below mirror the dewdrop package's Socket.IO event definitions
- * (https://github.com/tylerbutler/dewdrop/blob/main/src/dewdrop/events.gleam)
+ * (https://github.com/tylerbutler/dewdrop/blob/v0.2.0/src/dewdrop/event.gleam)
  * verbatim — that Gleam module is the single source of truth for the Socket.IO
  * event vocabulary shared by dewdrop/beryl/spillway. If the two ever drift,
- * treat the upstream `events.gleam` as authoritative and fix this file, not the reverse.
+ * treat the upstream `event.gleam` as authoritative and fix this file, not the reverse.
  */
 
 /** Socket.IO/Engine.IO event names the Routerlicious driver depends on. */
