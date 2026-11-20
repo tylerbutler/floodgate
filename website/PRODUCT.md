@@ -70,7 +70,12 @@ tenants, each with two rotating JWT secret slots.
   extraction into its own repository is prepared but not yet performed
   (see `docs/adr/009-floodgate-standalone-repo.md`). The site should not
   claim a standalone repo/install path that doesn't exist yet.
-- Deploy target for the website itself: undecided — record when confirmed.
+- Deploy target for the website: Cloudflare Workers static assets, configured
+  in `wrangler.jsonc`. Cloudflare build settings: root directory `website`,
+  build command `pnpm build`, deploy command `pnpx wrangler deploy`.
+  The site uses static Astro output from `dist`; no Cloudflare adapter is
+  needed. The explicit Wrangler config prevents framework auto-setup during
+  deployment.
 
 ## Evidence on Hand
 
