@@ -1,3 +1,0 @@
-package = "floodgate"
-kind = "Changed"
-body = "Remove the client release PR, tagging, and npm publishing pipeline; keep the client workspace and compatibility tests."
