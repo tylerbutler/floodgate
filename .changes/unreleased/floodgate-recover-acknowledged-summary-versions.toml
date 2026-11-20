@@ -1,3 +1,0 @@
-package = "floodgate"
-kind = "Fixed"
-body = "Recover acknowledged summary versions and enforce document-owned published history."

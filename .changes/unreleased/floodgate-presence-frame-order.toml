@@ -1,3 +1,0 @@
-package = "floodgate"
-kind = "Fixed"
-body = "Keep presence snapshots and diffs in channel queue order when using Beryl 0.6."
