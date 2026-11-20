@@ -6,7 +6,7 @@ import beryl
 import beryl/channel
 import beryl/presence
 import beryl/socket
-import dewdrop/events
+import dewdrop/event as events
 import floodgate/auth
 import floodgate/git
 import floodgate/presence_worker
@@ -925,7 +925,7 @@ type ChannelResult {
 fn apply_result(
   result: ChannelResult,
   state: ChannelState,
-  reply: Option(socket.ReplyRef),
+  reply: Option(socket.ReplyReference),
 ) -> channel.Next(ChannelState) {
   let reply_actions = [channel.reply_ok(reply, json.object([]))]
   case result {

@@ -41,6 +41,7 @@ import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/otp/actor
 import gleam/otp/static_supervisor
 import gleam/result
 import gleam/string
@@ -166,7 +167,10 @@ pub fn start_with_backend(
   jwt_secret: String,
   storage: store.Backend,
 ) -> Result(#(beryl.Sockets, session.Session), beryl_error.StartFailure) {
-  let pubsub_handle = pubsub.start(pubsub.default_config())
+  use pubsub_handle <- result.try(
+    pubsub.start(pubsub.default_config())
+    |> result.map_error(pubsub_start_failure),
+  )
   let max_frame_bytes = max_frame_bytes()
   let message_rate = limit_env("FLOODGATE_MESSAGE_RATE", 1000)
   let message_burst = limit_env("FLOODGATE_MESSAGE_BURST", 2000)
@@ -195,12 +199,15 @@ pub fn start_with_backend(
       per_second: limit_env("FLOODGATE_JOIN_RATE", 100),
       burst: limit_env("FLOODGATE_JOIN_BURST", 200),
     )
-  let registration = document_channel.new_registration()
   // Server-backed presence (`presence_v1`).
   let presence_name = presence_worker.new_name()
-  let #(presence_handle, presence_spec) =
+  use presence_config <- result.try(
     presence.default_config(presence_replica())
-    |> presence_replication
+    |> presence_replication,
+  )
+  let registration = document_channel.new_registration()
+  let #(presence_handle, presence_spec) =
+    presence_config
     |> presence.with_on_diff(fn(diff) {
       document_channel.broadcast_presence_diff(registration, diff)
     })
@@ -273,6 +280,11 @@ fn presence_replica() -> String {
   node.self() |> node.name |> atom.to_string
 }
 
+fn pubsub_start_failure(error: pubsub.PubSubError) -> beryl_error.StartFailure {
+  actor.InitFailed(pubsub.describe_error(error))
+  |> beryl_error.from_actor_start_error
+}
+
 /// Replicate presence across the cluster — but only when there *is* a cluster.
 ///
 /// Gossip is peer-to-peer over a pg scope, so on an undistributed VM the only
@@ -287,14 +299,18 @@ fn presence_replica() -> String {
 /// untrack whether or not PubSub is configured, so single-node presence is fully
 /// live. A distributed node has a real name, distinct from its peers', and turns
 /// replication on by having one.
-fn presence_replication(config: presence.Config) -> presence.Config {
+fn presence_replication(
+  config: presence.Config,
+) -> Result(presence.Config, beryl_error.StartFailure) {
   case presence_replica() {
-    "nonode@nohost" -> config
-    _ ->
-      presence.with_pubsub(
-        config,
-        pubsub.start(pubsub.config_with_scope("floodgate_presence")),
+    "nonode@nohost" -> Ok(config)
+    _ -> {
+      use pubsub_handle <- result.try(
+        pubsub.start(pubsub.config_with_scope("floodgate_presence"))
+        |> result.map_error(pubsub_start_failure),
       )
+      Ok(presence.with_pubsub(config, pubsub_handle))
+    }
   }
 }
 

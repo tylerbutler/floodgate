@@ -484,12 +484,12 @@ describe("Floodgate contract — connect handshake shape", () => {
 });
 
 describe("Floodgate contract — socket event vocabulary", () => {
-	// NOTE: this only pins the *event name strings* dewdrop/events.gleam (which
+	// NOTE: this only pins the *event name strings* dewdrop/event.gleam (which
 	// Floodgate depends on) exposes. It is not behavior coverage — actual signal fan-out semantics
 	// (ordering, no-sequencing guarantee, delivery to all connected clients)
 	// are exercised (as a todo, pending live harness support) below in
 	// "Floodgate contract — operation submission, sequencing & fan-out".
-	it("uses the dewdrop/events.gleam event names for op/signal/summary flows", () => {
+	it("uses the dewdrop/event.gleam event names for op/signal/summary flows", () => {
 		expect(FLOODGATE_SOCKET_EVENTS.connectDocument).toBe("connect_document");
 		expect(FLOODGATE_SOCKET_EVENTS.connectDocumentSuccess).toBe(
 			"connect_document_success",
