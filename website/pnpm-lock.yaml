@@ -339,7 +339,7 @@ packages:
     os: [win32]
 
   '@fontsource/barlow-condensed@5.3.0':
-    resolution: {integrity: sha1-3Ug+ZrBgnamrrVmVM8KScDN84NQ=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@fontsource/barlow-condensed/-/barlow-condensed-5.3.0.tgz}
+    resolution: {integrity: sha1-3Ug+ZrBgnamrrVmVM8KScDN84NQ=}
 
   '@img/colour@1.1.0':
     resolution: {integrity: sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ==}
