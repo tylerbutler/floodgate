@@ -5,6 +5,7 @@
 import beryl
 import beryl/channel
 import beryl/presence
+import beryl/presence/wire as presence_wire
 import beryl/socket
 import dewdrop/event as events
 import floodgate/auth
@@ -92,6 +93,7 @@ pub type DocInfo {
   /// it for `presence_state` and `presence_error`, which are per-socket frames
   /// with no reply channel to ride on.
   EventPush(event: String, payload: json.Json)
+  PresenceDiffBroadcast(payload: json.Json)
 }
 
 type Target {
@@ -174,7 +176,36 @@ pub fn new_registration() -> Registration {
             Some(sockets) ->
               presence.diff_topics(diff)
               |> list.each(fn(topic) {
-                beryl.broadcast_presence_diff(sockets, topic, diff)
+                let target = case presence.diff_scope(diff) {
+                  presence.LocalNode -> Error(Nil)
+                  presence.Cluster ->
+                    presence.diff_joins(diff, topic)
+                    |> list.first
+                    |> result.try(fn(entry) {
+                      dict.get(
+                        state.targets,
+                        target_key(entry.session_id, topic),
+                      )
+                    })
+                }
+                case target {
+                  Ok(target) -> {
+                    // Queue behind this joiner's snapshot before broadcasting.
+                    let _ =
+                      channel.notify(
+                        target.sender,
+                        PresenceDiffBroadcast(presence_wire.encode_diff(
+                          diff,
+                          topic,
+                        )),
+                      )
+                    Nil
+                  }
+                  Error(Nil) -> {
+                    let _ = beryl.broadcast_presence_diff(sockets, topic, diff)
+                    Nil
+                  }
+                }
               })
           }
           actor.continue(state)
@@ -281,6 +312,10 @@ pub fn new(
                 channel.next(state, [channel.push(events.signal, payload)])
               EventPush(event, payload) ->
                 channel.next(state, [channel.push(event, payload)])
+              PresenceDiffBroadcast(payload) ->
+                channel.next(state, [
+                  channel.broadcast("presence_diff", payload),
+                ])
             }
           })
           |> channel.on_terminate(fn(state, _reason) {
