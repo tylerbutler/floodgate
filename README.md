@@ -96,28 +96,47 @@ Record server changes as Trellis fragments:
 ```sh
 trellis changelog new --package floodgate --kind Fixed --body "Describe the fix"
 trellis version plan
+trellis changelog check --base origin/main
 ```
 
-Commit the fragment with the change. After a push to `main`, the **Server
-Release** workflow creates or updates a release PR from `release/server-next`.
-Trellis updates the root version, batches fragments under `.changes/floodgate/`,
-and generates `CHANGELOG.md`. Review and merge that PR to release the server.
-The workflow tags the merge commit as `vX.Y.Z`. CI builds that tagged commit,
-runs all required jobs, then publishes the full-version, minor-series, and
-`latest` image tags. It does not create a GitHub Release. Do not move release
-Git tags or full-version image tags to different releases.
+Commit a fragment for user-facing changes, including admin changes. Skip
+fragments for documentation and development-only changes. CI runs the native
+check with advisory coverage (`strictness = "warn"`); invalid fragments still
+fail. Use `Fixed` for a patch or `Added`/`Changed` for a minor version bump.
 
-The release workflow uses the existing `RELEASE_APP_ID` and
-`RELEASE_APP_PRIVATE_KEY` secrets. The GitHub App needs repository contents and
-pull-request write access. Its token lets release PRs and pushed tags trigger
-CI. Use the **Server Release** workflow's manual trigger to retry PR creation.
-To retry tagging, run `trellis tag create --push` from a clean checkout of the
-approved release merge commit. Server releases must use stable versions;
-the Docker workflow rejects prerelease tags.
+The Trellis pin in `mise.toml` applies to local commands, CI, and releases.
+After a push to `main`, the **Server Release** workflow uses the shared
+`tylerbutler/actions` Trellis coordinator to create or update
+`release/server-next`. Trellis keeps pending release versions, skips unchanged
+preparations, updates the root version, and generates `CHANGELOG.md` plus the
+version archive under `.changes/floodgate/`.
+
+Review the version and notes, wait for CI, then merge the release PR. The
+coordinator selects that merge commit for an App-authenticated tag push and a
+GitHub Release with the changelog notes. Git tags use exact stable versions
+(`vX.Y.Z`) plus moving major (`vX`) and minor (`vX.Y`) aliases. For example,
+Trellis tags `0.2.0` as `v0.2.0` and updates `v0` and `v0.2` to that commit.
+CI ignores alias pushes and builds the exact tagged commit, runs the required
+checks, then publishes the full-version, minor-series, and `latest` image tags.
+Server releases must use stable versions; Docker CI rejects prerelease tags.
+Let Trellis manage aliases; do not move exact Git tags or full-version image tags.
+
+Configure `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` as repository secrets.
+Install the App on this repository with Contents, Pull requests, and Commit
+statuses read/write permissions. Its token lets release PRs and pushed tags
+trigger CI. Protect `main` with reviews and required checks, and restrict writes
+to `release/server-next` and access to manual release dispatches.
+
+Use the **Server Release** manual trigger on `main` to retry preparation.
+For a failed tag or GitHub Release, rerun **all jobs of the original merged-PR
+workflow run**. The coordinator records `trellis/release` status on the merge
+commit and blocks new preparation until completion. Trellis reconciles partial
+tags and releases on retry; completed retries skip tagging. Docker publication
+has its own CI run: retry that tag's CI run if image publication fails.
 
 Trellis manages the server as a `git_only` package, with no Hex publication.
-The admin UI ships with the server and has no separate release. Use a
-`floodgate` fragment for admin changes too. This repository has no client
+The admin UI has the `workspace` lifecycle and ships with the server, without
+a separate version bump, tag, or release. This repository has no client
 release or npm publishing pipeline. The client packages remain in the workspace
 for development, examples, and compatibility tests. Applications can use
 `@tylerbu/levee-client` with Floodgate's Phoenix endpoint.

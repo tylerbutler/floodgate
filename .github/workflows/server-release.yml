@@ -10,42 +10,97 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
+  pull-requests: read
+  statuses: write
 
 concurrency:
   group: server-release-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'pr' }}
   cancel-in-progress: false
 
 jobs:
-  release:
-    if: >-
-      github.repository == 'tylerbutler/floodgate' &&
-      (github.event_name != 'pull_request' ||
-       (github.event.pull_request.merged &&
-        github.event.pull_request.head.repo.full_name == github.repository &&
-        github.event.pull_request.head.ref == 'release/server-next'))
+  tools:
+    if: github.repository == 'tylerbutler/floodgate'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      trellis_version: ${{ steps.trellis.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Read Trellis pin
+        id: trellis
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import tomllib
+          with open("mise.toml", "rb") as config:
+              print("version=" + tomllib.load(config)["tools"]["github:tylerbutler/trellis"])
+          PY
+
+  select:
+    needs: tools
+    uses: tylerbutler/actions/.github/workflows/trellis-release.yml@b4980d28d8c7ad0044fc2d3fdff208cb5aa2a112 # ratchet:tylerbutler/actions/.github/workflows/trellis-release.yml@main
+    with:
+      phase: select
+      trellis_version: ${{ needs.tools.outputs.trellis_version }}
+      release_mode: git_only
+      release_branch: release/server-next
+
+  # App-authenticated tag pushes must trigger the existing Docker release CI.
+  tag:
+    needs: [tools, select]
+    if: needs.select.outputs.release_sha != '' && needs.select.outputs.complete != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # ratchet:actions/create-github-app-token@v3
         id: app-token
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha || 'main' }}
+          ref: ${{ needs.select.outputs.release_sha }}
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
-      - name: Install Trellis
-        run: |
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            https://github.com/tylerbutler/trellis/releases/download/v0.13.0/trellis-gleam-installer.sh | sh
-      - run: trellis doctor
-      - name: Create or update the server release PR
-        if: github.event_name != 'pull_request'
+      - uses: tylerbutler/actions/setup-trellis@b4980d28d8c7ad0044fc2d3fdff208cb5aa2a112 # ratchet:tylerbutler/actions/setup-trellis@main
+        with:
+          version: ${{ needs.tools.outputs.trellis_version }}
+      - name: Tag the approved server release
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: trellis release pr --branch release/server-next
-      - name: Tag the merged server release
-        if: github.event_name == 'pull_request'
-        run: trellis tag create --push
+        run: trellis tag create --push --github-release
+
+  complete:
+    needs: [tools, select, tag]
+    if: >-
+      always() && !cancelled() && needs.select.result == 'success' &&
+      needs.select.outputs.release_sha != '' && needs.select.outputs.complete != 'true'
+    uses: tylerbutler/actions/.github/workflows/trellis-release.yml@b4980d28d8c7ad0044fc2d3fdff208cb5aa2a112 # ratchet:tylerbutler/actions/.github/workflows/trellis-release.yml@main
+    with:
+      phase: complete
+      release_sha: ${{ needs.select.outputs.release_sha }}
+      trellis_version: ${{ needs.tools.outputs.trellis_version }}
+      release_mode: git_only
+      release_branch: release/server-next
+      required_jobs: '["tag"]'
+      qualification_results: ${{ toJSON(needs) }}
+      tagging_result: ${{ needs.tag.result }}
+
+  prepare:
+    needs: [tools, select, complete]
+    if: >-
+      always() && !cancelled() && needs.select.result == 'success' &&
+      (needs.select.outputs.preparation_eligible == 'true' || needs.complete.outputs.complete == 'true')
+    uses: tylerbutler/actions/.github/workflows/trellis-release.yml@b4980d28d8c7ad0044fc2d3fdff208cb5aa2a112 # ratchet:tylerbutler/actions/.github/workflows/trellis-release.yml@main
+    with:
+      phase: prepare
+      trellis_version: ${{ needs.tools.outputs.trellis_version }}
+      release_mode: git_only
+      release_branch: release/server-next
+    secrets:
+      app_id: ${{ secrets.RELEASE_APP_ID }}
+      app_private_key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

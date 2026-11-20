@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    tags: ["v*.*.*"]
   pull_request:
 
 permissions:
@@ -21,15 +21,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # ratchet:erlef/setup-beam@v1
         with:
           otp-version: "28"
           gleam-version: "1.18.1"
           rebar3-version: "3"
-      - name: Install Trellis
+      - name: Read Trellis pin
+        id: trellis
         run: |
-          curl --proto '=https' --tlsv1.2 -LsSf \
-            https://github.com/tylerbutler/trellis/releases/download/v0.13.0/trellis-gleam-installer.sh | sh
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import tomllib
+          with open("mise.toml", "rb") as config:
+              print("version=" + tomllib.load(config)["tools"]["github:tylerbutler/trellis"])
+          PY
+      - uses: tylerbutler/actions/setup-trellis@b4980d28d8c7ad0044fc2d3fdff208cb5aa2a112 # ratchet:tylerbutler/actions/setup-trellis@main
+        with:
+          version: ${{ steps.trellis.outputs.version }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # ratchet:actions/cache@v6
         with:
           path: |
@@ -37,6 +46,12 @@ jobs:
             admin/build
           key: ${{ runner.os }}-gleam-${{ hashFiles('manifest.toml', 'admin/manifest.toml') }}
       - run: trellis doctor
+      - name: Check changelog fragments
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: trellis changelog check --base "$BASE_SHA" --head "$HEAD_SHA"
       - run: trellis run deps
       - run: trellis run format --check
       - run: trellis run test
