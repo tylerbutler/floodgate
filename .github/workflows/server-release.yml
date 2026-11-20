@@ -69,7 +69,7 @@ jobs:
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # ratchet:jdx/mise-action@v3
         with:
           install_args: github:tylerbutler/trellis
-      - name: Tag the approved server release
+      - name: Tag the release
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: trellis tag create --push --github-release
