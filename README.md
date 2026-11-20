@@ -104,7 +104,9 @@ fragments for documentation and development-only changes. CI runs the native
 check with advisory coverage (`strictness = "warn"`); invalid fragments still
 fail. Use `Fixed` for a patch or `Added`/`Changed` for a minor version bump.
 
-The Trellis pin in `mise.toml` applies to local commands, CI, and releases.
+Mise installs the Gleam, Erlang, Rebar3, and Trellis versions from `mise.toml`
+for local development and Gleam CI jobs. Release tagging installs only Trellis;
+the shared coordinator receives that same Trellis pin through Mise.
 After a push to `main`, the **Server Release** workflow uses the shared
 `tylerbutler/actions` Trellis coordinator to create or update
 `release/server-next`. Trellis keeps pending release versions, skips unchanged

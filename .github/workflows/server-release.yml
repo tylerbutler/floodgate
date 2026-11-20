@@ -29,14 +29,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # ratchet:actions/checkout@v7
         with:
           persist-credentials: false
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # ratchet:jdx/mise-action@v3
+        with:
+          install: false
       - name: Read Trellis pin
         id: trellis
         run: |
-          python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import tomllib
-          with open("mise.toml", "rb") as config:
-              print("version=" + tomllib.load(config)["tools"]["github:tylerbutler/trellis"])
-          PY
+          version=$(mise config get --file mise.toml 'tools."github:tylerbutler/trellis"')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
   select:
     needs: tools
@@ -66,9 +66,9 @@ jobs:
           ref: ${{ needs.select.outputs.release_sha }}
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
-      - uses: tylerbutler/actions/setup-trellis@b4980d28d8c7ad0044fc2d3fdff208cb5aa2a112 # ratchet:tylerbutler/actions/setup-trellis@main
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # ratchet:jdx/mise-action@v3
         with:
-          version: ${{ needs.tools.outputs.trellis_version }}
+          install_args: github:tylerbutler/trellis
       - name: Tag the approved server release
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
