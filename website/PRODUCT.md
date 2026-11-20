@@ -75,7 +75,8 @@ tenants, each with two rotating JWT secret slots.
   build command `pnpm build`, deploy command `pnpx wrangler deploy`.
   The site uses static Astro output from `dist`; no Cloudflare adapter is
   needed. The explicit Wrangler config prevents framework auto-setup during
-  deployment.
+  deployment. Its empty `previews` block enables Cloudflare branch previews;
+  assets and compatibility settings stay at the top level.
 
 ## Evidence on Hand
 
